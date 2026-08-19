@@ -1,0 +1,21 @@
+{
+  "name": "Arm64 Microkernel Dev Environment",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "vadimcn.vscode-lldb",
+        "tamasfe.even-better-toml"
+      ],
+      "settings": {
+        "rust-analyzer.cargo.target": "aarch64-unknown-none",
+        "rust-analyzer.check.allTargets": false
+      }
+    }
+  },
+  "postCreateCommand": "rustup target add aarch64-unknown-none",
+  "remoteUser": "vscode"
+}
