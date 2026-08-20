@@ -4,12 +4,14 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use core::cell::UnsafeCell;
+use core::arch::asm;
 use core::panic::PanicInfo;
 use kernel_arch_aarch64::mmu::{
     enable_mmu, init_mmu_hardware, is_mmu_enabled, ATTR_DEVICE, ATTR_NORMAL, SH_INNER,
     Arm64PageTable,
 };
-use kernel_arch_aarch64::uart::{print, uart_getc, uart_init, uart_putc};
+use kernel_arch_aarch64::uart::{print, print_hex, uart_getc, uart_init, uart_putc};
 
 pub mod allocator;
 pub mod heap;
@@ -18,7 +20,12 @@ use allocator::BitmapFrameAllocator;
 use heap::init_heap;
 use kernel_hal::PageTable;
 
-static mut ROOT_PAGE_TABLE: Arm64PageTable = Arm64PageTable::new();
+// Thread-safe cell wrapper for kernel static objects
+struct KernelStatic<T>(UnsafeCell<T>);
+unsafe impl<T> Sync for KernelStatic<T> {}
+
+static ROOT_PAGE_TABLE: KernelStatic<Arm64PageTable> =
+    KernelStatic(UnsafeCell::new(Arm64PageTable::new()));
 
 fn streq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
@@ -42,7 +49,7 @@ fn panic(_info: &PanicInfo) -> ! {
 pub extern "C" fn kmain() -> ! {
     uart_init();
 
-    print("\n--- Microkernel Shell (Phase 1 Complete) ---\n");
+    print("\n--- Microkernel Shell (Phase 2 Active) ---\n");
 
     let mut frame_allocator = BitmapFrameAllocator::<64>::new(0x4000_0000);
     init_heap(&mut frame_allocator, 16);
@@ -50,18 +57,14 @@ pub extern "C" fn kmain() -> ! {
     init_mmu_hardware();
 
     unsafe {
-        // 1. Identity map 0x0000_0000 - 0x3FFF_FFFF (1GB Device Block for UART MMIO)
-        ROOT_PAGE_TABLE.map_1gb_block(0x0000_0000, ATTR_DEVICE);
-
-        // 2. Identity map 0x4000_0000 - 0x7FFF_FFFF (1GB Normal RAM Block for Kernel)
-        ROOT_PAGE_TABLE.map_1gb_block(0x4000_0000, ATTR_NORMAL | SH_INNER);
-
-        // 3. Load root table and enable MMU translation
-        ROOT_PAGE_TABLE.activate();
+        let page_table = &mut *ROOT_PAGE_TABLE.0.get();
+        page_table.map_1gb_block(0x0000_0000, ATTR_DEVICE);
+        page_table.map_1gb_block(0x4000_0000, ATTR_NORMAL | SH_INNER);
+        page_table.activate();
         enable_mmu();
     }
 
-    print("MMU Virtual Address Translation Enabled.\n");
+    print("MMU & Exception Vector Configured.\n");
     print("Type 'help' for available commands.\n");
 
     let mut buffer = [0u8; 128];
@@ -77,7 +80,7 @@ pub extern "C" fn kmain() -> ! {
             if cursor > 0 {
                 let cmd = &buffer[..cursor];
                 if streq(cmd, b"help") {
-                    print("Commands: help, ping, testheap, testmmu, info");
+                    print("Commands: help, ping, testheap, testmmu, testsvc, info");
                 } else if streq(cmd, b"ping") {
                     print("pong!");
                 } else if streq(cmd, b"testheap") {
@@ -85,16 +88,31 @@ pub extern "C" fn kmain() -> ! {
                     vec.push(100);
                     vec.push(200);
                     if vec.len() == 2 && vec[1] == 200 {
-                        print("Dynamic heap allocation operating over MMU virtual memory!");
+                        print("Heap functional.");
                     }
                 } else if streq(cmd, b"testmmu") {
                     if is_mmu_enabled() {
-                        print("MMU Active: SCTLR_EL1.M bit is SET (Translation Enabled)");
-                    } else {
-                        print("MMU Inactive!");
+                        print("MMU Active!");
                     }
+                } else if streq(cmd, b"testsvc") {
+                    let msg = "Hello via sys_write (Linux ABI x8=64)!\n";
+                    let ret: u64;
+
+                    unsafe {
+                        asm!(
+                            "svc #0",
+                            in("x8") 64,           // SYS_WRITE
+                            in("x0") 1,            // fd = 1 (stdout)
+                            in("x1") msg.as_ptr(), // buf
+                            in("x2") msg.len(),    // count
+                            lateout("x0") ret,     // return value
+                        );
+                    }
+
+                    print("Syscall sys_write returned byte count: ");
+                    print_hex(ret);
                 } else if streq(cmd, b"info") {
-                    print("Arch: Arm64 | Board: QEMU virt | MMU: Active | Heap: 64KB");
+                    print("Arch: Arm64 | Board: QEMU virt | VBAR_EL1: Active");
                 } else {
                     print("Unknown command");
                 }

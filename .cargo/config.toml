@@ -1,2 +1,2 @@
-[target.aarch64-unknown-none]
-rustflags = ["-C", "target-feature=-neon"]
+[build]
+target = "aarch64-unknown-none"

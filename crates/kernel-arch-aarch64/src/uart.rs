@@ -36,3 +36,16 @@ pub fn print(s: &str) {
         uart_putc(byte);
     }
 }
+
+pub fn print_hex(val: u64) {
+    print("0x");
+    for i in (0..16).rev() {
+        let nibble = (val >> (i * 4)) & 0xF;
+        let c = if nibble < 10 {
+            b'0' + nibble as u8
+        } else {
+            b'A' + (nibble - 10) as u8
+        };
+        uart_putc(c);
+    }
+}

@@ -36,7 +36,7 @@ impl PageTable for Arm64PageTable {
     fn map(
         &mut self,
         virt: VirtAddr,
-        phys: PhysAddr,
+        _phys: PhysAddr,
         flags: u64,
         _allocator: &mut impl FrameAllocator,
     ) -> Result<(), ()> {
@@ -69,8 +69,8 @@ pub fn init_mmu_hardware() {
         let mair: u64 = (0x00 << 0) | (0xFF << 8);
         asm!("msr mair_el1, {}", in(reg) mair);
 
-        // TCR_EL1: T0SZ = 25 (39-bit VA space, L1 Root Table), TG0 = 4KB, Inner Shareable
-        let tcr: u64 = 25 | (1 << 8) | (1 << 10) | (3 << 12) | (2u64 << 32);
+        // TCR_EL1: T0SZ = 25 (39-bit VA space), TG0 = 4KB, Non-cacheable table walks
+        let tcr: u64 = 25 | (0 << 8) | (0 << 10) | (3 << 12) | (2u64 << 32);
         asm!("msr tcr_el1, {}", in(reg) tcr);
     }
 }
@@ -79,9 +79,9 @@ pub fn enable_mmu() {
     unsafe {
         let mut sctlr: u64;
         asm!("mrs {}, sctlr_el1", out(reg) sctlr);
-        sctlr |= 1 << 0;  // M bit: Enable MMU address translation
-        sctlr |= 1 << 2;  // C bit: Enable Data Cache
-        sctlr |= 1 << 12; // I bit: Enable Instruction Cache
+        sctlr |= 1 << 0;     // M bit: Enable MMU virtual address translation
+        sctlr &= !(1 << 2);  // Disable C bit (Data Cache) to prevent cache incoherence
+        sctlr &= !(1 << 12); // Disable I bit (Instruction Cache) to prevent stale vector fetches
         asm!("msr sctlr_el1, {}", in(reg) sctlr);
         asm!("dsb sy", "isb");
     }
