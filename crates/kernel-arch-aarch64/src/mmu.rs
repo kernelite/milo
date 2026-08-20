@@ -8,6 +8,7 @@ pub const VALID: u64        = 1 << 0;
 pub const BLOCK: u64        = 0 << 1; // Bit 1 = 0 for 1GB Block Descriptor in L1
 pub const ATTR_DEVICE: u64  = 0 << 2; // MAIR Attribute Index 0
 pub const ATTR_NORMAL: u64  = 1 << 2; // MAIR Attribute Index 1
+pub const AP_EL0: u64       = 1 << 6; // Unprivileged (EL0) Read/Write Access
 pub const SH_INNER: u64     = 3 << 8; // Inner Shareable
 pub const AF: u64           = 1 << 10; // Access Flag (Prevents Access Faults)
 
@@ -21,13 +22,11 @@ impl Arm64PageTable {
         Self { entries: [0; ENTRY_COUNT] }
     }
 
-    /// Identity map a 1GB region at `base_addr`
-    pub fn map_1gb_block(&mut self, base_addr: usize, flags: u64) {
-        let index = base_addr >> 30; // 1GB boundary index (bits 38:30)
+    pub fn map_1gb_block(&mut self, virt_base: usize, phys_base: usize, flags: u64) {
+        let index = virt_base >> 30;
         if index < ENTRY_COUNT {
-            // Mask out lower 30 bits (0x3FFF_FFFF) to align address to 1GB
-            let phys_base = (base_addr as u64) & !0x3FFF_FFFF;
-            self.entries[index] = phys_base | VALID | BLOCK | AF | flags;
+            let phys_addr = (phys_base as u64) & !0x3FFF_FFFF;
+            self.entries[index] = phys_addr | VALID | BLOCK | AF | flags;
         }
     }
 }
@@ -40,7 +39,7 @@ impl PageTable for Arm64PageTable {
         flags: u64,
         _allocator: &mut impl FrameAllocator,
     ) -> Result<(), ()> {
-        self.map_1gb_block(virt.0, flags);
+        self.map_1gb_block(virt.0, virt.0, flags);
         Ok(())
     }
 
@@ -55,9 +54,7 @@ impl PageTable for Arm64PageTable {
     fn activate(&self) {
         let phys_addr = self as *const _ as usize as u64;
         unsafe {
-            // Set TTBR0_EL1 to the root table address
             asm!("msr ttbr0_el1, {}", in(reg) phys_addr);
-            // Invalidate TLB and synchronize memory barrier
             asm!("dsb sy", "tlbi vmalle1is", "dsb sy", "isb");
         }
     }

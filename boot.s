@@ -46,23 +46,29 @@ el1_entry:
     isb
 
     // Load 2KB-aligned vector table into VBAR_EL1
-    ldr     x0, =vector_table
+    adrp    x0, vector_table
+    add     x0, x0, :lo12:vector_table
     msr     vbar_el1, x0
     isb
 
     // Setup boot stack
-    ldr     x0, =boot_stack_top
+    adrp    x0, boot_stack_top
+    add     x0, x0, :lo12:boot_stack_top
     mov     sp, x0
 
-    // Zero out BSS
-    ldr     x1, =__bss_start
-    ldr     x2, =__bss_end
-1:  cmp     x1, x2
-    b.ge    2f
+    // Zero BSS
+    adrp    x1, __bss_start
+    add     x1, x1, :lo12:__bss_start
+    adrp    x2, __bss_end
+    add     x2, x2, :lo12:__bss_end
+bss_zero_loop:
+    cmp     x1, x2
+    b.ge    bss_zero_done
     str     xzr, [x1], #8
-    b       1b
+    b       bss_zero_loop
 
-2:  bl      kmain
+bss_zero_done:
+    bl      kmain
 
 halt:
     wfe
@@ -74,33 +80,40 @@ halt:
 .global vector_table
 vector_table:
     // Current EL with SP0
-    b sync_handler; .balign 128
-    b unhandled_trap; .balign 128
-    b unhandled_trap; .balign 128
-    b unhandled_trap; .balign 128
+    b sync_handler;    .balign 128
+    b unhandled_irq;   .balign 128
+    b unhandled_trap;  .balign 128
+    b unhandled_trap;  .balign 128
 
     // Current EL with SPx
-    b sync_handler; .balign 128
-    b unhandled_trap; .balign 128
-    b unhandled_trap; .balign 128
-    b unhandled_trap; .balign 128
+    b sync_handler;    .balign 128
+    b unhandled_irq;   .balign 128
+    b unhandled_trap;  .balign 128
+    b unhandled_trap;  .balign 128
 
     // Lower EL using AArch64
-    b sync_handler; .balign 128
-    b unhandled_trap; .balign 128
-    b unhandled_trap; .balign 128
-    b unhandled_trap; .balign 128
+    b sync_handler;    .balign 128
+    b unhandled_irq;   .balign 128
+    b unhandled_trap;  .balign 128
+    b unhandled_trap;  .balign 128
 
     // Lower EL using AArch32
-    b unhandled_trap; .balign 128
-    b unhandled_trap; .balign 128
-    b unhandled_trap; .balign 128
-    b unhandled_trap; .balign 128
+    b unhandled_trap;  .balign 128
+    b unhandled_trap;  .balign 128
+    b unhandled_trap;  .balign 128
+    b unhandled_trap;  .balign 128
+
+unhandled_irq:
+    eret
+
+unhandled_trap:
+    wfe
+    b unhandled_trap
 
 .text
+.balign 4
 .global sync_handler
 sync_handler:
-    // Allocate 800 bytes (16-byte aligned) on stack
     sub sp, sp, #800
 
     // 1. Save General Purpose Registers (x0 - x29)
@@ -130,7 +143,7 @@ sync_handler:
     stp x1, x2,   [sp, #256]
     str x3,       [sp, #272]
 
-    // 3. Save SIMD/NEON Vector Registers (q0 - q31) at sp + 288
+    // 3. Save SIMD/NEON Vector Registers (q0 - q31)
     stp q0,  q1,  [sp, #288]
     stp q2,  q3,  [sp, #320]
     stp q4,  q5,  [sp, #352]
@@ -195,12 +208,78 @@ sync_handler:
     add sp, sp, #800
     eret
 
-unhandled_trap:
+/* --- Context Switch Routines --- */
+.balign 4
+.global enter_user_mode
+enter_user_mode:
+    // x0 = entry_point, x1 = user_stack_top
+    adrp    x2, kernel_ctx
+    add     x2, x2, :lo12:kernel_ctx
+
+    stp     x19, x20, [x2, #0]
+    stp     x21, x22, [x2, #16]
+    stp     x23, x24, [x2, #32]
+    stp     x25, x26, [x2, #48]
+    stp     x27, x28, [x2, #64]
+    stp     x29, x30, [x2, #80]
+    mov     x3, sp
+    str     x3,       [x2, #96]
+
+    msr     sp_el0, x1
+    msr     elr_el1, x0
+    mov     x4, #0x3c0              // EL0t mode with DAIF masked
+    msr     spsr_el1, x4
+    eret
+
+.balign 4
+.global return_to_kernel
+return_to_kernel:
+    // x0 = exit_code (restored from TrapFrame by sync_handler)
+    adrp    x2, kernel_ctx
+    add     x2, x2, :lo12:kernel_ctx
+
+    ldp     x19, x20, [x2, #0]
+    ldp     x21, x22, [x2, #16]
+    ldp     x23, x24, [x2, #32]
+    ldp     x25, x26, [x2, #48]
+    ldp     x27, x28, [x2, #64]
+    ldp     x29, x30, [x2, #80]
+    ldr     x1,       [x2, #96]
+    mov     sp, x1
+    ret                             // Return exit_code (x0) back to kmain!
+
+/* --- EL0 User Mode Target Routine --- */
+.section .text
+.balign 4
+.global user_space_code
+user_space_code:
+    // 1. sys_write(fd=1, buf=inline_msg, count=66)
+    mov     x8, #64                     // SYS_WRITE
+    mov     x0, #1                     // stdout
+    adr     x1, inline_msg              // PC-relative inline address calculation
+    mov     x2, #66                     // String length including \r\n
+    svc     #0
+
+    // 2. sys_exit(code=0)
+    mov     x8, #93                     // SYS_EXIT
+    mov     x0, #0                     // exit code 0
+    svc     #0
+
+user_spin:
     wfe
-    b unhandled_trap
+    b       user_spin
+
+.balign 4
+inline_msg:
+    .ascii "[EL0 USER SPACE] Successfully executed code inside EL0 User Mode!\r\n"
+    .balign 4
 
 .section .bss
 .balign 16
 boot_stack:
     .space 16384
 boot_stack_top:
+
+.balign 16
+kernel_ctx:
+    .space 128
