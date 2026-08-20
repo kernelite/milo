@@ -6,7 +6,7 @@ QEMU          := qemu-system-aarch64
 LINKER_SCRIPT := linker.ld
 BOOT_SRC      := boot.s
 BOOT_OBJ      := boot.o
-RUST_LIB      := target/$(TARGET)/release/libkernel.a
+RUST_LIB      := target/$(TARGET)/release/libkernel_core.a
 ELF           := kernel.elf
 
 .PHONY: all run clean
@@ -16,8 +16,8 @@ all: $(ELF)
 $(BOOT_OBJ): $(BOOT_SRC)
 	$(AS) $(BOOT_SRC) -o $(BOOT_OBJ)
 
-$(RUST_LIB): src/lib.rs Cargo.toml
-	cargo build --target $(TARGET) --release
+$(RUST_LIB): $(shell find crates -type f) Cargo.toml
+	cargo build --package kernel-core --target $(TARGET) --release
 
 $(ELF): $(BOOT_OBJ) $(RUST_LIB) $(LINKER_SCRIPT)
 	$(LD) --no-warn-rwx-segments -T $(LINKER_SCRIPT) $(BOOT_OBJ) $(RUST_LIB) -o $@
