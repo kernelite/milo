@@ -25,6 +25,12 @@ $(ELF): $(BOOT_OBJ) $(RUST_LIB) $(LINKER_SCRIPT)
 run: $(ELF)
 	$(QEMU) -M virt -cpu cortex-a53 -display none -serial stdio -kernel $(ELF)
 
+debug:
+	aarch64-linux-gnu-as boot.s -o boot.o
+	cargo build --package kernel-core --target aarch64-unknown-none --release
+	aarch64-linux-gnu-ld --no-warn-rwx-segments -T linker.ld boot.o target/aarch64-unknown-none/release/libkernel_core.a -o kernel.elf
+	qemu-system-aarch64 -M virt -cpu cortex-a53 -display none -serial stdio -kernel kernel.elf -gdb tcp::12345 -S
+
 clean:
 	cargo clean
 	rm -f $(BOOT_OBJ) $(ELF)
