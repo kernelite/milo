@@ -123,7 +123,6 @@ pub extern "C" fn kmain() -> ! {
                         let kernel_stack_top = frame.0 + 4096;
                         let user_code_va = (user_space_code as *const () as usize) + 0x4000_0000;
                         let user_stack_va = kernel_stack_top + 0x4000_0000;
-
                         let exit_code = unsafe { enter_user_mode(user_code_va, user_stack_va) };
 
                         print("User process returned control to shell with exit code: ");

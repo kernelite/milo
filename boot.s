@@ -1,218 +1,111 @@
+// Map entry code directly to .text.boot in linker.ld
 .section .text.boot
 .global _start
 
 _start:
-    // Park secondary CPU cores
-    mrs     x0, mpidr_el1
-    and     x0, x0, #0xFF
-    cbnz    x0, halt
-
-    // Check CurrentEL
     mrs     x0, CurrentEL
     lsr     x0, x0, #2
-    and     x0, x0, #3
-
     cmp     x0, #3
-    b.eq    el3_to_el1
-
+    b.eq    .Lsetup_el3
     cmp     x0, #2
-    b.eq    el2_to_el1
+    b.eq    .Lsetup_el2
+    b       .Lsetup_el1
 
-    b       el1_entry
-
-el3_to_el1:
-    mov     x0, #(1 << 10) | (1 << 0)
+.Lsetup_el3:
+    mov     x0, #0x531             // SCR_EL3: RW=1 (64-bit EL2), NS=1
     msr     scr_el3, x0
-    mov     x0, #0x3c5
+    mov     x0, #0x3c9             // SPSR_EL3: EL2h (0x9) DAIF masked
     msr     spsr_el3, x0
-    adr     x0, el1_entry
+    ldr     x0, =.Lsetup_el2
     msr     elr_el3, x0
-    eret
-
-el2_to_el1:
-    mov     x0, #(1 << 31)
-    msr     hcr_el2, x0
-    mov     x0, #0x3c5
-    msr     spsr_el2, x0
-    adr     x0, el1_entry
-    msr     elr_el2, x0
-    eret
-
-el1_entry:
-    // Enable SIMD/FP at EL1
-    mrs     x0, cpacr_el1
-    orr     x0, x0, #(3 << 20)
-    msr     cpacr_el1, x0
     isb
+    eret
 
-    // Load 2KB-aligned vector table into VBAR_EL1
-    adrp    x0, vector_table
-    add     x0, x0, :lo12:vector_table
+.Lsetup_el2:
+    msr     cptr_el2, xzr          // Disable EL2 coprocessor traps (FP/SIMD)
+    mov     x0, #(1 << 31)         // HCR_EL2: RW=1 (64-bit EL1)
+    msr     hcr_el2, x0
+    mov     x0, #0x3c5             // SPSR_EL2: EL1h (0x5) DAIF masked
+    msr     spsr_el2, x0
+    ldr     x0, =.Lsetup_el1
+    msr     elr_el2, x0
+    isb
+    eret
+
+.Lsetup_el1:
+    ldr     x0, =_boot_stack_top
+    mov     sp, x0
+
+    // Enable SIMD/FP Coprocessor in EL1
+    mov     x0, #(3 << 20)
+    msr     cpacr_el1, x0
+
+    // Set Vector Base Address (Must match .text.vectors section)
+    ldr     x0, =el1_vector_table
     msr     vbar_el1, x0
     isb
 
-    // Setup boot stack
-    adrp    x0, boot_stack_top
-    add     x0, x0, :lo12:boot_stack_top
-    mov     sp, x0
+    b       kmain
 
-    // Zero BSS
-    adrp    x1, __bss_start
-    add     x1, x1, :lo12:__bss_start
-    adrp    x2, __bss_end
-    add     x2, x2, :lo12:__bss_end
-bss_zero_loop:
-    cmp     x1, x2
-    b.ge    bss_zero_done
-    str     xzr, [x1], #8
-    b       bss_zero_loop
-
-bss_zero_done:
-    bl      kmain
-
-halt:
-    wfe
-    b       halt
-
-/* --- 2KB Aligned Vector Table --- */
-.section .text.vectors, "ax"
+// Map vector table directly to .text.vectors in linker.ld
+.section .text.vectors
 .balign 2048
-.global vector_table
-vector_table:
+.global el1_vector_table
+el1_vector_table:
     // Current EL with SP0
-    b sync_handler;    .balign 128
-    b unhandled_irq;   .balign 128
-    b unhandled_trap;  .balign 128
-    b unhandled_trap;  .balign 128
+    .align 7; b el1_trap_handler
+    .align 7; b el1_trap_handler
+    .align 7; b el1_trap_handler
+    .align 7; b el1_trap_handler
 
     // Current EL with SPx
-    b sync_handler;    .balign 128
-    b unhandled_irq;   .balign 128
-    b unhandled_trap;  .balign 128
-    b unhandled_trap;  .balign 128
+    .align 7; b el1_trap_handler
+    .align 7; b el1_trap_handler
+    .align 7; b el1_trap_handler
+    .align 7; b el1_trap_handler
 
-    // Lower EL using AArch64
-    b sync_handler;    .balign 128
-    b unhandled_irq;   .balign 128
-    b unhandled_trap;  .balign 128
-    b unhandled_trap;  .balign 128
+    // Lower EL using AArch64 (EL0 Traps)
+    .align 7; b el0_sync_handler
+    .align 7; b el0_async_handler  // IRQ
+    .align 7; b el0_async_handler  // FIQ
+    .align 7; b el0_async_handler  // SError
 
     // Lower EL using AArch32
-    b unhandled_trap;  .balign 128
-    b unhandled_trap;  .balign 128
-    b unhandled_trap;  .balign 128
-    b unhandled_trap;  .balign 128
+    .align 7; b el0_async_handler
+    .align 7; b el0_async_handler
+    .align 7; b el0_async_handler
+    .align 7; b el0_async_handler
 
-unhandled_irq:
+.section .text
+el0_sync_handler:
+    mrs     x9, esr_el1
+    lsr     x10, x9, #26
+    cmp     x10, #0x15             // SVC in AArch64
+    b.ne    .Luser_abort
+
+    cmp     x8, #93                // SYS_EXIT
+    b.eq    return_to_kernel
+
+    mrs     x9, elr_el1
+    add     x9, x9, #4
+    msr     elr_el1, x9
     eret
 
-unhandled_trap:
-    wfe
-    b unhandled_trap
+.Luser_abort:
+    mov     x0, #-1
+    b       return_to_kernel
 
-.text
-.balign 4
-.global sync_handler
-sync_handler:
-    sub sp, sp, #800
+el0_async_handler:
+    mov     x0, #-3
+    b       return_to_kernel
 
-    // 1. Save General Purpose Registers (x0 - x29)
-    stp x0, x1,   [sp, #0]
-    stp x2, x3,   [sp, #16]
-    stp x4, x5,   [sp, #32]
-    stp x6, x7,   [sp, #48]
-    stp x8, x9,   [sp, #64]
-    stp x10, x11, [sp, #80]
-    stp x12, x13, [sp, #96]
-    stp x14, x15, [sp, #112]
-    stp x16, x17, [sp, #128]
-    stp x18, x19, [sp, #144]
-    stp x20, x21, [sp, #160]
-    stp x22, x23, [sp, #176]
-    stp x24, x25, [sp, #192]
-    stp x26, x27, [sp, #208]
-    stp x28, x29, [sp, #224]
+el1_trap_handler:
+    mov     x0, #-2
+    b       return_to_kernel
 
-    // 2. Read System Fault Registers
-    mrs x0, elr_el1
-    mrs x1, spsr_el1
-    mrs x2, esr_el1
-    mrs x3, far_el1
-
-    stp x30, x0,  [sp, #240]
-    stp x1, x2,   [sp, #256]
-    str x3,       [sp, #272]
-
-    // 3. Save SIMD/NEON Vector Registers (q0 - q31)
-    stp q0,  q1,  [sp, #288]
-    stp q2,  q3,  [sp, #320]
-    stp q4,  q5,  [sp, #352]
-    stp q6,  q7,  [sp, #384]
-    stp q8,  q9,  [sp, #416]
-    stp q10, q11, [sp, #448]
-    stp q12, q13, [sp, #480]
-    stp q14, q15, [sp, #512]
-    stp q16, q17, [sp, #544]
-    stp q18, q19, [sp, #576]
-    stp q20, q21, [sp, #608]
-    stp q22, q23, [sp, #640]
-    stp q24, q25, [sp, #672]
-    stp q26, q27, [sp, #704]
-    stp q28, q29, [sp, #736]
-    stp q30, q31, [sp, #768]
-
-    // Pass TrapFrame pointer to Rust
-    mov x0, sp
-    bl rust_exception_handler
-
-    // 4. Restore SIMD/NEON Vector Registers
-    ldp q0,  q1,  [sp, #288]
-    ldp q2,  q3,  [sp, #320]
-    ldp q4,  q5,  [sp, #352]
-    ldp q6,  q7,  [sp, #384]
-    ldp q8,  q9,  [sp, #416]
-    ldp q10, q11, [sp, #448]
-    ldp q12, q13, [sp, #480]
-    ldp q14, q15, [sp, #512]
-    ldp q16, q17, [sp, #544]
-    ldp q18, q19, [sp, #576]
-    ldp q20, q21, [sp, #608]
-    ldp q22, q23, [sp, #640]
-    ldp q24, q25, [sp, #672]
-    ldp q26, q27, [sp, #704]
-    ldp q28, q29, [sp, #736]
-    ldp q30, q31, [sp, #768]
-
-    // 5. Restore System & General Purpose Registers
-    ldp x30, x0,  [sp, #240]
-    ldp x1, x2,   [sp, #256]
-    msr elr_el1, x0
-    msr spsr_el1, x1
-
-    ldp x0, x1,   [sp, #0]
-    ldp x2, x3,   [sp, #16]
-    ldp x4, x5,   [sp, #32]
-    ldp x6, x7,   [sp, #48]
-    ldp x8, x9,   [sp, #64]
-    ldp x10, x11, [sp, #80]
-    ldp x12, x13, [sp, #96]
-    ldp x14, x15, [sp, #112]
-    ldp x16, x17, [sp, #128]
-    ldp x18, x19, [sp, #144]
-    ldp x20, x21, [sp, #160]
-    ldp x22, x23, [sp, #176]
-    ldp x24, x25, [sp, #192]
-    ldp x26, x27, [sp, #208]
-    ldp x28, x29, [sp, #224]
-
-    add sp, sp, #800
-    eret
-
-/* --- Context Switch Routines --- */
 .balign 4
 .global enter_user_mode
 enter_user_mode:
-    // x0 = entry_point, x1 = user_stack_top
     adrp    x2, kernel_ctx
     add     x2, x2, :lo12:kernel_ctx
 
@@ -227,14 +120,20 @@ enter_user_mode:
 
     msr     sp_el0, x1
     msr     elr_el1, x0
-    mov     x4, #0x3c0              // EL0t mode with DAIF masked
+    mov     x4, #0x3c0             // Mask interrupts for initial EL0 entry
     msr     spsr_el1, x4
+
+    mov     x0, #0
+    mov     x1, #0
+    mov     x2, #0
+    mov     x3, #0
+
+    isb
     eret
 
 .balign 4
 .global return_to_kernel
 return_to_kernel:
-    // x0 = exit_code (restored from TrapFrame by sync_handler)
     adrp    x2, kernel_ctx
     add     x2, x2, :lo12:kernel_ctx
 
@@ -246,28 +145,21 @@ return_to_kernel:
     ldp     x29, x30, [x2, #80]
     ldr     x1,       [x2, #96]
     mov     sp, x1
-    ret                             // Return exit_code (x0) back to kmain!
+    ret
 
-/* --- EL0 User Mode Target Routine --- */
 .section .text
 .balign 4
 .global user_space_code
 user_space_code:
-    // 1. sys_write(fd=1, buf=inline_msg, count=66)
-    mov     x8, #64                     // SYS_WRITE
-    mov     x0, #1                     // stdout
-    adr     x1, inline_msg              // PC-relative inline address calculation
-    mov     x2, #66                     // String length including \r\n
+    mov     x8, #64
+    mov     x0, #1
+    adr     x1, inline_msg
+    mov     x2, #66
     svc     #0
 
-    // 2. sys_exit(code=0)
-    mov     x8, #93                     // SYS_EXIT
-    mov     x0, #0                     // exit code 0
+    mov     x8, #93
+    mov     x0, #0
     svc     #0
-
-user_spin:
-    wfe
-    b       user_spin
 
 .balign 4
 inline_msg:
@@ -276,10 +168,13 @@ inline_msg:
 
 .section .bss
 .balign 16
-boot_stack:
-    .space 16384
-boot_stack_top:
+.global kernel_ctx
+kernel_ctx:
+    .space 104
 
 .balign 16
-kernel_ctx:
-    .space 128
+.global _boot_stack_bottom
+.global _boot_stack_top
+_boot_stack_bottom:
+    .space 16384
+_boot_stack_top:
