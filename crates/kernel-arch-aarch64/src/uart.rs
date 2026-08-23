@@ -37,6 +37,16 @@ pub fn print(s: &str) {
     }
 }
 
+pub unsafe fn print_raw(ptr: *const u8, len: usize) {
+    for i in 0..len {
+        let byte = *ptr.add(i);
+        if byte == b'\n' {
+            uart_putc(b'\r');
+        }
+        uart_putc(byte);
+    }
+}
+
 pub fn print_hex(val: u64) {
     print("0x");
     for i in (0..16).rev() {

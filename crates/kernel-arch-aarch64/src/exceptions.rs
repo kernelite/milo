@@ -1,36 +1,47 @@
-use crate::uart::{print, print_hex};
+use crate::uart::print_raw;
 
-#[repr(C)]
-pub struct TrapFrame {
-    pub regs: [u64; 30], // x0 - x29
-    pub lr: u64,         // x30
-    pub elr: u64,        // Fault PC
-    pub spsr: u64,       // Saved PSTATE
-    pub esr: u64,        // Exception Syndrome
-    pub far: u64,        // Fault Address
+extern "C" {
+    pub fn enter_user_mode(entry_point: usize, user_stack_top: usize) -> u64;
+    fn return_to_kernel(exit_code: u64) -> !;
 }
+
+#[repr(C, align(16))]
+pub struct TrapFrame {
+    pub regs: [u64; 30],  // sp + 0x000 .. 0x0ef
+    pub lr: u64,          // sp + 0x0f0
+    pub elr: u64,         // sp + 0x0f8
+    pub spsr: u64,        // sp + 0x100
+    pub esr: u64,         // sp + 0x108
+    pub far: u64,         // sp + 0x110
+    pub qregs: [u128; 32],// sp + 0x120 .. 0x31f
+}
+
+pub const SYS_WRITE: u64 = 64;
+pub const SYS_EXIT:  u64 = 93;
 
 #[no_mangle]
 pub extern "C" fn rust_exception_handler(tf: &mut TrapFrame) {
-    let esr_ec = (tf.esr >> 26) & 0x3F;
+    let syscall_num = tf.regs[8]; // x8
 
-    if esr_ec == 0x15 {
-        print("\n[TRAP] SVC #0 Captured by VBAR_EL1!\n");
-        tf.elr += 4; // Advance past 'svc' instruction
-        return;
-    }
+    match syscall_num {
+        64 => { // SYS_WRITE
+            let buf = tf.regs[1] as *const u8;
+            let len = tf.regs[2] as usize;
 
-    print("\n[UNHANDLED FAULT] EC=");
-    print_hex(esr_ec);
-    print(" | ELR=");
-    print_hex(tf.elr);
-    print(" | FAR=");
-    print_hex(tf.far);
-    print("\nSystem Halted.\n");
+            unsafe {
+                print_raw(buf, len);
+            }
 
-    loop {
-        unsafe {
-            core::arch::asm!("wfe");
+            tf.regs[0] = len as u64; // Return bytes written
+        }
+        93 => { // SYS_EXIT
+            let exit_code = tf.regs[0]; // x0
+            // Jump directly back to kernel_ctx saved in enter_user_mode
+            unsafe {
+                return_to_kernel(exit_code);
+            }
+        }
+        _ => {
         }
     }
 }

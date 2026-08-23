@@ -27,9 +27,17 @@ SECTIONS
     }
 
     .bss : ALIGN(16) {
+        . = ALIGN(8);
         __bss_start = .;
         *(.bss .bss.*)
         *(COMMON)
+        . = ALIGN(8);
         __bss_end = .;
+    }
+
+    /DISCARD/ : {
+        *(.comment)
+        *(.gnu*)
+        *(.note*)
     }
 }
