@@ -31,12 +31,10 @@ run: $(ELF)
 
 # Boot at EL2 to test el2_to_el1 lowering
 run-el2: $(ELF)
-	$(QEMU) -M virt,virtualization=on -cpu cortex-a53 -display none -serial stdio -kernel $(ELF)
+	$(QEMU) -machine virt -cpu cortex-a53 -display none -serial stdio -kernel $(ELF)
 
 debug: $(ELF)
-	$(QEMU) -M virt,virtualization=on -cpu cortex-a53 -display none -serial stdio \
-		-kernel $(ELF) -gdb tcp::12345 -S \
-		-d in_asm,int -D qemu.log
+	$(QEMU) -machine virt -cpu cortex-a53 -display none -serial stdio -kernel $(ELF) -gdb tcp::12345 -S
 
 clean:
 	cargo clean

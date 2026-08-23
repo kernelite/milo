@@ -134,6 +134,7 @@ enter_user_mode:
 .balign 4
 .global return_to_kernel
 return_to_kernel:
+    ldr     x0, [sp]
     adrp    x2, kernel_ctx
     add     x2, x2, :lo12:kernel_ctx
 

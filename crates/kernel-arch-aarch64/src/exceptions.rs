@@ -33,19 +33,15 @@ pub extern "C" fn rust_exception_handler(tf: &mut TrapFrame) {
             }
 
             tf.regs[0] = len as u64; // Return bytes written
-            tf.elr += 4;         // Skip 'svc #0' instruction
         }
         93 => { // SYS_EXIT
             let exit_code = tf.regs[0]; // x0
-
-            tf.elr += 4;         // Skip 'svc #0' instruction
             // Jump directly back to kernel_ctx saved in enter_user_mode
             unsafe {
                 return_to_kernel(exit_code);
             }
         }
         _ => {
-            tf.elr += 4;
         }
     }
 }
