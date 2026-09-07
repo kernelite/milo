@@ -47,6 +47,8 @@ _start:
 
     b       kmain
 
+.ltorg  // Explicitly emit literal pool here so ldr x0, =... resolves correctly
+
 // Map vector table directly to .text.vectors in linker.ld
 .section .text.vectors
 .balign 2048

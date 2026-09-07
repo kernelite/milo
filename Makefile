@@ -1,41 +1,70 @@
-TARGET        := aarch64-unknown-none
-AS            := aarch64-linux-gnu-as
-LD            := aarch64-linux-gnu-ld
-QEMU          := qemu-system-aarch64
+ARCH ?= aarch64-linux-gnu
+TARGET := kernel.bin
 
-LINKER_SCRIPT := linker.ld
-BOOT_SRC      := boot.s
-BOOT_OBJ      := boot.o
-RUST_LIB      := target/$(TARGET)/release/libkernel_core.a
-ELF           := kernel.elf
+# Toolchain targeting bare-metal
+PREFIX  := $(ARCH)-
+CXX     := $(PREFIX)g++
+AS      := $(PREFIX)as
+LD      := $(PREFIX)ld
 
-# Safe file discovery for Rust sources
-RUST_SRCS     := $(shell find . -type f -name '*.rs' 2>/dev/null) Cargo.toml
+BUILD_DIR := build
 
-.PHONY: all run run-el2 debug clean
+# Freestanding C++ flags
+CXXFLAGS := -std=c++20 -ffreestanding -O2 -Wall -Wextra \
+            -fno-exceptions -fno-rtti -fno-threadsafe-statics -MMD -MP -g
+ASFLAGS  := -g
+LDFLAGS  := -nostdlib -T arch/$(ARCH)/linker.ld
 
-all: $(ELF)
+# Source lists appended by arch.mk and kernel.mk
+SRCS_CXX :=
+SRCS_ASM :=
 
-$(BOOT_OBJ): $(BOOT_SRC)
-	$(AS) -g $(BOOT_SRC) -o $(BOOT_OBJ)
+# Include architecture and core modules
+include arch/$(ARCH)/arch.mk
+include kernel/kernel.mk
 
-$(RUST_LIB): $(RUST_SRCS)
-	cargo build --package kernel-core --target $(TARGET) --release
+# Map sources to build output objects
+OBJS := $(patsubst %.cpp, $(BUILD_DIR)/%.o, $(SRCS_CXX)) \
+        $(patsubst %.s, $(BUILD_DIR)/%.o, $(SRCS_ASM))
+DEPS := $(OBJS:.o=.d)
 
-$(ELF): $(BOOT_OBJ) $(RUST_LIB) $(LINKER_SCRIPT)
-	$(LD) --no-warn-rwx-segments -T $(LINKER_SCRIPT) $(BOOT_OBJ) $(RUST_LIB) -o $@
+.PHONY: all clean
 
-# Standard run (starts at EL1)
-run: $(ELF)
-	$(QEMU) -M virt -cpu cortex-a53 -display none -serial stdio -kernel $(ELF)
+all: $(BUILD_DIR)/$(TARGET)
 
-# Boot at EL2 to test el2_to_el1 lowering
-run-el2: $(ELF)
-	$(QEMU) -machine virt -cpu cortex-a53 -display none -serial stdio -kernel $(ELF)
+$(BUILD_DIR)/$(TARGET): $(OBJS)
+	@mkdir -p $(dir $@)
+	$(LD) $(LDFLAGS) -o $@ $^
 
-debug: $(ELF)
-	$(QEMU) -machine virt -cpu cortex-a53 -display none -serial stdio -kernel $(ELF) -gdb tcp::12345 -S
+$(BUILD_DIR)/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Ikernel/include -Iarch/$(ARCH)/include -c $< -o $@
+
+$(BUILD_DIR)/%.o: %.s
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS) $< -o $@
+
+-include $(DEPS)
 
 clean:
-	cargo clean
-	rm -f $(BOOT_OBJ) $(ELF)
+	rm -rf $(BUILD_DIR)
+
+# QEMU Executable & Flags
+QEMU      ?= qemu-system-aarch64
+QEMUFLAGS := -M virt -cpu cortex-a53 -nographic -kernel $(BUILD_DIR)/$(TARGET)
+GDB       ?= gdb-multiarch
+
+.PHONY: run debug gdb
+
+# Run kernel directly inside QEMU
+run: $(BUILD_DIR)/$(TARGET)
+	$(QEMU) $(QEMUFLAGS)
+
+# Start QEMU halted on startup (-S) listening for GDB on port 1234 (-s)
+debug: $(BUILD_DIR)/$(TARGET)
+	@echo "Starting QEMU in debug mode. Connect with: make gdb"
+	$(QEMU) $(QEMUFLAGS) -s -S
+
+# Launch GDB pre-configured and attached to the running QEMU instance
+gdb: $(BUILD_DIR)/$(TARGET)
+	$(GDB) $(BUILD_DIR)/$(TARGET) -ex "target remote localhost:1234" -ex "layout split"
