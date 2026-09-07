@@ -38,7 +38,7 @@ $(BUILD_DIR)/$(TARGET): $(OBJS)
 
 $(BUILD_DIR)/%.o: %.cpp
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -Ikernel/include -Iarch/$(ARCH)/include -c $< -o $@
+	$(CXX) $(CXXFLAGS) -Ikernel -Iarch/$(ARCH) -c $< -o $@
 
 $(BUILD_DIR)/%.o: %.s
 	@mkdir -p $(dir $@)
