@@ -6,18 +6,12 @@
   "customizations": {
     "vscode": {
       "extensions": [
-        "rust-lang.rust-analyzer",
         "vadimcn.vscode-lldb",
         "tamasfe.even-better-toml",
         "ms-vscode.cpptools",
         "webfreak.debug"
-      ],
-      "settings": {
-        "rust-analyzer.cargo.target": "aarch64-unknown-none",
-        "rust-analyzer.check.allTargets": false
-      }
+      ]
     }
   },
-  "postCreateCommand": "rustup target add aarch64-unknown-none",
   "remoteUser": "vscode"
 }
