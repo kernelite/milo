@@ -10,7 +10,7 @@ LD      := $(PREFIX)ld
 BUILD_DIR := build
 
 # Freestanding C++ flags
-CXXFLAGS := -std=c++20 -ffreestanding -O2 -Wall -Wextra \
+CXXFLAGS := -std=c++20 -ffreestanding -O2 -Wall -Wextra -fno-use-cxa-atexit \
             -fno-exceptions -fno-rtti -fno-threadsafe-statics -MMD -MP -g
 ASFLAGS  := -g
 LDFLAGS  := -nostdlib -T arch/$(ARCH)/linker.ld

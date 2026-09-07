@@ -1,4 +1,6 @@
-// hal/platform.hpp
+#pragma once
+#include <cstdint>
+
 namespace HAL {
     void init_platform();
     void send_uart_char(char c);

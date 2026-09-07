@@ -1,11 +1,19 @@
-// kernel/main.cpp
 #include "hal/console.hpp"
+#include "hal/cpu.hpp"
+#include "shell/shell.hpp"
 
-extern "C" void kmain(void) {
-    // Microkernel initialization logic
-    HAL::console.write("Kernel booting...\n", 18);
+extern "C" void kmain() {
+    // 1. Initialize Early I/O Console via HAL Trait
+    HAL::console.init();
+    HAL::console.write("[KERNEL] Core HAL initialised successfully.\n", 44);
 
-    while (true) {
-        // Halt or idle loop
+    // 2. CPU Management via HAL Trait (No inline asm!)
+    HAL::cpu.disable_interrupts();
+    
+    if (!HAL::cpu.interrupts_enabled()) {
+        HAL::console.write("[KERNEL] Interrupts safely disabled.\n", 37);
     }
+
+    // 3. Kernel shell Loop
+    Kernel::Shell::run();
 }
