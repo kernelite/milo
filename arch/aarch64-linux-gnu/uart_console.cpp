@@ -1,4 +1,4 @@
-#include "../../kernel/hal/console.hpp"
+#include <hal/console.hpp>
 
 namespace {
     constexpr uintptr_t UART0_BASE = 0x09000000;

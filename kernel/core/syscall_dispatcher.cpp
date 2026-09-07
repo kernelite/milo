@@ -1,5 +1,5 @@
 // core/syscall_dispatcher.hpp
-#include "../arch/cpu_context.hpp"
+#include <cpu_context.hpp>
 
 enum class SyscallLinuxAArch64 : uint64_t {
     Write = 64,
