@@ -1,30 +1,70 @@
-TARGET        := aarch64-unknown-none
-AS            := aarch64-linux-gnu-as
-LD            := aarch64-linux-gnu-ld
-QEMU          := qemu-system-aarch64
+ARCH ?= aarch64-linux-gnu
+TARGET := kernel.bin
 
-LINKER_SCRIPT := linker.ld
-BOOT_SRC      := boot.s
-BOOT_OBJ      := boot.o
-RUST_LIB      := target/$(TARGET)/release/libkernel.a
-ELF           := kernel.elf
+# Toolchain targeting bare-metal
+PREFIX  := $(ARCH)-
+CXX     := $(PREFIX)g++
+AS      := $(PREFIX)as
+LD      := $(PREFIX)ld
 
-.PHONY: all run clean
+BUILD_DIR := build
 
-all: $(ELF)
+# Freestanding C++ flags
+CXXFLAGS := -std=c++20 -ffreestanding -O2 -Wall -Wextra -fno-use-cxa-atexit \
+            -fno-exceptions -fno-rtti -fno-threadsafe-statics -MMD -MP -g
+ASFLAGS  := -g
+LDFLAGS  := -nostdlib -T arch/$(ARCH)/linker.ld
 
-$(BOOT_OBJ): $(BOOT_SRC)
-	$(AS) $(BOOT_SRC) -o $(BOOT_OBJ)
+# Source lists appended by arch.mk and kernel.mk
+SRCS_CXX :=
+SRCS_ASM :=
 
-$(RUST_LIB): src/lib.rs Cargo.toml
-	cargo build --target $(TARGET) --release
+# Include architecture and core modules
+include arch/$(ARCH)/arch.mk
+include kernel/kernel.mk
 
-$(ELF): $(BOOT_OBJ) $(RUST_LIB) $(LINKER_SCRIPT)
-	$(LD) --no-warn-rwx-segments -T $(LINKER_SCRIPT) $(BOOT_OBJ) $(RUST_LIB) -o $@
+# Map sources to build output objects
+OBJS := $(patsubst %.cpp, $(BUILD_DIR)/%.o, $(SRCS_CXX)) \
+        $(patsubst %.s, $(BUILD_DIR)/%.o, $(SRCS_ASM))
+DEPS := $(OBJS:.o=.d)
 
-run: $(ELF)
-	$(QEMU) -M virt -cpu cortex-a53 -display none -serial stdio -kernel $(ELF)
+.PHONY: all clean
+
+all: $(BUILD_DIR)/$(TARGET)
+
+$(BUILD_DIR)/$(TARGET): $(OBJS)
+	@mkdir -p $(dir $@)
+	$(LD) $(LDFLAGS) -o $@ $^
+
+$(BUILD_DIR)/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Ikernel -Iarch/$(ARCH) -c $< -o $@
+
+$(BUILD_DIR)/%.o: %.s
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS) $< -o $@
+
+-include $(DEPS)
 
 clean:
-	cargo clean
-	rm -f $(BOOT_OBJ) $(ELF)
+	rm -rf $(BUILD_DIR)
+
+# QEMU Executable & Flags
+QEMU      ?= qemu-system-aarch64
+QEMUFLAGS := -M virt -cpu cortex-a53 -nographic -kernel $(BUILD_DIR)/$(TARGET)
+GDB       ?= gdb-multiarch
+
+.PHONY: run debug gdb
+
+# Run kernel directly inside QEMU
+run: $(BUILD_DIR)/$(TARGET)
+	$(QEMU) $(QEMUFLAGS)
+
+# Start QEMU halted on startup (-S) listening for GDB on port 1234 (-s)
+debug: $(BUILD_DIR)/$(TARGET)
+	@echo "Starting QEMU in debug mode. Connect with: make gdb"
+	$(QEMU) $(QEMUFLAGS) -s -S
+
+# Launch GDB pre-configured and attached to the running QEMU instance
+gdb: $(BUILD_DIR)/$(TARGET)
+	$(GDB) $(BUILD_DIR)/$(TARGET) -ex "target remote localhost:1234" -ex "layout split"

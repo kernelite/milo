@@ -22,8 +22,10 @@ A modular, bare-metal Arm64 microkernel written in Rust (`no_std`), designed for
 ├── .devcontainer/
 │   ├── Dockerfile           # Toolchain, QEMU, and GDB container definition
 │   └── devcontainer.json    # VS Code extension and workspace settings
-├── src/
-│   └── lib.rs               # Kernel entry point (kmain), UART driver, and shell
+├── crates/
+│   ├─── kernel-arch-aarch64 # Kernel UART driver, MMU, exceptions, and UART
+│   ├─── kernel-core         # Kernel entry point
+│   └─── kernel-hal          # Kernel HAL memory management
 ├── boot.s                   # Arm64 assembly bootstrap
 ├── linker.ld                # Memory layout linker script
 ├── Makefile                 # Automated build and run workflow

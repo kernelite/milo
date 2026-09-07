@@ -1,21 +1,28 @@
 {
   "name": "Arm64 Microkernel Dev Environment",
-  "build": {
+"build": {
     "dockerfile": "Dockerfile"
   },
   "customizations": {
     "vscode": {
       "extensions": [
-        "rust-lang.rust-analyzer",
-        "vadimcn.vscode-lldb",
-        "tamasfe.even-better-toml"
+        "ms-vscode.cpptools",
+        "ms-vscode.cpptools-extension-pack"
       ],
       "settings": {
-        "rust-analyzer.cargo.target": "aarch64-unknown-none",
-        "rust-analyzer.check.allTargets": false
+        "C_Cpp.default.cppStandard": "c++20",
+        "C_Cpp.default.cStandard": "c17",
+        "C_Cpp.default.compilerPath": "/usr/bin/aarch64-linux-gnu-g++",
+        "C_Cpp.default.intelliSenseMode": "linux-gcc-arm64",
+        "C_Cpp.default.includePath": [
+          "${workspaceFolder}",
+          "${workspaceFolder}/kernel",
+          "${workspaceFolder}/arch/aarch64-linux-gnu"
+        ]
       }
     }
   },
-  "postCreateCommand": "rustup target add aarch64-unknown-none",
   "remoteUser": "vscode"
 }
+
+
