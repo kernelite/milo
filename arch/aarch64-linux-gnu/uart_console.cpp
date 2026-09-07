@@ -1,31 +1,38 @@
 #include "../../kernel/hal/console.hpp"
 
 namespace {
-    class UARTConsole : public HAL::Console {
-    private:
-        // QEMU ARM64 'virt' board UART0 base address
-        volatile uint32_t* const UART0_DR = reinterpret_cast<volatile uint32_t*>(0x09000000);
+    constexpr uintptr_t UART0_BASE = 0x09000000;
 
+    class UARTConsole : public HAL::Console {
     public:
-        void init() override {
-            // Hardware baud rate / clock setup
-        }
+        // Mark constructor as constexpr / default to allow static initialization
+        constexpr UARTConsole() = default;
+
+        void init() override {}
 
         void putc(char c) override {
-            if (c == '\n') putc('\r');
-            *UART0_DR = static_cast<uint32_t>(c);
+            volatile uint32_t* const DR = reinterpret_cast<volatile uint32_t*>(UART0_BASE + 0x00);
+            volatile uint32_t* const FR = reinterpret_cast<volatile uint32_t*>(UART0_BASE + 0x18);
+
+            // Wait until Transmit FIFO is not full (bit 5)
+            while (*FR & (1 << 5)) {}
+            *DR = static_cast<uint32_t>(c);
         }
 
         uint8_t getc() override {
-            return static_cast<uint8_t>(*UART0_DR & 0xFF);
+            volatile uint32_t* const DR = reinterpret_cast<volatile uint32_t*>(UART0_BASE + 0x00);
+            volatile uint32_t* const FR = reinterpret_cast<volatile uint32_t*>(UART0_BASE + 0x18);
+
+            // Wait until Receive FIFO is not empty (bit 4)
+            while (*FR & (1 << 4)) {}
+            return static_cast<uint8_t>(*DR & 0xFF);
         }
     };
 
-    // Instantiate driver statically to avoid dynamic memory allocation
-    UARTConsole g_uart_driver;
+    // Use constinit (C++20) to guarantee zero runtime constructor overhead
+    constinit UARTConsole global_uart_driver{};
 }
 
 namespace HAL {
-    // Bind the global HAL reference to the concrete hardware instance
-    Console& console = g_uart_driver;
+    Console& console = global_uart_driver;
 }

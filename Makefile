@@ -11,8 +11,8 @@ BUILD_DIR := build
 
 # Freestanding C++ flags
 CXXFLAGS := -std=c++20 -ffreestanding -O2 -Wall -Wextra \
-            -fno-exceptions -fno-rtti -fno-threadsafe-statics -MMD -MP
-ASFLAGS  :=
+            -fno-exceptions -fno-rtti -fno-threadsafe-statics -MMD -MP -g
+ASFLAGS  := -g
 LDFLAGS  := -nostdlib -T arch/$(ARCH)/linker.ld
 
 # Source lists appended by arch.mk and kernel.mk
