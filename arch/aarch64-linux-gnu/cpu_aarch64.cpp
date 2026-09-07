@@ -19,6 +19,12 @@ public:
         return (daif & (1 << 7)) == 0;
     }
 
+    uint8_t current_el() const override {
+        uint64_t el;
+        asm volatile("mrs %0, CurrentEL" : "=r"(el));
+        return static_cast<uint8_t>((el >> 2) & 0x3);
+    }
+
     void halt() override {
         asm volatile("wfi");
     }

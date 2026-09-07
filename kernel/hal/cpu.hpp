@@ -21,6 +21,9 @@ public:
     virtual void disable_interrupts() = 0;
     virtual bool interrupts_enabled() const = 0;
 
+    // Target agnostic exception level query
+    virtual uint8_t current_el() const = 0;
+
     // Low-Power State
     virtual void halt() = 0; // Wait for Interrupt (WFI)
 

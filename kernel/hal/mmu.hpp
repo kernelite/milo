@@ -10,21 +10,28 @@ enum class PageFlags : uint32_t {
     Write      = 1 << 1,
     Execute    = 1 << 2,
     User       = 1 << 3,
-    Device     = 1 << 4, // Non-cacheable MMIO
-    Cacheable  = 1 << 5  // Normal Cacheable RAM
+    Device     = 1 << 4,
+    Cacheable  = 1 << 5
 };
 
-inline PageFlags operator|(PageFlags a, PageFlags b) {
-    return static_cast<PageFlags>(static_cast<uint32_t>(a) | static_cast<uint32_t>(b));
-}
+struct MmuStatus {
+    bool mmu_enabled;
+    bool dcache_enabled;
+    bool icache_enabled;
+    uint64_t raw_control_reg;
+};
 
-class PageTable {
+class MemoryControl {
 public:
-    virtual ~PageTable() = default;
+    constexpr MemoryControl() = default;
+    virtual ~MemoryControl() = default;
 
     virtual bool map(uintptr_t virt_addr, uintptr_t phys_addr, PageFlags flags) = 0;
     virtual bool unmap(uintptr_t virt_addr) = 0;
     virtual void activate() = 0;
+    virtual MmuStatus status() const = 0; // Architecture-agnostic MMU query
 };
+
+extern MemoryControl& mmu;
 
 }

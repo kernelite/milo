@@ -1,6 +1,7 @@
 #include "shell.hpp"
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
+#include "hal/mmu.hpp"
 #include <cstddef>
 #include <cstdint>
 
@@ -64,21 +65,17 @@ namespace {
     }
 
     void test_mmu() {
-        print("[TEST] Inspecting AArch64 MMU Status (SCTLR_EL1)...\r\n");
-        uint64_t sctlr;
-        asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+        print("[TEST] Inspecting System MMU & Cache Status via HAL...\r\n");
 
-        print("  SCTLR_EL1 Value: ");
-        print_hex64(sctlr);
+        HAL::MmuStatus *status = new HAL::MmuStatus();
+
+        print("  Control Register Value: ");
+        print_hex64(status->raw_control_reg);
         print("\r\n");
 
-        bool mmu_enabled    = (sctlr & (1ULL << 0)) != 0;
-        bool dcache_enabled = (sctlr & (1ULL << 2)) != 0;
-        bool icache_enabled = (sctlr & (1ULL << 12)) != 0;
-
-        print(mmu_enabled    ? "  [PASS] MMU (M bit): ENABLED\r\n"             : "  [INFO] MMU (M bit): DISABLED\r\n");
-        print(dcache_enabled ? "  [PASS] Data Cache (C bit): ENABLED\r\n"      : "  [INFO] Data Cache (C bit): DISABLED\r\n");
-        print(icache_enabled ? "  [PASS] Instruction Cache (I bit): ENABLED\r\n": "  [INFO] Instruction Cache (I bit): DISABLED\r\n");
+        print(status->mmu_enabled    ? "  [PASS] MMU: ENABLED\r\n"             : "  [INFO] MMU: DISABLED\r\n");
+        print(status->dcache_enabled ? "  [PASS] Data Cache: ENABLED\r\n"      : "  [INFO] Data Cache: DISABLED\r\n");
+        print(status->icache_enabled ? "  [PASS] Instruction Cache: ENABLED\r\n": "  [INFO] Instruction Cache: DISABLED\r\n");
     }
 
     void test_el0() {
@@ -129,9 +126,7 @@ namespace {
             print("  test all    - Run entire verification test suite\r\n");
             print("  halt        - Put CPU into low-power WFI state\r\n");
         } else if (streq(cmd, "info")) {
-            uint64_t el;
-            asm volatile("mrs %0, CurrentEL" : "=r"(el));
-            el = (el >> 2) & 0x3;
+            uint8_t el = HAL::cpu.current_el(); // Clean HAL Call!
 
             print("Architecture : AArch64 (QEMU virt, Cortex-A53)\r\n");
             print("Current EL   : EL");
