@@ -47,7 +47,7 @@ for target in "$@"; do
         # Find all regular files in directory tree
         while IFS= read -r -d '' file; do
             append_file "$file"
-        done #<(find "$target" -type f -print0)
+        done < <(find "$target" -type f -print0)
     else
         echo "Warning: '$target' is neither a valid file nor directory. Skipping." >&2
     fi
