@@ -1,17 +1,28 @@
 {
   "name": "Arm64 Microkernel Dev Environment",
-  "build": {
+"build": {
     "dockerfile": "Dockerfile"
   },
   "customizations": {
     "vscode": {
       "extensions": [
-        "vadimcn.vscode-lldb",
-        "tamasfe.even-better-toml",
         "ms-vscode.cpptools",
-        "webfreak.debug"
-      ]
+        "ms-vscode.cpptools-extension-pack"
+      ],
+      "settings": {
+        "C_Cpp.default.cppStandard": "c++20",
+        "C_Cpp.default.cStandard": "c17",
+        "C_Cpp.default.compilerPath": "/usr/bin/aarch64-linux-gnu-g++",
+        "C_Cpp.default.intelliSenseMode": "linux-gcc-arm64",
+        "C_Cpp.default.includePath": [
+          "${workspaceFolder}",
+          "${workspaceFolder}/kernel",
+          "${workspaceFolder}/arch/aarch64-linux-gnu"
+        ]
+      }
     }
   },
   "remoteUser": "vscode"
 }
+
+
