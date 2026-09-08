@@ -9,6 +9,7 @@
 extern "C" {
     void user_space_code();
     int64_t enter_user_mode(uintptr_t entry_point, uintptr_t user_sp);
+    void trigger_svc_test();
 }
 
 namespace {
@@ -111,6 +112,17 @@ namespace {
         print("\r\n  [PASS] HAL vtable dynamic dispatch operational.\r\n");
     }
 
+    void test_svc_trap() {
+        print("[TEST] Triggering 'svc #0' syscall trap via ARCH assembly helper...\r\n");
+        trigger_svc_test();
+    }
+
+    void test_data_abort() {
+        print("[TEST] Triggering Data Abort by accessing invalid address 0xDEADBEEF...\r\n");
+        volatile uint32_t* bad_ptr = reinterpret_cast<volatile uint32_t*>(0xDEADBEEF);
+        *bad_ptr = 0x42; // Pure C++ invalid memory access causing hardware Data Abort
+    }
+
     void execute_command(char* cmd) {
         if (cmd[0] == '\0') {
             return;
@@ -123,6 +135,8 @@ namespace {
             print("  test mmu    - Read SCTLR_EL1 to verify MMU and Caches\r\n");
             print("  test el0    - Test EL0 user space switch and SVC trap return\r\n");
             print("  test cpp    - Verify .bss zeroing and C++ vtable dynamic dispatch\r\n");
+            print("  test svc    - Execute SVC #0 trap and verify handler routing\r\n");
+            print("  test abort  - Dereference unmapped pointer to test Data Abort trap\r\n");
             print("  test all    - Run entire verification test suite\r\n");
             print("  halt        - Put CPU into low-power WFI state\r\n");
         } else if (streq(cmd, "info")) {
@@ -142,11 +156,17 @@ namespace {
             test_el0();
         } else if (streq(cmd, "test cpp")) {
             test_cpp();
+        } else if (streq(cmd, "test svc")) {
+            test_svc_trap();
+        } else if (streq(cmd, "test abort")) {
+            test_data_abort();
         } else if (streq(cmd, "test all")) {
             test_cpp();
             test_cpu();
             test_mmu();
             test_el0();
+            test_svc_trap();
+            test_data_abort();
         } else if (streq(cmd, "halt")) {
             print("Halting CPU...\r\n");
             while (true) {
