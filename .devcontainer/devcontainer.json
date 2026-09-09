@@ -25,11 +25,12 @@
           "${workspaceFolder}",
           "${workspaceFolder}/kernel",
           "${workspaceFolder}/arch/aarch64-linux-gnu"
-        ]
+        ],
+        "C_Cpp.codeAnalysis.runAutomatically": true,
+        "C_Cpp.codeAnalysis.clangTidy.enabled": true,
+        "C_Cpp.codeAnalysis.clangTidy.path": "/usr/bin/clang-tidy"
       }
     }
   },
   "remoteUser": "vscode"
 }
-
-

@@ -9,21 +9,19 @@ Checks: >
   -readability-magic-numbers,
   -readability-function-cognitive-complexity
 
-# Treat checks as warnings (can be adjusted to '*' to treat as build failures)
 WarningsAsErrors: ''
-
 HeaderFilterRegex: '(kernel|arch)/.*'
 FormatStyle: 'file'
 
-# Custom check configurations for freestanding & noexcept enforcement
+# Fixed: CheckOptions formatted as a YAML sequence with 'key' and 'value'
 CheckOptions:
-  # Enforce noexcept specs on functions that shouldn't throw (e.g. destructors, move ops)
-  performance-noexcept-destructor.AnalysisDepth: '3'
-  performance-noexcept-move-constructor.AnalysisDepth: '3'
-  # Exclude std namespace warnings since we are in freestanding mode
-  readability-redundant-access-specifiers.CheckFinalClasses: 'true'
+  - key: performance-noexcept-destructor.AnalysisDepth
+    value: '3'
+  - key: performance-noexcept-move-constructor.AnalysisDepth
+    value: '3'
+  - key: readability-redundant-access-specifiers.CheckFinalClasses
+    value: 'true'
 
-# Extra compile options passed to clang-tidy parser for freestanding AArch64
 ExtraArgs:
   - '-ffreestanding'
   - '-fno-exceptions'
