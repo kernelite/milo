@@ -40,6 +40,30 @@
       "-Iarch/aarch64-linux-gnu",
       "-c",
       "-o",
+      "build/arch/aarch64-linux-gnu/mmu_aarch64.o",
+      "arch/aarch64-linux-gnu/mmu_aarch64.cpp"
+    ],
+    "directory": "/workspaces/milo",
+    "file": "/workspaces/milo/arch/aarch64-linux-gnu/mmu_aarch64.cpp",
+    "output": "/workspaces/milo/build/arch/aarch64-linux-gnu/mmu_aarch64.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/aarch64-linux-gnu-g++",
+      "-std=c++20",
+      "-ffreestanding",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-fno-use-cxa-atexit",
+      "-fno-exceptions",
+      "-fno-rtti",
+      "-fno-threadsafe-statics",
+      "-g",
+      "-Ikernel",
+      "-Iarch/aarch64-linux-gnu",
+      "-c",
+      "-o",
       "build/arch/aarch64-linux-gnu/trap_aarch64.o",
       "arch/aarch64-linux-gnu/trap_aarch64.cpp"
     ],

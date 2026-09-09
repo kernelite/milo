@@ -13,7 +13,7 @@
       "settings": {
         "git.path": "/usr/bin/git",
         "git.enabled": true,
-        "git.autoRepositoryDetection": "true",
+        "git.autoRepositoryDetection": true,
         "makefile.autoGenerate": true,
         "makefile.configurationTarget": "all",
         "makefile.makePath": "/usr/bin/make",

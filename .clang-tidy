@@ -1,11 +1,13 @@
 Checks: >
   -*,
   bugprone-*,
+  -bugprone-easily-swappable-parameters,
   cert-*,
   clang-analyzer-*,
   performance-*,
   readability-*,
   -modernize-use-std-print,
+  -performance-no-int-to-ptr,
   -readability-magic-numbers,
   -readability-function-cognitive-complexity
 
