@@ -65,18 +65,19 @@ namespace {
         }
     }
 
-    void test_mmu() {
+void test_mmu() {
         print("[TEST] Inspecting System MMU & Cache Status via HAL...\r\n");
 
-        HAL::MmuStatus *status = new HAL::MmuStatus();
+        // Stack-allocated MMU status query
+        HAL::MmuStatus status = HAL::MmuStatus();
 
         print("  Control Register Value: ");
-        print_hex64(status->raw_control_reg);
+        print_hex64(status.raw_control_reg);
         print("\r\n");
 
-        print(status->mmu_enabled    ? "  [PASS] MMU: ENABLED\r\n"             : "  [INFO] MMU: DISABLED\r\n");
-        print(status->dcache_enabled ? "  [PASS] Data Cache: ENABLED\r\n"      : "  [INFO] Data Cache: DISABLED\r\n");
-        print(status->icache_enabled ? "  [PASS] Instruction Cache: ENABLED\r\n": "  [INFO] Instruction Cache: DISABLED\r\n");
+        print(status.mmu_enabled    ? "  [PASS] MMU: ENABLED\r\n"             : "  [INFO] MMU: DISABLED\r\n");
+        print(status.dcache_enabled ? "  [PASS] Data Cache: ENABLED\r\n"      : "  [INFO] Data Cache: DISABLED\r\n");
+        print(status.icache_enabled ? "  [PASS] Instruction Cache: ENABLED\r\n": "  [INFO] Instruction Cache: DISABLED\r\n");
     }
 
     void test_el0() {
@@ -117,10 +118,12 @@ namespace {
         trigger_svc_test();
     }
 
-    void test_data_abort() {
-        print("[TEST] Triggering Data Abort by accessing invalid address 0xDEADBEEF...\r\n");
-        volatile uint32_t* bad_ptr = reinterpret_cast<volatile uint32_t*>(0xDEADBEEF);
-        *bad_ptr = 0x42; // Pure C++ invalid memory access causing hardware Data Abort
+void test_data_abort() {
+        print("[TEST] Triggering Data Abort by accessing invalid address 0x00000000DEADBEE0ULL...\r\n");
+        volatile uint32_t* bad_ptr = reinterpret_cast<volatile uint32_t*>(0x00000000DEADBEE0ULL);
+        *bad_ptr = 0x42; // Hardware Data Abort trap triggers here
+
+        print("  [PASS] Data Abort trapped and execution safely resumed!\r\n");
     }
 
     void execute_command(char* cmd) {

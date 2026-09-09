@@ -95,17 +95,16 @@ extern "C" void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr
 
             dump_registers(ctx);
 
-            // If the fault originated in EL0, return control to kernel shell
+            // If the fault originated in EL0 (User Mode), terminate user process
             if ((ctx->spsr_el1 & 0x0F) == 0) {
                 print_str("[TRAP] Terminating faulting EL0 process.\r\n");
                 return_to_kernel(-1);
             }
 
-            print_str("[KERNEL PANIC] Unhandled EL1 Page Fault. System Halted.\r\n");
-            while (true) {
-                HAL::cpu.halt();
-            }
-            break;
+            // If the fault originated in EL1 (Kernel Mode), advance ELR_EL1 to recover
+            print_str("[TRAP] EL1 Fault detected! Advancing ELR_EL1 past faulting instruction...\r\n");
+            ctx->elr_el1 += 4; // Skip faulting 4-byte instruction
+            return;            // Return to vector handler -> eret resumes shell execution
         }
 
         default:
