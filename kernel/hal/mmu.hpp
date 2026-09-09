@@ -5,13 +5,13 @@
 namespace HAL {
 
 enum class PageFlags : uint32_t {
-    None       = 0,
-    Read       = 1 << 0,
-    Write      = 1 << 1,
-    Execute    = 1 << 2,
-    User       = 1 << 3,
-    Device     = 1 << 4,
-    Cacheable  = 1 << 5
+    None = 0,
+    Read = 1 << 0,
+    Write = 1 << 1,
+    Execute = 1 << 2,
+    User = 1 << 3,
+    Device = 1 << 4,
+    Cacheable = 1 << 5
 };
 
 struct MmuStatus {
@@ -22,16 +22,16 @@ struct MmuStatus {
 };
 
 class MemoryControl {
-public:
+  public:
     constexpr MemoryControl() = default;
     virtual ~MemoryControl() = default;
 
     virtual bool map(uintptr_t virt_addr, uintptr_t phys_addr, PageFlags flags) = 0;
     virtual bool unmap(uintptr_t virt_addr) = 0;
     virtual void activate() = 0;
-    virtual MmuStatus status() const = 0; // Architecture-agnostic MMU query
+    virtual MmuStatus status() const noexcept = 0;
 };
 
-extern MemoryControl& mmu;
+MemoryControl& get_mmu() noexcept;
 
-}
+} // namespace HAL

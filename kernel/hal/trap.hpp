@@ -3,13 +3,7 @@
 
 namespace HAL {
 
-enum class TrapType {
-    Syscall,
-    DataAbort,
-    InstructionAbort,
-    Interrupt,
-    Unknown
-};
+enum class TrapType { Syscall, DataAbort, InstructionAbort, Interrupt, Unknown };
 
 struct TrapFrame {
     TrapType type;
@@ -18,10 +12,10 @@ struct TrapFrame {
 };
 
 class TrapHandler {
-public:
+  public:
     virtual ~TrapHandler() = default;
     virtual void handle_trap(TrapFrame& frame) = 0;
 };
 
 extern TrapHandler& trap_dispatcher;
-}
+} // namespace HAL
