@@ -79,7 +79,7 @@ compile_commands.json: clean
 	bear -- $(MAKE) all
 
 # --- Code Quality Targets ---
-.PHONY: lint format format-check
+.PHONY: lint format format-check lint-report quality
 
 # Run clang-tidy against all C++ source files using compile_commands.json
 lint: compile_commands.json
@@ -95,3 +95,8 @@ format:
 format-check:
 	@echo "[FORMAT-CHECK] Checking source formatting..."
 	clang-format --dry-run --Werror $(SRCS_CXX) $(HDRS)
+
+lint-report: compile_commands.json
+	@python3 scripts/generate_quality_report.py
+
+quality: format-check lint-report

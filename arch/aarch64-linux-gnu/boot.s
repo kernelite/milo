@@ -1,3 +1,7 @@
+// ==========================================================================
+// File: arch/aarch64-linux-gnu/boot.s
+// ==========================================================================
+
 .section .text.boot
 .global _start
 
@@ -215,18 +219,14 @@ return_to_kernel:
 .balign 4
 .global trigger_svc_test
 trigger_svc_test:
-    mov     x8, #64                // SYS_WRITE
-    mov     x0, #1                 // stdout
+    mov     x8, #64                 // SYS_WRITE
+    mov     x0, #1                  // stdout
     adr     x1, .Lsvc_test_msg
     mov     x2, #34
     svc     #0
     ret
 
 .balign 4
-.Lsvc_test_msg:
-    .ascii "[SVC TEST] Trap returned cleanly!\r\n"
-    .balign 4
-
 .global user_space_code
 user_space_code:
     mov     x8, #64
@@ -239,10 +239,25 @@ user_space_code:
     mov     x0, #0
     svc     #0
 
+    // Safety barrier loop in case SYS_EXIT returns
+1:  b       1b
+
+// ==========================================================================
+// Read-Only Data Section (Isolates strings from executable code)
+// ==========================================================================
+
+.section .rodata
+.balign 4
+.Lsvc_test_msg:
+    .ascii "[SVC TEST] Trap returned cleanly!\r\n"
+
 .balign 4
 inline_msg:
     .ascii "[EL0 USER SPACE] Successfully executed code inside EL0 User Mode!\r\n"
-    .balign 4
+
+// ==========================================================================
+// Uninitialized Data Section
+// ==========================================================================
 
 .section .bss
 .balign 16

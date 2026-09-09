@@ -124,6 +124,7 @@ void test_cpp() {
 void test_svc_trap() {
     print("[TEST] Triggering 'svc #0' syscall trap via ARCH assembly helper...\r\n");
     trigger_svc_test();
+    asm volatile("" ::: "memory"); // Prevents Tail-Call Optimization (TCO) by GCC
 }
 
 void test_data_abort() {

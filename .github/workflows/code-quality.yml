@@ -1,0 +1,71 @@
+name: Code Quality Analysis
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  quality-check:
+    name: Code Quality & Linting
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Toolchain and Linters
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang-tidy \
+            clang-format \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            python3-pip
+
+      - name: Generate compile_commands.json
+        run: |
+          make compile_commands.json
+
+      - name: Run C++ Linter (SARIF & Annotations)
+        uses: cpp-linter/cpp-linter-action@v2
+        id: cpp_linter
+        with:
+          style: 'file'
+          tidy-checks: ''
+          thread-comments: true
+          step-summary: true
+          file-annotations: true
+          database: '.'
+
+      - name: Run Local Report Generator
+        if: always()
+        run: |
+          python3 scripts/generate_quality_report.py || true
+
+      - name: Upload HTML Quality Report Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-quality-report
+          path: build/reports/
+          retention-days: 14
+
+      - name: Upload SARIF to GitHub Security Tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: '.cpp-linter/cpp-linter.sarif'
+          category: clang-tidy
+        continue-on-error: true
+
+      - name: Fail CI on Linter Error
+        if: steps.cpp_linter.outputs.checks-failed != '0'
+        run: |
+          echo "Code quality checks failed. See summary or artifacts for details."
+          exit 1
