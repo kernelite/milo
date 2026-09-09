@@ -1,0 +1,33 @@
+Checks: >
+  -*,
+  bugprone-*,
+  cert-*,
+  clang-analyzer-*,
+  performance-*,
+  readability-*,
+  -modernize-use-std-print,
+  -readability-magic-numbers,
+  -readability-function-cognitive-complexity
+
+# Treat checks as warnings (can be adjusted to '*' to treat as build failures)
+WarningsAsErrors: ''
+
+HeaderFilterRegex: '(kernel|arch)/.*'
+FormatStyle: 'file'
+
+# Custom check configurations for freestanding & noexcept enforcement
+CheckOptions:
+  # Enforce noexcept specs on functions that shouldn't throw (e.g. destructors, move ops)
+  performance-noexcept-destructor.AnalysisDepth: '3'
+  performance-noexcept-move-constructor.AnalysisDepth: '3'
+  # Exclude std namespace warnings since we are in freestanding mode
+  readability-redundant-access-specifiers.CheckFinalClasses: 'true'
+
+# Extra compile options passed to clang-tidy parser for freestanding AArch64
+ExtraArgs:
+  - '-ffreestanding'
+  - '-fno-exceptions'
+  - '-fno-rtti'
+  - '-std=c++20'
+  - '-target'
+  - 'aarch64-linux-gnu'

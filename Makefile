@@ -68,3 +68,30 @@ debug: $(BUILD_DIR)/$(TARGET)
 # Launch GDB pre-configured and attached to the running QEMU instance
 gdb: $(BUILD_DIR)/$(TARGET)
 	$(GDB) $(BUILD_DIR)/$(TARGET) -ex "target remote localhost:1234" -ex "layout split"
+
+# Find all header files for formatting/linting targets
+HDRS := $(shell find kernel arch -name '*.hpp' -o -name '*.h')
+
+# --- Compilation Database Generation ---
+.PHONY: compile_commands.json
+compile_commands.json: clean
+	@echo "[BEAR] Generating compilation database..."
+	bear -- $(MAKE) all
+
+# --- Code Quality Targets ---
+.PHONY: lint format format-check
+
+# Run clang-tidy against all C++ source files using compile_commands.json
+lint: compile_commands.json
+	@echo "[LINT] Running clang-tidy on C++ sources..."
+	clang-tidy -p . $(SRCS_CXX)
+
+# Automatically format all source and header files in-place
+format:
+	@echo "[FORMAT] Formatting sources with clang-format..."
+	clang-format -i $(SRCS_CXX) $(HDRS)
+
+# CI check: Fail if any file does not adhere to .clang-format
+format-check:
+	@echo "[FORMAT-CHECK] Checking source formatting..."
+	clang-format --dry-run --Werror $(SRCS_CXX) $(HDRS)
