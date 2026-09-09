@@ -6,10 +6,14 @@
   "customizations": {
     "vscode": {
       "extensions": [
+        "ms-vscode.makefile-tools",
         "ms-vscode.cpptools",
         "ms-vscode.cpptools-extension-pack"
       ],
       "settings": {
+        "makefile.autoGenerate": true,
+        "makefile.configurationTarget": "all",
+        "makefile.makePath": "/usr/bin/make",
         "C_Cpp.default.cppStandard": "c++20",
         "C_Cpp.default.cStandard": "c17",
         "C_Cpp.default.compilerPath": "/usr/bin/aarch64-linux-gnu-g++",
