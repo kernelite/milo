@@ -121,6 +121,7 @@ _start:
 .balign 4
 sync_handler_entry:
     SAVE_CONTEXT
+    mov     x0, sp
     mrs     x1, esr_el1             // Pass ESR_EL1 as second argument (x1)
     mrs     x2, far_el1             // Pass FAR_EL1 as third argument (x2)
     bl      aarch64_handle_sync_exception
@@ -129,11 +130,15 @@ sync_handler_entry:
 
 .balign 4
 invalid_handler_entry:
-    SAVE_CONTEXT
-    // x1 contains the exception type index set by vector table slot
+    mov     x3, x1        
+    SAVE_CONTEXT          
+    mov     x0, sp        
+    mov     x1, x3        
+    mrs     x2, esr_el1   
+    mrs     x3, far_el1   
     bl      aarch64_handle_invalid_exception
-    RESTORE_CONTEXT
-    eret
+1:  wfi                   // Trap in low-power loop if panic handler returns
+    b       1b
 
 // ==========================================================================
 // Arm64 16-Entry Vector Table (Aligned to 2048 bytes; 128 bytes per entry)
@@ -222,9 +227,10 @@ trigger_svc_test:
     mov     x8, #64                 // SYS_WRITE
     mov     x0, #1                  // stdout
     adr     x1, .Lsvc_test_msg
-    mov     x2, #34
+    mov     x2, #35
     svc     #0
     ret
+    b       .
 
 .balign 4
 .global user_space_code
