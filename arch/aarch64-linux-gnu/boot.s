@@ -226,40 +226,33 @@ return_to_kernel:
 trigger_svc_test:
     mov     x8, #64                 // SYS_WRITE
     mov     x0, #1                  // stdout
-    adr     x1, .Lsvc_test_msg
-    mov     x2, #35
+    adr     x1, .Lsvc_test_msg      // Guaranteed valid local address
+    mov     x2, #35                 // Exact byte length
     svc     #0
     ret
-    b       .
+
+.Lsvc_test_msg:
+    .ascii "[SVC TEST] Trap returned cleanly!\r\n"
+    .balign 4
 
 .balign 4
 .global user_space_code
 user_space_code:
     mov     x8, #64
     mov     x0, #1
-    adr     x1, inline_msg
-    mov     x2, #66
+    adr     x1, .Luser_msg          // Guaranteed valid local address
+    mov     x2, #66                 // Exact byte length
     svc     #0
 
     mov     x8, #93
     mov     x0, #0
     svc     #0
 
-    // Safety barrier loop in case SYS_EXIT returns
-1:  b       1b
+1:  b       1b                      // Safety loop if SYS_EXIT returns
 
-// ==========================================================================
-// Read-Only Data Section (Isolates strings from executable code)
-// ==========================================================================
-
-.section .rodata
-.balign 4
-.Lsvc_test_msg:
-    .ascii "[SVC TEST] Trap returned cleanly!\r\n"
-
-.balign 4
-inline_msg:
+.Luser_msg:
     .ascii "[EL0 USER SPACE] Successfully executed code inside EL0 User Mode!\r\n"
+    .balign 4
 
 // ==========================================================================
 // Uninitialized Data Section
