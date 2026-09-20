@@ -13,7 +13,7 @@ jobs:
     permissions:
       contents: read
       security-events: write
-
+      pull-requests: write      # Required for PR thread comments
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -36,6 +36,8 @@ jobs:
       - name: Run C++ Linter (SARIF & Annotations)
         uses: cpp-linter/cpp-linter-action@v2
         id: cpp_linter
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Standard automatically provided token
         with:
           style: 'file'
           tidy-checks: ''
