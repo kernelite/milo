@@ -60,8 +60,8 @@ jobs:
           retention-days: 14
 
       - name: Upload SARIF to GitHub Security Tab
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        if: always() && hashFiles('.cpp-linter/cpp-linter.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: '.cpp-linter/cpp-linter.sarif'
           category: clang-tidy
