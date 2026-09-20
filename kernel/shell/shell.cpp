@@ -19,6 +19,8 @@ constexpr size_t MAX_CMD_LEN = 128;
 alignas(16) uint8_t user_test_stack[2048];
 int bss_check_var; // Uninitialized global variable to verify .bss zeroing
 
+uint8_t user_stack[4096] __attribute__((aligned(16)));
+
 bool streq(const char* str1, const char* str2) {
     if (str1 == nullptr || str2 == nullptr) {
         return str1 == str2; // true only if both are nullptr
@@ -123,7 +125,11 @@ void test_cpp() {
 
 void test_svc_trap() {
     print("[TEST] Triggering 'svc #0' syscall trap via ARCH assembly helper...\r\n");
-    trigger_svc_test();
+
+    uint64_t user_sp = (uint64_t)user_stack + sizeof(user_stack);
+    // Drop to EL0 and execute the test routine
+    enter_user_mode((uint64_t)trigger_svc_test, user_sp);
+
     asm volatile("" ::: "memory"); // Prevents Tail-Call Optimization (TCO)
     print("  [PASS] SVC trap handled and returned to EL1 successfully!\r\n");
 }
