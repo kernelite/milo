@@ -14,24 +14,10 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Install Toolchain and Linters
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            bear \
-            clang-tidy \
-            clang-format \
-            gcc-aarch64-linux-gnu \
-            g++-aarch64-linux-gnu \
-            python3-pip
-
-      - name: Generate compile_commands.json
-        run: |
-          make compile_commands.json
-
-      - name: Run Code Quality Checks
-        run: |
-          make quality
+      - name: Run Quality Checks in Dev Container
+        uses: devcontainers/ci@v0.3
+        with:
+          runCmd: make quality
 
       - name: Run Local Report Generator
         if: always()
