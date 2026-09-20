@@ -10,10 +10,6 @@ jobs:
   quality-check:
     name: Code Quality & Linting
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
-      pull-requests: write      # Required for PR thread comments
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -33,18 +29,9 @@ jobs:
         run: |
           make compile_commands.json
 
-      - name: Run C++ Linter (SARIF & Annotations)
-        uses: cpp-linter/cpp-linter-action@v2
-        id: cpp_linter
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Standard automatically provided token
-        with:
-          style: 'file'
-          tidy-checks: ''
-          thread-comments: true
-          step-summary: true
-          file-annotations: true
-          database: '.'
+      - name: Run Code Quality Checks
+        run: |
+          make quality
 
       - name: Run Local Report Generator
         if: always()
@@ -58,14 +45,6 @@ jobs:
           name: code-quality-report
           path: build/reports/
           retention-days: 14
-
-      - name: Upload SARIF to GitHub Security Tab
-        if: always() && hashFiles('.cpp-linter/cpp-linter.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: '.cpp-linter/cpp-linter.sarif'
-          category: clang-tidy
-        continue-on-error: true
 
       - name: Fail CI on Linter Error
         if: steps.cpp_linter.outputs.checks-failed != '0'

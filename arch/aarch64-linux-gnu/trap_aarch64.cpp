@@ -1,8 +1,9 @@
-#include <cstddef>
-#include <cstdint>
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
 #include "hal/trap.hpp"
+
+#include <cstddef>
+#include <cstdint>
 
 extern "C" {
 void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t far) noexcept;
@@ -63,12 +64,10 @@ void dump_registers(const HAL::CpuContext* ctx) noexcept {
 }
 
 class AArch64TrapHandler : public HAL::TrapHandler {
-public:
+  public:
     constexpr AArch64TrapHandler() = default;
 
-    void handle_trap(HAL::TrapFrame& frame) override {
-        (void)frame;
-    }
+    void handle_trap(HAL::TrapFrame& frame) override { (void)frame; }
 };
 
 constinit AArch64TrapHandler aarch64_trap_handler{};
@@ -99,7 +98,7 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
             if (filedesc == 1U || filedesc == 2U) {
                 HAL::get_console().write(buf, count);
             }
-            ctx->x[0] = count; // Return bytes written
+            ctx->x[0] = count;           // Return bytes written
         } else if (syscall_num == 93U) { // SYS_EXIT
             print_str("[TRAP] Process exited cleanly via SYS_EXIT (93).\r\n");
             const auto exit_status = static_cast<int64_t>(ctx->x[0]);
@@ -161,24 +160,22 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
 }
 
 void aarch64_handle_invalid_exception(HAL::CpuContext* ctx, uint64_t type) noexcept {
-    constexpr const char* type_names[] = {
-        "Unknown",
-        "Current EL SP0 IRQ",
-        "Current EL SP0 FIQ",
-        "Current EL SP0 SError",
-        "Unknown",
-        "Current EL SPx IRQ",
-        "Current EL SPx FIQ",
-        "Current EL SPx SError",
-        "Unknown",
-        "Lower EL AArch64 IRQ",
-        "Lower EL AArch64 FIQ",
-        "Lower EL AArch64 SError",
-        "Lower EL AArch32 Sync",
-        "Lower EL AArch32 IRQ",
-        "Lower EL AArch32 FIQ",
-        "Lower EL AArch32 SError"
-    };
+    constexpr const char* type_names[] = {"Unknown",
+                                          "Current EL SP0 IRQ",
+                                          "Current EL SP0 FIQ",
+                                          "Current EL SP0 SError",
+                                          "Unknown",
+                                          "Current EL SPx IRQ",
+                                          "Current EL SPx FIQ",
+                                          "Current EL SPx SError",
+                                          "Unknown",
+                                          "Lower EL AArch64 IRQ",
+                                          "Lower EL AArch64 FIQ",
+                                          "Lower EL AArch64 SError",
+                                          "Lower EL AArch32 Sync",
+                                          "Lower EL AArch32 IRQ",
+                                          "Lower EL AArch32 FIQ",
+                                          "Lower EL AArch32 SError"};
 
     print_str("\r\n[PANIC] Invalid/Async Trap Captured: ");
     if (type < 16U) {
