@@ -1,0 +1,31 @@
+#!/bin/bash
+set -e
+
+echo "🔍 [Pre-Commit] Running C++ code quality checks..."
+
+# 1. Get all staged C/C++ files
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(cpp|hpp|c|h)$' || true)
+
+if [ -n "$STAGED_FILES" ]; then
+    echo "  Checking clang-format on staged files..."
+    FOR_FORMAT_FAIL=0
+    for FILE in $STAGED_FILES; do
+        if ! clang-format --dry-run --Werror "$FILE" > /dev/null 2>&1; then
+            echo "❌ Formatting violation in: $FILE"
+            FOR_FORMAT_FAIL=1
+        fi
+    done
+
+    if [ "$FOR_FORMAT_FAIL" -eq 1 ]; then
+        echo ""
+        echo "💡 Fix formatting by running: clang-format -i <file>"
+        echo "   Or auto-format all files with: make format"
+        exit 1
+    fi
+fi
+
+# 2. Ensure compile_commands.json is up-to-date and run full quality script
+make compile_commands.json --quiet
+python3 scripts/generate_report.py
+
+echo "✅ [Pre-Commit] All quality checks passed!"

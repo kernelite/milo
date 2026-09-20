@@ -1,0 +1,39 @@
+name: Code Quality Analysis
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  quality-check:
+    name: Code Quality & Linting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run Quality Checks in Dev Container
+        uses: devcontainers/ci@v0.3
+        with:
+          runCmd: make quality
+
+      - name: Run Local Report Generator
+        if: always()
+        run: |
+          python3 scripts/generate_quality_report.py || true
+
+      - name: Upload HTML Quality Report Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-quality-report
+          path: build/reports/
+          retention-days: 14
+
+      - name: Fail CI on Linter Error
+        if: steps.cpp_linter.outputs.checks-failed != '0'
+        run: |
+          echo "Code quality checks failed. See summary or artifacts for details."
+          exit 1

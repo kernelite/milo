@@ -1,0 +1,33 @@
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  cert-*,
+  clang-analyzer-*,
+  performance-*,
+  readability-*,
+  -modernize-use-std-print,
+  -performance-no-int-to-ptr,
+  -readability-magic-numbers,
+  -readability-function-cognitive-complexity
+
+WarningsAsErrors: ''
+HeaderFilterRegex: '(kernel|arch)/.*'
+FormatStyle: 'file'
+
+# Fixed: CheckOptions formatted as a YAML sequence with 'key' and 'value'
+CheckOptions:
+  - key: performance-noexcept-destructor.AnalysisDepth
+    value: '3'
+  - key: performance-noexcept-move-constructor.AnalysisDepth
+    value: '3'
+  - key: readability-redundant-access-specifiers.CheckFinalClasses
+    value: 'true'
+
+ExtraArgs:
+  - '-ffreestanding'
+  - '-fno-exceptions'
+  - '-fno-rtti'
+  - '-std=c++20'
+  - '-target'
+  - 'aarch64-linux-gnu'

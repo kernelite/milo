@@ -1,3 +1,7 @@
+// ==========================================================================
+// File: arch/aarch64-linux-gnu/boot.s
+// ==========================================================================
+
 .section .text.boot
 .global _start
 
@@ -117,6 +121,7 @@ _start:
 .balign 4
 sync_handler_entry:
     SAVE_CONTEXT
+    mov     x0, sp
     mrs     x1, esr_el1             // Pass ESR_EL1 as second argument (x1)
     mrs     x2, far_el1             // Pass FAR_EL1 as third argument (x2)
     bl      aarch64_handle_sync_exception
@@ -125,11 +130,15 @@ sync_handler_entry:
 
 .balign 4
 invalid_handler_entry:
-    SAVE_CONTEXT
-    // x1 contains the exception type index set by vector table slot
+    mov     x3, x1        
+    SAVE_CONTEXT          
+    mov     x0, sp        
+    mov     x1, x3        
+    mrs     x2, esr_el1   
+    mrs     x3, far_el1   
     bl      aarch64_handle_invalid_exception
-    RESTORE_CONTEXT
-    eret
+1:  wfi                   // Trap in low-power loop if panic handler returns
+    b       1b
 
 // ==========================================================================
 // Arm64 16-Entry Vector Table (Aligned to 2048 bytes; 128 bytes per entry)
@@ -215,34 +224,39 @@ return_to_kernel:
 .balign 4
 .global trigger_svc_test
 trigger_svc_test:
-    mov     x8, #64                // SYS_WRITE
-    mov     x0, #1                 // stdout
-    adr     x1, .Lsvc_test_msg
-    mov     x2, #34
+    mov     x8, #64                 // SYS_WRITE
+    mov     x0, #1                  // stdout
+    adr     x1, .Lsvc_test_msg      // Guaranteed valid local address
+    mov     x2, #35                 // Exact byte length
     svc     #0
     ret
 
-.balign 4
 .Lsvc_test_msg:
     .ascii "[SVC TEST] Trap returned cleanly!\r\n"
     .balign 4
 
+.balign 4
 .global user_space_code
 user_space_code:
     mov     x8, #64
     mov     x0, #1
-    adr     x1, inline_msg
-    mov     x2, #66
+    adr     x1, .Luser_msg          // Guaranteed valid local address
+    mov     x2, #66                 // Exact byte length
     svc     #0
 
     mov     x8, #93
     mov     x0, #0
     svc     #0
 
-.balign 4
-inline_msg:
+1:  b       1b                      // Safety loop if SYS_EXIT returns
+
+.Luser_msg:
     .ascii "[EL0 USER SPACE] Successfully executed code inside EL0 User Mode!\r\n"
     .balign 4
+
+// ==========================================================================
+// Uninitialized Data Section
+// ==========================================================================
 
 .section .bss
 .balign 16

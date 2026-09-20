@@ -1,0 +1,17 @@
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: c++20
+
+# Formatting parameters
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+
+# Alignments and braces
+BreakBeforeBraces: Attach
+AllowShortFunctionsOnASingleLine: Inline
+PointerAlignment: Left
+ReferenceAlignment: Left
+SpaceAfterTemplateKeyword: true
+IncludeBlocks: Regroup

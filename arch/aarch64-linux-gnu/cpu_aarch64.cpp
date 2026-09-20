@@ -2,16 +2,12 @@
 
 namespace {
 class AArch64CpuControl : public HAL::CpuControl {
-public:
+  public:
     constexpr AArch64CpuControl() = default; // ADD THIS
 
-    void enable_interrupts() override {
-        asm volatile("msr daifclr, #2" ::: "memory");
-    }
+    void enable_interrupts() override { asm volatile("msr daifclr, #2" ::: "memory"); }
 
-    void disable_interrupts() override {
-        asm volatile("msr daifset, #2" ::: "memory");
-    }
+    void disable_interrupts() override { asm volatile("msr daifset, #2" ::: "memory"); }
 
     bool interrupts_enabled() const override {
         uint64_t daif;
@@ -20,14 +16,12 @@ public:
     }
 
     uint8_t current_el() const override {
-        uint64_t el;
-        asm volatile("mrs %0, CurrentEL" : "=r"(el));
-        return static_cast<uint8_t>((el >> 2) & 0x3);
+        uint64_t elvl;
+        asm volatile("mrs %0, CurrentEL" : "=r"(elvl));
+        return static_cast<uint8_t>((elvl >> 2) & 0x3);
     }
 
-    void halt() override {
-        asm volatile("wfi");
-    }
+    void halt() override { asm volatile("wfi"); }
 
     void switch_context(HAL::CpuContext** old_ctx, HAL::CpuContext* new_ctx) override {
         (void)old_ctx;
@@ -36,8 +30,10 @@ public:
 };
 
 constinit AArch64CpuControl aarch64_cpu{}; // Compile-time static initialization
-}
+} // namespace
 
 namespace HAL {
-    CpuControl& cpu = aarch64_cpu;
+CpuControl& get_cpu() noexcept {
+    return aarch64_cpu;
 }
+} // namespace HAL

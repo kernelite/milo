@@ -5,14 +5,14 @@ namespace HAL {
 
 // Architectural Register Save Frame
 struct CpuContext {
-    uint64_t x[31];     // General Purpose Registers x0-x30
-    uint64_t sp_el0;    // User Stack Pointer
-    uint64_t elr_el1;   // Return Program Counter
-    uint64_t spsr_el1;  // Saved Program Status Register
+    uint64_t x[31];    // General Purpose Registers x0-x30
+    uint64_t sp_el0;   // User Stack Pointer
+    uint64_t elr_el1;  // Return Program Counter
+    uint64_t spsr_el1; // Saved Program Status Register
 };
 
 class CpuControl {
-public:
+  public:
     constexpr CpuControl() = default;
     virtual ~CpuControl() = default;
 
@@ -31,5 +31,5 @@ public:
     virtual void switch_context(CpuContext** old_ctx, CpuContext* new_ctx) = 0;
 };
 
-extern CpuControl& cpu;
-}
+CpuControl& get_cpu() noexcept;
+} // namespace HAL

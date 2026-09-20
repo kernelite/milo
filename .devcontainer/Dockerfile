@@ -6,8 +6,13 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
         gcc-aarch64-linux-gnu \
         g++-aarch64-linux-gnu \
         binutils-aarch64-linux-gnu \
+        build-essential \
         make \
         qemu-system-aarch64 \
         ipxe-qemu \
         gdb-multiarch \
+        git \
+        bear \
+        clang-format \
+        clang-tidy \
     && apt-get clean && rm -rf /var/lib/apt/lists/*

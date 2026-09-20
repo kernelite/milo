@@ -13,7 +13,6 @@
 *.a
 
 # Editor & System Files
-.vscode/
 .idea/
 *.swp
 *~
