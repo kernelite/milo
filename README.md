@@ -44,7 +44,7 @@ The project demonstrates low-level hardware initialization, Exception Level drop
 ├── kernel/
 │   ├── core/
 │   │   └── syscall_dispatcher.cpp  # Linux syscall trap dispatcher
-│   ├── hal/                     # Architecture-agnostic Hardware Abstraction Layer
+│   ├── hal/                     # Architecture-agnostic Hardware Abstraction Layer (Header-only implementation)
 │   │   ├── console.hpp          # Abstract console trait
 │   │   ├── cpu.hpp              # Abstract CPU state & context trait
 │   │   ├── mmu.hpp              # Abstract MMU & memory trait
@@ -70,7 +70,7 @@ The codebase enforces a clean boundary between high-level kernel logic and platf
 
 * **Phase 1 (Current):** **AArch64 (Arm64)** reference implementation (`arch/aarch64-linux-gnu/`).
 * **Phase 2 (Planned):** Support for additional OS features: scheduler, multiuser, security, hardware drivers, etc...
-* **Phase 3 (Planned):** Support for additional CPU architectures (such as **x86_64** or **RISC-V**) by creating new subdirectories under `arch/` and implementing the required HAL traits (`HAL::CpuControl`, `HAL::MemoryControl`, `HAL::Console`).
+* **Phase 3 (Planned):** Support for additional CPU architectures (such as **x86_64** or **RISC-V**) by creating new subdirectories under `arch/` and implementing the required HAL traits (`HAL::CpuControl`, `HAL::MmuControl`, `HAL::Console`).
 
 ---
 
@@ -81,6 +81,8 @@ To build and run the reference AArch64 kernel image locally:
 * **Cross Compiler:** `aarch64-linux-gnu-g++`, `aarch64-linux-gnu-as`, `aarch64-linux-gnu-ld`
 * **Emulator:** `qemu-system-aarch64`
 * **Debugger (Optional):** `gdb-multiarch`
+
+The `aarch64-linux-gnu` triplet is used specifically for Linux ABI/syscall compatibility, even if this is a bare metal OS.
 
 ---
 
