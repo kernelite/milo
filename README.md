@@ -1,4 +1,4 @@
-# Bare-Metal C++ Microkernel
+# 🛡️ Bare-Metal C++ Microkernel
 
 A modular, freestanding C++20 microkernel designed with a portable Hardware Abstraction Layer (HAL) for multi-architecture support. **AArch64 (Arm64)** serves as the initial reference implementation (targeting QEMU `virt` / ARM Cortex-A53), with expansion planned for additional architectures in future releases.
 
@@ -6,32 +6,29 @@ The project demonstrates low-level hardware initialization, Exception Level drop
 
 ---
 
-## Features
+## ⚡ Features
 
 * **Multi-Architecture Ready Design:** Strict separation between architecture-agnostic kernel interfaces (`kernel/hal/`) and architecture-specific implementations (`arch/`), allowing seamless porting to new target architectures.
-* **AArch64 Reference Target (Primary):**
-* Multilevel Exception Level drop setup (EL3 → EL2 → EL1).
-* `VBAR_EL1` vector table registration and exception trap dispatch.
-* FP/SIMD coprocessor activation in `CPACR_EL1`.
-
+  * **AArch64 Reference Target (Primary):**
+    * Multilevel Exception Level drop setup (EL3 → EL2 → EL1).
+    * `VBAR_EL1` vector table registration and exception trap dispatch.
+    * FP/SIMD coprocessor activation in `CPACR_EL1`.
 
 * **Freestanding C++20 Runtime:** Built with `-ffreestanding`, `-fno-exceptions`, and `-fno-rtti`. Includes custom freestanding ABI handlers (`cxx_abi.cpp`) and safe compile-time static driver initialization via `constinit`.
-* **Hardware Abstraction Layer (HAL):**
-* **Console HAL:** Trait-based console interface with PL011 MMIO UART driver implementation (`0x09000000`).
-* **CPU HAL:** Target-agnostic CPU state queries, interrupt masking, low-power WFI state execution.
-* **MMU HAL:** SCTLR_EL1 system register status inspection (MMU, I-Cache, D-Cache).
-
+  * **Hardware Abstraction Layer (HAL):**
+  * **Console HAL:** Trait-based console interface with PL011 MMIO UART driver implementation (`0x09000000`).
+  * **CPU HAL:** Target-agnostic CPU state queries, interrupt masking, low-power WFI state execution.
+  * **MMU HAL:** SCTLR_EL1 system register status inspection (MMU, I-Cache, D-Cache).
 
 * **EL0 User-Mode Context Switching:**
-* Context save/restore routines for switching between EL1 kernel and EL0 user mode.
-* Exception trap handling for Linux AArch64 `SVC #0` syscalls (`sys_write`, `sys_exit`).
-
+  * Context save/restore routines for switching between EL1 kernel and EL0 user mode.
+  * Exception trap handling for Linux AArch64 `SVC #0` syscalls (`sys_write`, `sys_exit`).
 
 * **Interactive Kernel Shell & Verification Suite:** Built-in command line interface (`milo>`) featuring hardware diagnostics and runtime unit testing.
 
 ---
 
-## Repository Structure
+## 📁 Repository Structure
 
 ```text
 .
@@ -67,7 +64,7 @@ The project demonstrates low-level hardware initialization, Exception Level drop
 
 ---
 
-## Architecture Portability & Expansion Plans
+## 🏗️ Architecture Portability & Expansion Plans
 
 The codebase enforces a clean boundary between high-level kernel logic and platform hardware via abstract C++ interfaces in `kernel/hal/`.
 
@@ -77,7 +74,7 @@ The codebase enforces a clean boundary between high-level kernel logic and platf
 
 ---
 
-## Prerequisites & Toolchain
+## 🛠️ Prerequisites & Toolchain
 
 To build and run the reference AArch64 kernel image locally:
 
@@ -87,7 +84,7 @@ To build and run the reference AArch64 kernel image locally:
 
 ---
 
-## Building and Running
+## 🚀 Building and Running
 
 ### Build the Kernel Image
 
@@ -124,7 +121,7 @@ make clean
 
 ---
 
-## Interactive Kernel Shell (`milo>`)
+## 💻 Interactive Kernel Shell (`milo>`)
 
 Once booted, the shell provides the following built-in diagnostic and test commands:
 
@@ -137,12 +134,14 @@ Once booted, the shell provides the following built-in diagnostic and test comma
 | `test mmu` | Inspect SCTLR_EL1 register to report MMU and Cache statuses |
 | `test el0` | Execute context switch into EL0 user space and verify `SVC #0` trap return |
 | `test cpp` | Verify `.bss` zero-initialization and C++ vtable dynamic dispatch |
+| `test svc` | Verify `.bss` zero-initialization and C++ vtable dynamic dispatch |
+| `test abort` | Verify `.bss` zero-initialization and C++ vtable dynamic dispatch |
 | `test all` | Run full integrated verification test suite |
 | `halt` | Issue `wfi` (Wait for Interrupt) to halt CPU |
 
 ---
 
-## AArch64 Execution Flow
+## ⌨️ AArch64 Execution Flow
 
 ### Exception Level Sequence
 
@@ -158,6 +157,6 @@ Once booted, the shell provides the following built-in diagnostic and test comma
 
 ---
 
-## License
+## 📜 License
 
 Distributed under the **GNU General Public License v3.0 (GPL-3.0)**. See [`LICENSE`](https://www.google.com/search?q=LICENSE) for details.
