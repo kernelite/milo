@@ -134,8 +134,8 @@ Once booted, the shell provides the following built-in diagnostic and test comma
 | `test mmu` | Inspect SCTLR_EL1 register to report MMU and Cache statuses |
 | `test el0` | Execute context switch into EL0 user space and verify `SVC #0` trap return |
 | `test cpp` | Verify `.bss` zero-initialization and C++ vtable dynamic dispatch |
-| `test svc` | Verify `.bss` zero-initialization and C++ vtable dynamic dispatch |
-| `test abort` | Verify `.bss` zero-initialization and C++ vtable dynamic dispatch |
+| `test svc` | Triggers an AArch64 Supervisor Call (svc #0) synchronous exception to test system call dispatching, console write handling, and exception return logic |
+| `test abort` | Triggers an intentional memory access fault (Data/Instruction Abort) to test exception trapping, register dumping, and kernel fault recovery |
 | `test all` | Run full integrated verification test suite |
 | `halt` | Issue `wfi` (Wait for Interrupt) to halt CPU |
 
