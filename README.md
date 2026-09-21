@@ -1,4 +1,10 @@
 # 🛡️ Bare-Metal C++ Microkernel
+[![Build & Test](https://github.com/kernelite/milo/actions/workflows/code-quality.yml/badge.svg)](https://github.com/kernelite/milo/actions)
+![C++ Standard](https://img.shields.io/badge/C%2B%2B-20-00599C?style=flat-square&logo=cplusplus&logoColor=white)
+![Architecture](https://img.shields.io/badge/Arch-AArch64%20%2F%20Arm64-0091BD?style=flat-square&logo=arm&logoColor=white)
+![Target Platform](https://img.shields.io/badge/Target-QEMU%20virt%20(Cortex--A53)-FF6600?style=flat-square&logo=qemu&logoColor=white)
+![Runtime Environment](https://img.shields.io/badge/Runtime-Freestanding-444444?style=flat-square)
+![License](https://img.shields.io/badge/License-GPLv3-blue.svg?style=flat-square)
 
 A modular, freestanding C++20 microkernel designed with a portable Hardware Abstraction Layer (HAL) for multi-architecture support. **AArch64 (Arm64)** serves as the initial reference implementation (targeting QEMU `virt` / ARM Cortex-A53), with expansion planned for additional architectures in future releases.
 
