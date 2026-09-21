@@ -11,6 +11,13 @@ SECTIONS
 {
     . = 0x40000000;
 
+    .text : {
+        _text_start = .;       /* Marks start of executable code */
+        *(.text.boot)
+        *(.text .text.*)
+        _text_end = .;
+    }
+
     .text.boot : {
         *(.text.boot)
     } :text

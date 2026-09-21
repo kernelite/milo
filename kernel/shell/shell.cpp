@@ -3,6 +3,7 @@
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
+#include "mm/pfa.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -51,6 +52,16 @@ void print_hex64(uint64_t val) {
     print(buf);
 }
 
+// Simple assertion helper for bare-metal console output
+void assert_test(bool condition, const char* test_name) {
+    if (condition) {
+        print("[PASS] ");
+        print(test_name);
+    } else {
+        print("[FAIL] ");
+        print(test_name);
+    }
+}
 // --- TEST SUITES ---
 
 void test_cpu() {
@@ -142,6 +153,56 @@ void test_data_abort() {
     print("  [PASS] Data Abort trapped and execution safely resumed!\r\n");
 }
 
+void test_pfa() {
+    uintptr_t text_start = reinterpret_cast<uintptr_t>(_text_start);
+    uintptr_t kernel_end = reinterpret_cast<uintptr_t>(_text_end);
+
+    // Simulated RAM layout for QEMU virt (128MB starting at 0x40000000)
+    uintptr_t ram_start = 0x40000000;
+    uintptr_t ram_end   = 0x48000000;
+
+    // Initialize Page Frame Allocator
+    pfa_init(ram_start, ram_end);
+
+    // --- TEST 1: Single Allocation & Kernel Boundary Check ---
+    uintptr_t page1 = alloc_frame();
+    uintptr_t page1_addr = reinterpret_cast<uintptr_t>(page1);
+
+    assert_test(page1 != NULL, "Allocated first page");
+    assert_test((page1_addr % 4096) == 0, "First page is 4KB page-aligned");
+    assert_test(page1_addr >= kernel_end, "First allocated page is outside kernel image");
+    assert_test(page1_addr < ram_end, "First allocated page is within valid RAM");
+
+    // --- TEST 2: Multiple Sequential Allocations ---
+    uintptr_t page2 = alloc_frame();
+    uintptr_t page3 = alloc_frame();
+    uintptr_t page2_addr = reinterpret_cast<uintptr_t>(page2);
+    uintptr_t page3_addr = reinterpret_cast<uintptr_t>(page3);
+
+    assert_test(page2 != NULL && page3 != NULL, "Allocated multiple pages");
+    assert_test(page1 != page2 && page2 != page3, "Allocated pages have unique addresses");
+    assert_test(page2_addr >= kernel_end && page3_addr >= kernel_end, "All pages are past kernel end");
+
+    // --- TEST 3: Free and Reuse ---
+    free_frame(page2);
+    uintptr_t page_reused = alloc_frame();
+
+    assert_test(page_reused == page2, "Freed page was successfully recycled");
+
+    // Clean up test allocations
+    free_frame(page1);
+    free_frame(page3);
+    free_frame(page_reused);
+
+    // --- TEST 4: Memory Read/Write Sanity Check ---
+    uintptr_t rw_page = alloc_frame();
+    volatile uint64_t* ptr = reinterpret_cast<volatile uint64_t*>(rw_page);
+    
+    *ptr = 0xDEADBEEFCAFEBABE;
+    assert_test(*ptr == 0xDEADBEEFCAFEBABE, "Allocated RAM page allows read/write");
+    free_frame(rw_page);
+}
+
 void execute_command(char* cmd) {
     if (cmd[0] == '\0') {
         return;
@@ -157,6 +218,7 @@ void execute_command(char* cmd) {
         print("  test cpp    - Verify .bss zeroing and C++ vtable dynamic dispatch\r\n");
         print("  test svc    - Execute SVC #0 trap and verify handler routing\r\n");
         print("  test abort  - Dereference unmapped pointer to test Data Abort trap\r\n");
+        print("  test pfa    - Execute Page Frame Allocator tests\r\n");
         print("  test all    - Run entire verification test suite\r\n");
         print("  halt        - Put CPU into low-power WFI state\r\n");
     } else if (streq(cmd, "info")) {
@@ -180,6 +242,8 @@ void execute_command(char* cmd) {
         test_svc_trap();
     } else if (streq(cmd, "test abort")) {
         test_data_abort();
+    } else if (streq(cmd, "test pfa")) {
+        test_pfa();
     } else if (streq(cmd, "test all")) {
         test_cpp();
         test_cpu();
@@ -187,6 +251,7 @@ void execute_command(char* cmd) {
         test_el0();
         test_svc_trap();
         test_data_abort();
+        test_pfa();
     } else if (streq(cmd, "halt")) {
         print("Halting CPU...\r\n");
         while (true) {
