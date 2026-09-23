@@ -56,11 +56,11 @@ void print_hex64(uint64_t val) {
 void assert_test(bool condition, const char* test_name) {
     if (condition) {
         print("[PASS] ");
-        print(test_name);
     } else {
         print("[FAIL] ");
-        print(test_name);
     }
+    print(test_name);
+    print("\n");
 }
 // --- TEST SUITES ---
 
@@ -154,12 +154,11 @@ void test_data_abort() {
 }
 
 void test_pfa() {
-    uintptr_t text_start = reinterpret_cast<uintptr_t>(_text_start);
     uintptr_t kernel_end = reinterpret_cast<uintptr_t>(_text_end);
 
     // Simulated RAM layout for QEMU virt (128MB starting at 0x40000000)
     uintptr_t ram_start = 0x40000000;
-    uintptr_t ram_end   = 0x48000000;
+    uintptr_t ram_end = 0x48000000;
 
     // Initialize Page Frame Allocator
     pfa_init(ram_start, ram_end);
@@ -168,7 +167,7 @@ void test_pfa() {
     uintptr_t page1 = alloc_frame();
     uintptr_t page1_addr = reinterpret_cast<uintptr_t>(page1);
 
-    assert_test(page1 != NULL, "Allocated first page");
+    assert_test(page1 != 0L, "Allocated first page");
     assert_test((page1_addr % 4096) == 0, "First page is 4KB page-aligned");
     assert_test(page1_addr >= kernel_end, "First allocated page is outside kernel image");
     assert_test(page1_addr < ram_end, "First allocated page is within valid RAM");
@@ -179,9 +178,10 @@ void test_pfa() {
     uintptr_t page2_addr = reinterpret_cast<uintptr_t>(page2);
     uintptr_t page3_addr = reinterpret_cast<uintptr_t>(page3);
 
-    assert_test(page2 != NULL && page3 != NULL, "Allocated multiple pages");
+    assert_test(page2 != 0L && page3 != 0L, "Allocated multiple pages");
     assert_test(page1 != page2 && page2 != page3, "Allocated pages have unique addresses");
-    assert_test(page2_addr >= kernel_end && page3_addr >= kernel_end, "All pages are past kernel end");
+    assert_test(page2_addr >= kernel_end && page3_addr >= kernel_end,
+                "All pages are past kernel end");
 
     // --- TEST 3: Free and Reuse ---
     free_frame(page2);
@@ -197,7 +197,7 @@ void test_pfa() {
     // --- TEST 4: Memory Read/Write Sanity Check ---
     uintptr_t rw_page = alloc_frame();
     volatile uint64_t* ptr = reinterpret_cast<volatile uint64_t*>(rw_page);
-    
+
     *ptr = 0xDEADBEEFCAFEBABE;
     assert_test(*ptr == 0xDEADBEEFCAFEBABE, "Allocated RAM page allows read/write");
     free_frame(rw_page);

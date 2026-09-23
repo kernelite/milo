@@ -1,13 +1,14 @@
 #include "mm/pfa.hpp"
+
 #include "hal/console.hpp"
 
 namespace {
 
 alignas(8) uint8_t g_bitmap[BITMAP_SIZE_BYTES];
 
-uintptr_t g_ram_start   = 0;
-uintptr_t g_ram_end     = 0;
-size_t    g_total_pages = 0;
+uintptr_t g_ram_start = 0;
+uintptr_t g_ram_end = 0;
+size_t g_total_pages = 0;
 
 void print_str(const char* str) noexcept {
     size_t len = 0;
@@ -40,11 +41,15 @@ inline bool test_bit(size_t page_idx) noexcept {
 }
 
 void reserve_range(uintptr_t start_paddr, uintptr_t end_paddr) noexcept {
-    if (start_paddr < g_ram_start) { start_paddr = g_ram_start; }
-    if (end_paddr > g_ram_end) { end_paddr = g_ram_end; }
+    if (start_paddr < g_ram_start) {
+        start_paddr = g_ram_start;
+    }
+    if (end_paddr > g_ram_end) {
+        end_paddr = g_ram_end;
+    }
 
     size_t start_idx = (start_paddr - RAM_BASE) >> PAGE_SHIFT;
-    size_t end_idx   = (end_paddr - RAM_BASE + PAGE_SIZE - 1U) >> PAGE_SHIFT;
+    size_t end_idx = (end_paddr - RAM_BASE + PAGE_SIZE - 1U) >> PAGE_SHIFT;
 
     for (size_t i = start_idx; i < end_idx && i < g_total_pages; ++i) {
         set_bit(i);
@@ -54,8 +59,8 @@ void reserve_range(uintptr_t start_paddr, uintptr_t end_paddr) noexcept {
 } // namespace
 
 void pfa_init(uintptr_t ram_start, size_t ram_size) noexcept {
-    g_ram_start   = ram_start;
-    g_ram_end     = ram_start + ram_size;
+    g_ram_start = ram_start;
+    g_ram_end = ram_start + ram_size;
     g_total_pages = ram_size >> PAGE_SHIFT;
 
     for (size_t i = 0; i < BITMAP_SIZE_BYTES; ++i) {
@@ -69,16 +74,24 @@ void pfa_init(uintptr_t ram_start, size_t ram_size) noexcept {
     }
 
     const auto kernel_start = reinterpret_cast<uintptr_t>(_text_start);
-    const auto kernel_end   = reinterpret_cast<uintptr_t>(_text_end);
+    const auto kernel_end = reinterpret_cast<uintptr_t>(_text_end);
     reserve_range(kernel_start, kernel_end);
 
     const auto bitmap_start = reinterpret_cast<uintptr_t>(&g_bitmap[0]);
-    const auto bitmap_end   = bitmap_start + sizeof(g_bitmap);
+    const auto bitmap_end = bitmap_start + sizeof(g_bitmap);
     reserve_range(bitmap_start, bitmap_end);
 
     print_str("[PFA] Physical Frame Allocator Initialized.\r\n");
-    print_str("      RAM Range   : "); print_hex64(g_ram_start); print_str(" - "); print_hex64(g_ram_end); print_str("\r\n");
-    print_str("      Kernel Range: "); print_hex64(kernel_start); print_str(" - "); print_hex64(kernel_end); print_str("\r\n");
+    print_str("      RAM Range   : ");
+    print_hex64(g_ram_start);
+    print_str(" - ");
+    print_hex64(g_ram_end);
+    print_str("\r\n");
+    print_str("      Kernel Range: ");
+    print_hex64(kernel_start);
+    print_str(" - ");
+    print_hex64(kernel_end);
+    print_str("\r\n");
 }
 
 uintptr_t alloc_frame() noexcept {

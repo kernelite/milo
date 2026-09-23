@@ -6,13 +6,13 @@
 // Route platform constants from the configured architecture target
 #include "../arch/memory_config.hpp"
 
-constexpr uintptr_t RAM_BASE   = Arch::RAM_BASE;
-constexpr size_t PAGE_SIZE     = Arch::PAGE_SIZE;
-constexpr size_t PAGE_SHIFT    = Arch::PAGE_SHIFT;
-constexpr size_t MAX_RAM_SIZE  = Arch::MAX_RAM_SIZE;
+constexpr uintptr_t RAM_BASE = Arch::RAM_BASE;
+constexpr size_t PAGE_SIZE = Arch::PAGE_SIZE;
+constexpr size_t PAGE_SHIFT = Arch::PAGE_SHIFT;
+constexpr size_t MAX_RAM_SIZE = Arch::MAX_RAM_SIZE;
 
 // Derived allocation metadata
-constexpr size_t MAX_PAGES         = MAX_RAM_SIZE / PAGE_SIZE;
+constexpr size_t MAX_PAGES = MAX_RAM_SIZE / PAGE_SIZE;
 constexpr size_t BITMAP_SIZE_BYTES = MAX_PAGES / 8U;
 
 extern "C" {
