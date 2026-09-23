@@ -160,12 +160,12 @@
       "-Iarch/aarch64-linux-gnu",
       "-c",
       "-o",
-      "build/arch/aarch64-linux-gnu/cpu_aarch64.o",
-      "arch/aarch64-linux-gnu/cpu_aarch64.cpp"
+      "build/arch/aarch64-linux-gnu/cpu.o",
+      "arch/aarch64-linux-gnu/cpu.cpp"
     ],
     "directory": "/workspaces/milo",
-    "file": "/workspaces/milo/arch/aarch64-linux-gnu/cpu_aarch64.cpp",
-    "output": "/workspaces/milo/build/arch/aarch64-linux-gnu/cpu_aarch64.o"
+    "file": "/workspaces/milo/arch/aarch64-linux-gnu/cpu.cpp",
+    "output": "/workspaces/milo/build/arch/aarch64-linux-gnu/cpu.o"
   },
   {
     "arguments": [
@@ -190,5 +190,29 @@
     "directory": "/workspaces/milo",
     "file": "/workspaces/milo/kernel/shell/shell.cpp",
     "output": "/workspaces/milo/build/kernel/shell/shell.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/aarch64-linux-gnu-g++",
+      "-std=c++20",
+      "-ffreestanding",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-fno-use-cxa-atexit",
+      "-fno-exceptions",
+      "-fno-rtti",
+      "-fno-threadsafe-statics",
+      "-g",
+      "-Ikernel",
+      "-Iarch/aarch64-linux-gnu",
+      "-c",
+      "-o",
+      "build/kernel/mm/pfa.o",
+      "kernel/mm/pfa.cpp"
+    ],
+    "directory": "/workspaces/milo",
+    "file": "/workspaces/milo/kernel/mm/pfa.cpp",
+    "output": "/workspaces/milo/build/kernel/mm/pfa.o"
   }
 ]
