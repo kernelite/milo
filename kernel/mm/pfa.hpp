@@ -16,7 +16,9 @@ constexpr size_t MAX_PAGES = MAX_RAM_SIZE / PAGE_SIZE;
 constexpr size_t BITMAP_SIZE_BYTES = MAX_PAGES / 8U;
 
 extern "C" {
+// NOLINTNEXTLINE(bugprone-dynamic-static-initializers)
 extern char _text_start[];
+// NOLINTNEXTLINE(bugprone-dynamic-static-initializers)
 extern char _text_end[];
 }
 
