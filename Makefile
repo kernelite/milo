@@ -28,15 +28,20 @@ OBJS := $(patsubst %.cpp, $(BUILD_DIR)/%.o, $(SRCS_CXX)) \
         $(patsubst %.s, $(BUILD_DIR)/%.o, $(SRCS_ASM))
 DEPS := $(OBJS:.o=.d)
 
-.PHONY: all clean
+.PHONY: all clean run debug gdb lint format format-check lint-report quality compile_commands.json ai-dump
 
 all: $(BUILD_DIR)/$(TARGET)
+
+# Explicit target for memory_config.hpp to prevent race conditions during parallel builds
+arch/memory_config.hpp: arch/$(ARCH)/memory_config.hpp
+	@mkdir -p arch
+	cp $< $@
 
 $(BUILD_DIR)/$(TARGET): $(OBJS)
 	@mkdir -p $(dir $@)
 	$(LD) $(LDFLAGS) -o $@ $^
 
-$(BUILD_DIR)/%.o: %.cpp
+$(BUILD_DIR)/%.o: %.cpp arch/memory_config.hpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Ikernel -Iarch/$(ARCH) -c $< -o $@
 
@@ -47,14 +52,12 @@ $(BUILD_DIR)/%.o: %.s
 -include $(DEPS)
 
 clean:
-	rm -rf $(BUILD_DIR)
+	rm -rf $(BUILD_DIR) arch/memory_config.hpp
 
 # QEMU Executable & Flags
 QEMU      ?= qemu-system-aarch64
 QEMUFLAGS := -M virt -cpu cortex-a53 -nographic -kernel $(BUILD_DIR)/$(TARGET)
 GDB       ?= gdb-multiarch
-
-.PHONY: run debug gdb
 
 # Run kernel directly inside QEMU
 run: $(BUILD_DIR)/$(TARGET)
@@ -73,25 +76,19 @@ gdb: $(BUILD_DIR)/$(TARGET)
 HDRS := $(shell find kernel arch -name '*.hpp' -o -name '*.h')
 
 # --- Compilation Database Generation ---
-.PHONY: compile_commands.json
 compile_commands.json: clean
 	@echo "[BEAR] Generating compilation database..."
 	bear -- $(MAKE) all
 
 # --- Code Quality Targets ---
-.PHONY: lint format format-check lint-report quality
-
-# Run clang-tidy against all C++ source files using compile_commands.json
 lint: compile_commands.json
 	@echo "[LINT] Running clang-tidy on C++ sources..."
 	clang-tidy -p . $(SRCS_CXX)
 
-# Automatically format all source and header files in-place
 format:
 	@echo "[FORMAT] Formatting sources with clang-format..."
 	clang-format -i $(SRCS_CXX) $(HDRS)
 
-# CI check: Fail if any file does not adhere to .clang-format
 format-check:
 	@echo "[FORMAT-CHECK] Checking source formatting..."
 	clang-format --dry-run --Werror $(SRCS_CXX) $(HDRS)
