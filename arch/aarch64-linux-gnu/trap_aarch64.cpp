@@ -22,12 +22,15 @@ void print_str(const char* str) noexcept {
 }
 
 void print_hex64(uint64_t val) noexcept {
-    char buf[19] = "0x0000000000000000";
+    char buf[19];
+    buf[0] = '0';
+    buf[1] = 'x';
     const char hex_chars[] = "0123456789ABCDEF";
     for (int i = 17; i >= 2; --i) {
         buf[i] = hex_chars[val & 0xFU];
         val >>= 4U;
     }
+    buf[18] = '\0';
     print_str(buf);
 }
 
@@ -107,17 +110,14 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
             ctx->x[0] = static_cast<uint64_t>(-38); // -ENOSYS
         }
 
-        // Advance ELR_EL1 past the 4-byte SVC instruction to prevent re-triggering
         ctx->elr_el1 += 4U;
         return;
     }
 
     case 0x20U: // Instruction Abort from Lower EL
     case 0x21U: // Instruction Abort from Current EL
-    case 0x24U: // Data Abort from Lower EL
-    case 0x25U: // Data Abort from Current EL
     {
-        print_str("\r\n[TRAP] Data/Instruction Abort Trap Captured!\r\n");
+        print_str("\r\n[TRAP] Instruction Abort Trap Captured!\r\n");
         print_str("  Faulting Virtual Address (FAR_EL1): ");
         print_hex64(far);
         print_str("\r\n  Syndrome Register        (ESR_EL1): ");
@@ -131,8 +131,30 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
             return_to_kernel(-1);
         }
 
-        print_str("[TRAP] EL1 Fault detected! Advancing ELR_EL1 past faulting instruction...\r\n");
-        ctx->elr_el1 += 4U;
+        print_str("[TRAP] EL1 Instruction Abort! Returning to caller via LR (X30)...\r\n");
+        ctx->elr_el1 = ctx->x[30]; // Return directly to caller function
+        return;
+    }
+
+    case 0x24U: // Data Abort from Lower EL
+    case 0x25U: // Data Abort from Current EL
+    {
+        print_str("\r\n[TRAP] Data Abort Trap Captured!\r\n");
+        print_str("  Faulting Virtual Address (FAR_EL1): ");
+        print_hex64(far);
+        print_str("\r\n  Syndrome Register        (ESR_EL1): ");
+        print_hex64(esr);
+        print_str("\r\n");
+
+        dump_registers(ctx);
+
+        if ((ctx->spsr_el1 & 0x0FU) == 0U) {
+            print_str("[TRAP] Terminating faulting EL0 process.\r\n");
+            return_to_kernel(-1);
+        }
+
+        print_str("[TRAP] EL1 Data Abort! Advancing ELR_EL1 past faulting store instruction...\r\n");
+        ctx->elr_el1 += 4U; // Skip 4-byte load/store instruction
         return;
     }
 

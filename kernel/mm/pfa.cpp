@@ -1,5 +1,4 @@
 #include "mm/pfa.hpp"
-
 #include "hal/console.hpp"
 
 namespace {
@@ -74,7 +73,8 @@ void pfa_init(uintptr_t ram_start, size_t ram_size) noexcept {
     }
 
     const auto kernel_start = reinterpret_cast<uintptr_t>(_text_start);
-    const auto kernel_end = reinterpret_cast<uintptr_t>(_text_end);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    const auto kernel_end = reinterpret_cast<uintptr_t>(__bss_end);
     reserve_range(kernel_start, kernel_end);
 
     const auto bitmap_start = reinterpret_cast<uintptr_t>(&g_bitmap[0]);
@@ -103,19 +103,22 @@ uintptr_t alloc_frames(size_t count) noexcept {
         return 0U;
     }
 
+    static size_t search_start = 0U;
     size_t consecutive = 0U;
     size_t start_idx = 0U;
 
-    for (size_t i = 0U; i < g_total_pages; ++i) {
-        if (!test_bit(i)) {
+    for (size_t scan = 0U; scan < g_total_pages; ++scan) {
+        size_t idx = (search_start + scan) % g_total_pages;
+        if (!test_bit(idx)) {
             if (consecutive == 0U) {
-                start_idx = i;
+                start_idx = idx;
             }
             consecutive++;
             if (consecutive == count) {
                 for (size_t j = start_idx; j < start_idx + count; ++j) {
                     set_bit(j);
                 }
+                search_start = (start_idx + count) % g_total_pages;
                 return RAM_BASE + (start_idx << PAGE_SHIFT);
             }
         } else {

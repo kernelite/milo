@@ -14,6 +14,19 @@ enum class PageFlags : uint32_t {
     Cacheable = 1 << 5
 };
 
+constexpr PageFlags operator|(PageFlags lhs, PageFlags rhs) noexcept {
+    return static_cast<PageFlags>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+}
+
+constexpr PageFlags& operator|=(PageFlags& lhs, PageFlags rhs) noexcept {
+    lhs = lhs | rhs;
+    return lhs;
+}
+
+constexpr bool operator&(PageFlags lhs, PageFlags rhs) noexcept {
+    return (static_cast<uint32_t>(lhs) & static_cast<uint32_t>(rhs)) != 0U;
+}
+
 struct MmuStatus {
     bool mmu_enabled;
     bool dcache_enabled;
