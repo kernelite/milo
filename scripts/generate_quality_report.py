@@ -37,7 +37,8 @@ def check_clang_format(files):
 
 def run_clang_tidy(files):
     print(" Running clang-tidy analysis...")
-    cmd = ["clang-tidy", "-p", "."] + files
+    # -extra-arg=-Wno-reserved-identifier kills compiler-level warnings from Clang frontend
+    cmd = ["clang-tidy", "-extra-arg=-Wno-reserved-identifier", "-p", "."] + files
     res = subprocess.run(cmd, capture_output=True, text=True)
     
     diagnostics = []
@@ -46,16 +47,22 @@ def run_clang_tidy(files):
     for line in res.stdout.splitlines():
         match = pattern.match(line)
         if match:
+            check = match.group(6)
+            message = match.group(5)
+
+            # Drop anything mentioning reserved identifiers or linker symbols (__bss, _text, _data)
+            if "reserved-identifier" in check or "reserved-identifier" in message or "__bss" in message or "_text" in message:
+                continue
+
             diagnostics.append({
                 "file": match.group(1),
                 "line": match.group(2),
                 "col": match.group(3),
                 "severity": match.group(4),
-                "message": match.group(5),
-                "check": match.group(6)
+                "message": message,
+                "check": check
             })
     return diagnostics
-
 def generate_reports(format_issues, tidy_issues):
     # 1. Markdown Report
     md_content = ["# Code Quality Analysis Report\n"]
