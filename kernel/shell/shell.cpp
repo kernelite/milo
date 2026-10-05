@@ -55,7 +55,6 @@ void print_str(const char* str) {
     HAL::get_console().write(str, len);
 }
 
-
 // Simple assertion helper for bare-metal console output
 void assert_test(bool condition, const char* test_name) {
     if (condition) {
@@ -107,19 +106,19 @@ void cmd_info() noexcept {
     print_str("\r\n=============================================\r\n");
 }
 
-
 void cmd_test_cpu() {
     print_str("[TEST] Testing CPU HAL Interrupt Management...\r\n");
     bool initial_state = HAL::get_cpu().interrupts_enabled();
 
     HAL::get_cpu().disable_interrupts();
     bool disabled_state = HAL::get_cpu().interrupts_enabled();
-    print_str(disabled_state ? "  [FAIL] Interrupts still enabled after disable()\r\n" : "  [PASS] Interrupts successfully disabled.\r\n");
+    print_str(disabled_state ? "  [FAIL] Interrupts still enabled after disable()\r\n"
+                             : "  [PASS] Interrupts successfully disabled.\r\n");
 
     HAL::get_cpu().enable_interrupts();
     bool enabled_state = HAL::get_cpu().interrupts_enabled();
     print_str(enabled_state ? "  [PASS] Interrupts successfully enabled.\r\n"
-                        : "  [FAIL] Interrupts still disabled after enable()\r\n");
+                            : "  [FAIL] Interrupts still disabled after enable()\r\n");
 
     // Restore initial state
     if (!initial_state) {
@@ -139,9 +138,9 @@ void cmd_test_mmu() {
 
     print_str(status.mmu_enabled ? "  [PASS] MMU: ENABLED\r\n" : "  [INFO] MMU: DISABLED\r\n");
     print_str(status.dcache_enabled ? "  [PASS] Data Cache: ENABLED\r\n"
-                                : "  [INFO] Data Cache: DISABLED\r\n");
+                                    : "  [INFO] Data Cache: DISABLED\r\n");
     print_str(status.icache_enabled ? "  [PASS] Instruction Cache: ENABLED\r\n"
-                                : "  [INFO] Instruction Cache: DISABLED\r\n");
+                                    : "  [INFO] Instruction Cache: DISABLED\r\n");
 }
 
 void cmd_test_el0() {
@@ -189,7 +188,8 @@ void cmd_test_svc_trap() {
 }
 
 void cmd_test_data_abort() {
-    print_str("[TEST] Triggering Data Abort by accessing invalid address 0x00000000DEADBEE0ULL...\r\n");
+    print_str(
+        "[TEST] Triggering Data Abort by accessing invalid address 0x00000000DEADBEE0ULL...\r\n");
     volatile uint32_t* bad_ptr = reinterpret_cast<volatile uint32_t*>(0x00000000DEADBEE0ULL);
     *bad_ptr = 0x42; // Hardware Data Abort trap triggers here
 
@@ -285,11 +285,12 @@ void cmd_test_sys() noexcept {
     print_str("  Entering EL0 User Mode to execute privileged 'mrs x0, sctlr_el1'...\r\n");
 
     const uintptr_t user_sp = reinterpret_cast<uintptr_t>(&g_el0_test_stack[4096]);
-    const uintptr_t entry   = reinterpret_cast<uintptr_t>(el0_sysreg_test_entry);
+    const uintptr_t entry = reinterpret_cast<uintptr_t>(el0_sysreg_test_entry);
 
     enter_user_mode(entry, user_sp);
 
-    print_str("  [PASS] EL0 System Register Trap (EC 0x18) handled! Process terminated cleanly.\r\n");
+    print_str(
+        "  [PASS] EL0 System Register Trap (EC 0x18) handled! Process terminated cleanly.\r\n");
 }
 
 void print_help() noexcept {
@@ -341,7 +342,7 @@ void dispatch_command(const char* buf) noexcept {
         print_str("\033[2J\033[H"); // VT100 Clear Screen and
     } else if (streq(buf, "help")) {
         print_help();
-        } else if (streq(buf, "test all")) {
+    } else if (streq(buf, "test all")) {
         cmd_test_cpu();
         cmd_test_mmu();
         cmd_test_el0();

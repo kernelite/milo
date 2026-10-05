@@ -1,10 +1,6 @@
-// ==========================================================================
-// File: arch/aarch64-linux-gnu/mmu_aarch64.cpp
-// ==========================================================================
-
-#include "hal/mmu.hpp"
 #include "cpu_context.hpp"
 #include "hal/console.hpp"
+#include "hal/mmu.hpp"
 #include "memory_config.hpp"
 
 #include <cstddef>
@@ -28,7 +24,8 @@ uintptr_t alloc_frame() __attribute__((weak));
 
 // Ensure bitwise operations work seamlessly on HAL::PageFlags enum class
 constexpr HAL::PageFlags operator|(HAL::PageFlags first, HAL::PageFlags second) noexcept {
-    return static_cast<HAL::PageFlags>(static_cast<uint32_t>(first) | static_cast<uint32_t>(second));
+    return static_cast<HAL::PageFlags>(static_cast<uint32_t>(first) |
+                                       static_cast<uint32_t>(second));
 }
 
 constexpr bool has_flag(HAL::PageFlags flags, HAL::PageFlags test) noexcept {
@@ -45,7 +42,7 @@ inline void flush_dcache_range(uintptr_t addr, size_t size) noexcept {
     const uintptr_t end = addr + size;
     addr &= ~(line_size - 1U);
     for (; addr < end; addr += line_size) {
-        asm volatile("dc civac, %0" :: "r"(addr) : "memory");
+        asm volatile("dc civac, %0" ::"r"(addr) : "memory");
     }
     asm volatile("dsb sy" ::: "memory");
 }
@@ -75,7 +72,8 @@ uintptr_t allocate_table_page() noexcept {
     return phys;
 }
 
-bool map_page_in_root(uint64_t* root_l0, uintptr_t virt_addr, uintptr_t phys_addr, HAL::PageFlags flags) noexcept {
+bool map_page_in_root(uint64_t* root_l0, uintptr_t virt_addr, uintptr_t phys_addr,
+                      HAL::PageFlags flags) noexcept {
     const size_t l0_idx = (virt_addr >> 39U) & 0x1FFU;
     const size_t l1_idx = (virt_addr >> 30U) & 0x1FFU;
     const size_t l2_idx = (virt_addr >> 21U) & 0x1FFU;
@@ -116,11 +114,11 @@ bool map_page_in_root(uint64_t* root_l0, uintptr_t virt_addr, uintptr_t phys_add
 
     // L3 Page Descriptor Construction
     uint64_t desc = (phys_addr & 0x000FFFFFFFFFF000ULL) | 0x3ULL; // Valid + Page Descriptor
-    desc |= (1ULL << 10U); // Access Flag (AF)
+    desc |= (1ULL << 10U);                                        // Access Flag (AF)
 
-    const bool is_write  = has_flag(flags, HAL::PageFlags::Write);
-    const bool is_user   = has_flag(flags, HAL::PageFlags::User);
-    const bool is_exec   = has_flag(flags, HAL::PageFlags::Execute);
+    const bool is_write = has_flag(flags, HAL::PageFlags::Write);
+    const bool is_user = has_flag(flags, HAL::PageFlags::User);
+    const bool is_exec = has_flag(flags, HAL::PageFlags::Execute);
     const bool is_device = has_flag(flags, HAL::PageFlags::Device);
 
     // Select MAIR_EL1 Index: Attr 0 = Device-nGnRnE (0x00), Attr 1 = Normal WB (0xFF)
@@ -170,12 +168,14 @@ bool unmap_page_in_root(const uint64_t* root_l0, uintptr_t virt_addr) noexcept {
     if ((root_l0[l0_idx] & 1U) == 0U) {
         return false;
     }
-    const auto* l1_table = reinterpret_cast<const uint64_t*>(root_l0[l0_idx] & 0x000FFFFFFFFFF000ULL);
+    const auto* l1_table =
+        reinterpret_cast<const uint64_t*>(root_l0[l0_idx] & 0x000FFFFFFFFFF000ULL);
 
     if ((l1_table[l1_idx] & 1U) == 0U) {
         return false;
     }
-    const auto* l2_table = reinterpret_cast<const uint64_t*>(l1_table[l1_idx] & 0x000FFFFFFFFFF000ULL);
+    const auto* l2_table =
+        reinterpret_cast<const uint64_t*>(l1_table[l1_idx] & 0x000FFFFFFFFFF000ULL);
 
     if ((l2_table[l2_idx] & 1U) == 0U) {
         return false;
@@ -185,7 +185,7 @@ bool unmap_page_in_root(const uint64_t* root_l0, uintptr_t virt_addr) noexcept {
     l3_table[l3_idx] = 0ULL;
     flush_dcache_range(reinterpret_cast<uintptr_t>(&l3_table[l3_idx]), sizeof(uint64_t));
 
-    asm volatile("tlbi vaae1is, %0; dsb ish; isb" :: "r"(virt_addr >> 12U) : "memory");
+    asm volatile("tlbi vaae1is, %0; dsb ish; isb" ::"r"(virt_addr >> 12U) : "memory");
     return true;
 }
 
@@ -210,10 +210,10 @@ class AArch64MemoryControl : public HAL::MemoryControl {
     void activate() override {
         // Build initial identity & hardware section mappings prior to MMU enable
         const uintptr_t text_start = reinterpret_cast<uintptr_t>(_text_start);
-        const uintptr_t text_end   = reinterpret_cast<uintptr_t>(_text_end);
+        const uintptr_t text_end = reinterpret_cast<uintptr_t>(_text_end);
         const uintptr_t rodata_start = reinterpret_cast<uintptr_t>(_rodata_start);
-        const uintptr_t rodata_end   = reinterpret_cast<uintptr_t>(_rodata_end);
-        const uintptr_t data_start   = reinterpret_cast<uintptr_t>(_data_start);
+        const uintptr_t rodata_end = reinterpret_cast<uintptr_t>(_rodata_end);
+        const uintptr_t data_start = reinterpret_cast<uintptr_t>(_data_start);
         // bss_end = (bss_end + Arch::PAGE_SIZE - 1U) & ~(Arch::PAGE_SIZE - 1U);
 
         // 1. Identity map UART MMIO register space (0x09000000) as Device-nGnRnE (RW + NX)
@@ -222,7 +222,8 @@ class AArch64MemoryControl : public HAL::MemoryControl {
 
         // 2. Identity map Kernel .text (RO + Executable)
         for (uintptr_t addr = text_start; addr < text_end; addr += Arch::PAGE_SIZE) {
-            map_page_in_root(g_ttbr0_l0, addr, addr, HAL::PageFlags::Read | HAL::PageFlags::Execute);
+            map_page_in_root(g_ttbr0_l0, addr, addr,
+                             HAL::PageFlags::Read | HAL::PageFlags::Execute);
         }
 
         // 3. Identity map Kernel .rodata (RO + NX)
@@ -231,7 +232,8 @@ class AArch64MemoryControl : public HAL::MemoryControl {
         }
 
         // 4. Identity map Kernel .data, .bss, boot stack, and physical RAM pool (RW + NX)
-        const uintptr_t ram_end = Arch::RAM_BASE + (64UL * 1024UL * 1024UL); // 64 MB Identity mapped RAM
+        const uintptr_t ram_end =
+            Arch::RAM_BASE + (64UL * 1024UL * 1024UL); // 64 MB Identity mapped RAM
         for (uintptr_t addr = data_start; addr < ram_end; addr += Arch::PAGE_SIZE) {
             map_page_in_root(g_ttbr0_l0, addr, addr, HAL::PageFlags::Read | HAL::PageFlags::Write);
         }
@@ -239,17 +241,20 @@ class AArch64MemoryControl : public HAL::MemoryControl {
         // 5. Higher-half kernel space mappings for TTBR1_EL1 (0xFFFF800040000000+)
         const uintptr_t higher_half_offset = 0xFFFF800000000000ULL;
         for (uintptr_t addr = text_start; addr < text_end; addr += Arch::PAGE_SIZE) {
-            map_page_in_root(g_ttbr1_l0, addr + higher_half_offset, addr, HAL::PageFlags::Read | HAL::PageFlags::Execute);
+            map_page_in_root(g_ttbr1_l0, addr + higher_half_offset, addr,
+                             HAL::PageFlags::Read | HAL::PageFlags::Execute);
         }
         for (uintptr_t addr = rodata_start; addr < rodata_end; addr += Arch::PAGE_SIZE) {
             map_page_in_root(g_ttbr1_l0, addr + higher_half_offset, addr, HAL::PageFlags::Read);
         }
         for (uintptr_t addr = data_start; addr < ram_end; addr += Arch::PAGE_SIZE) {
-            map_page_in_root(g_ttbr1_l0, addr + higher_half_offset, addr, HAL::PageFlags::Read | HAL::PageFlags::Write);
+            map_page_in_root(g_ttbr1_l0, addr + higher_half_offset, addr,
+                             HAL::PageFlags::Read | HAL::PageFlags::Write);
         }
 
         // Activate hardware MMU and system control registers
-        Arch::init_mmu(reinterpret_cast<uintptr_t>(g_ttbr0_l0), reinterpret_cast<uintptr_t>(g_ttbr1_l0));
+        Arch::init_mmu(reinterpret_cast<uintptr_t>(g_ttbr0_l0),
+                       reinterpret_cast<uintptr_t>(g_ttbr1_l0));
     }
 
     HAL::MmuStatus status() const noexcept override {
@@ -275,36 +280,38 @@ void init_mmu(uintptr_t ttbr0_base, uintptr_t ttbr1_base) {
 
     // 1. Setup MAIR_EL1: Attr0 = 0x00 (Device-nGnRnE), Attr1 = 0xFF (Normal Inner/Outer Write-Back)
     const uint64_t mair = (0x00ULL << 0U) | (0xFFULL << 8U);
-    asm volatile("msr mair_el1, %0" :: "r"(mair));
+    asm volatile("msr mair_el1, %0" ::"r"(mair));
 
     // 2. Query CPU PARange to prevent Address Size Faults
     uint64_t mmfr0;
     asm volatile("mrs %0, id_aa64mmfr0_el1" : "=r"(mmfr0));
     const uint64_t pa_range = mmfr0 & 0xFU;
 
-    // 3. Setup TCR_EL1: 48-bit VA space (T0SZ=16, T1SZ=16), 4KB Granules (TG0=00b, TG1=10b), IS=11b, Inner/Outer WB
-    const uint64_t tcr = (16ULL << 0U)          | // T0SZ  = 16 (48-bit VA for TTBR0)
-                         (1ULL  << 8U)          | // IRGN0 = 01 (Normal WB WA)
-                         (1ULL  << 10U)         | // ORGN0 = 01 (Normal WB WA)
-                         (3ULL  << 12U)         | // SH0   = 11 (Inner Shareable)
-                         (0ULL  << 14U)         | // TG0   = 00 (4KB granule for TTBR0)
-                         (16ULL << 16U)         | // T1SZ  = 16 (48-bit VA for TTBR1)
-                         (1ULL  << 24U)         | // IRGN1 = 01 (Normal WB WA)
-                         (1ULL  << 26U)         | // ORGN1 = 01 (Normal WB WA)
-                         (3ULL  << 28U)         | // SH1   = 11 (Inner Shareable)
-                         (2ULL  << 30U)         | // TG1   = 10 (4KB granule for TTBR1)
-                         (pa_range << 32U);       // IPS   = PA physical address range
-    asm volatile("msr tcr_el1, %0" :: "r"(tcr));
+    // 3. Setup TCR_EL1: 48-bit VA space (T0SZ=16, T1SZ=16), 4KB Granules (TG0=00b, TG1=10b),
+    // IS=11b, Inner/Outer WB
+    const uint64_t tcr = (16ULL << 0U) |    // T0SZ  = 16 (48-bit VA for TTBR0)
+                         (1ULL << 8U) |     // IRGN0 = 01 (Normal WB WA)
+                         (1ULL << 10U) |    // ORGN0 = 01 (Normal WB WA)
+                         (3ULL << 12U) |    // SH0   = 11 (Inner Shareable)
+                         (0ULL << 14U) |    // TG0   = 00 (4KB granule for TTBR0)
+                         (16ULL << 16U) |   // T1SZ  = 16 (48-bit VA for TTBR1)
+                         (1ULL << 24U) |    // IRGN1 = 01 (Normal WB WA)
+                         (1ULL << 26U) |    // ORGN1 = 01 (Normal WB WA)
+                         (3ULL << 28U) |    // SH1   = 11 (Inner Shareable)
+                         (2ULL << 30U) |    // TG1   = 10 (4KB granule for TTBR1)
+                         (pa_range << 32U); // IPS   = PA physical address range
+    asm volatile("msr tcr_el1, %0" ::"r"(tcr));
 
     // 4. Set Page Table Roots
-    asm volatile("msr ttbr0_el1, %0" :: "r"(ttbr0_base));
-    asm volatile("msr ttbr1_el1, %0" :: "r"(ttbr1_base));
+    asm volatile("msr ttbr0_el1, %0" ::"r"(ttbr0_base));
+    asm volatile("msr ttbr1_el1, %0" ::"r"(ttbr1_base));
 
     // 5. Full system barrier & TLB flush
     asm volatile("dsb sy\n\t"
                  "tlbi vmalle1is\n\t"
                  "dsb sy\n\t"
-                 "isb" ::: "memory");
+                 "isb" ::
+                     : "memory");
 
     // 6. Enable MMU (M bit 0), Data Cache (C bit 2), and Instruction Cache (I bit 12)
     uint64_t sctlr;
@@ -316,7 +323,8 @@ void init_mmu(uintptr_t ttbr0_base, uintptr_t ttbr1_base) {
     sctlr &= ~(1ULL << 3U); // Clear Stack Alignment check (SA)
     sctlr &= ~(1ULL << 4U); // Clear Stack Alignment check for EL0 (SA0)
     asm volatile("msr sctlr_el1, %0\n\t"
-                 "isb" :: "r"(sctlr) : "memory");
+                 "isb" ::"r"(sctlr)
+                 : "memory");
 }
 
 } // namespace Arch
