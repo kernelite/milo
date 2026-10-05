@@ -214,8 +214,6 @@ class AArch64MemoryControl : public HAL::MemoryControl {
         const uintptr_t rodata_start = reinterpret_cast<uintptr_t>(_rodata_start);
         const uintptr_t rodata_end   = reinterpret_cast<uintptr_t>(_rodata_end);
         const uintptr_t data_start   = reinterpret_cast<uintptr_t>(_data_start);
-        uintptr_t bss_end            = reinterpret_cast<uintptr_t>(__bss_end);
-
         // bss_end = (bss_end + Arch::PAGE_SIZE - 1U) & ~(Arch::PAGE_SIZE - 1U);
 
         // 1. Identity map UART MMIO register space (0x09000000) as Device-nGnRnE (RW + NX)
