@@ -172,6 +172,21 @@ el1_vector_table:
     .align 7; mov x1, #14; b invalid_handler_entry // FIQ
     .align 7; mov x1, #15; b invalid_handler_entry // SError
 
+
+
+//---------------------------------------------------------------------------
+// Test entry for EL0 Sysreg
+//---------------------------------------------------------------------------
+
+.balign 4
+.global el0_sysreg_test_entry
+el0_sysreg_test_entry:
+    mrs     x0, sctlr_el1           // Attempt privileged read from EL0
+    mov     x8, #93                 // SYS_EXIT
+    mov     x0, #0
+    svc     #0
+1:  b       1b
+
 // ==========================================================================
 // User Mode & Arch Test Routines
 // ==========================================================================

@@ -1,5 +1,3 @@
-#include "shell.hpp"
-
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
@@ -8,14 +6,29 @@
 #include <cstddef>
 #include <cstdint>
 
-// Assembly routine declarations from boot.s
 extern "C" {
 void user_space_code();
 int64_t enter_user_mode(uintptr_t entry_point, uintptr_t user_sp);
 void trigger_svc_test();
+void el0_sysreg_test_entry() noexcept;
 }
 
 namespace {
+
+constexpr size_t INPUT_BUFFER_SIZE = 128;
+
+// Explicitly placed in .rodata segment (Read-Only)
+__attribute__((section(".rodata"))) const uint32_t g_rodata_test_target = 0xDEADBEEFU;
+
+// Explicitly placed in .data segment (Writable + Non-Executable)
+// Contains ARM64 'ret' (0xD65F03C0) instruction
+__attribute__((section(".data"))) const uint32_t g_data_nx_target[2] = {
+    0xD65F03C0U, // ret
+    0xD503201FU  // nop
+};
+
+alignas(16) uint8_t g_el0_test_stack[4096];
+
 constexpr size_t MAX_CMD_LEN = 128;
 alignas(16) uint8_t user_test_stack[2048];
 int bss_check_var; // Uninitialized global variable to verify .bss zeroing
@@ -34,7 +47,7 @@ bool streq(const char* str1, const char* str2) {
     return *str1 == *str2;
 }
 
-void print(const char* str) {
+void print_str(const char* str) {
     size_t len = 0;
     while (str[len] != '\0') {
         len++;
@@ -42,40 +55,70 @@ void print(const char* str) {
     HAL::get_console().write(str, len);
 }
 
-void print_hex64(uint64_t val) {
-    char buf[19] = "0x0000000000000000";
-    const char hex_chars[] = "0123456789ABCDEF";
-    for (int i = 17; i >= 2; --i) {
-        buf[i] = hex_chars[val & 0xF];
-        val >>= 4;
-    }
-    print(buf);
-}
 
 // Simple assertion helper for bare-metal console output
 void assert_test(bool condition, const char* test_name) {
     if (condition) {
-        print("[PASS] ");
+        print_str("[PASS] ");
     } else {
-        print("[FAIL] ");
+        print_str("[FAIL] ");
     }
-    print(test_name);
-    print("\n");
+    print_str(test_name);
+    print_str("\n");
 }
-// --- TEST SUITES ---
 
-void test_cpu() {
-    print("[TEST] Testing CPU HAL Interrupt Management...\r\n");
+void print_dec(uint8_t val) noexcept {
+    if (val >= 10U) {
+        HAL::get_console().putc(static_cast<char>('0' + (val / 10U)));
+    }
+    HAL::get_console().putc(static_cast<char>('0' + (val % 10U)));
+}
+
+void print_hex64(uint64_t val) noexcept {
+    char buf[19] = "0x0000000000000000";
+    const char hex_chars[] = "0123456789ABCDEF";
+    for (int i = 17; i >= 2; --i) {
+        buf[i] = hex_chars[val & 0xFU];
+        val >>= 4U;
+    }
+    print_str(buf);
+}
+
+// System diagnostic command: prints Exception Level, MMU, and Cache status safely
+void cmd_info() noexcept {
+    print_str("\r\n================ SYSTEM INFO ================\r\n");
+
+    // 1. Query Current Exception Level via CpuControl HAL
+    const uint8_t el_reg = HAL::get_cpu().current_el();
+    print_str("  Current Exception Level : EL");
+    print_dec(el_reg);
+    print_str("\r\n");
+
+    // 2. Query MMU and Cache hardware status
+    const auto mmu_st = HAL::get_mmu().status();
+    print_str("  MMU Enabled             : ");
+    print_str(mmu_st.mmu_enabled ? "YES\r\n" : "NO\r\n");
+    print_str("  D-Cache Enabled         : ");
+    print_str(mmu_st.dcache_enabled ? "YES\r\n" : "NO\r\n");
+    print_str("  I-Cache Enabled         : ");
+    print_str(mmu_st.icache_enabled ? "YES\r\n" : "NO\r\n");
+    print_str("  SCTLR_EL1 Register      : ");
+    print_hex64(mmu_st.raw_control_reg);
+    print_str("\r\n=============================================\r\n");
+}
+
+
+void cmd_test_cpu() {
+    print_str("[TEST] Testing CPU HAL Interrupt Management...\r\n");
     bool initial_state = HAL::get_cpu().interrupts_enabled();
 
     HAL::get_cpu().disable_interrupts();
     bool disabled_state = HAL::get_cpu().interrupts_enabled();
-    print(disabled_state ? "  [FAIL] Interrupts still enabled after disable()\r\n"
-                         : "  [PASS] Interrupts successfully disabled.\r\n");
+    print_str(disabled_state ? "  [FAIL] Interrupts still enabled after disable()\r\n" : "  [PASS] Interrupts successfully disabled.\r\n");
 
     HAL::get_cpu().enable_interrupts();
     bool enabled_state = HAL::get_cpu().interrupts_enabled();
-    print(enabled_state ? "  [PASS] Interrupts successfully enabled.\r\n"
+    print_str(enabled_state ? "  [PASS] Interrupts successfully enabled.\r\n"
                         : "  [FAIL] Interrupts still disabled after enable()\r\n");
 
     // Restore initial state
@@ -84,76 +127,76 @@ void test_cpu() {
     }
 }
 
-void test_mmu() {
-    print("[TEST] Inspecting System MMU & Cache Status via HAL...\r\n");
+void cmd_test_mmu() {
+    print_str("[TEST] Inspecting System MMU & Cache Status via HAL...\r\n");
 
     // Stack-allocated MMU status query
     HAL::MmuStatus status = HAL::MmuStatus();
 
-    print("  Control Register Value: ");
+    print_str("  Control Register Value: ");
     print_hex64(status.raw_control_reg);
-    print("\r\n");
+    print_str("\r\n");
 
-    print(status.mmu_enabled ? "  [PASS] MMU: ENABLED\r\n" : "  [INFO] MMU: DISABLED\r\n");
-    print(status.dcache_enabled ? "  [PASS] Data Cache: ENABLED\r\n"
+    print_str(status.mmu_enabled ? "  [PASS] MMU: ENABLED\r\n" : "  [INFO] MMU: DISABLED\r\n");
+    print_str(status.dcache_enabled ? "  [PASS] Data Cache: ENABLED\r\n"
                                 : "  [INFO] Data Cache: DISABLED\r\n");
-    print(status.icache_enabled ? "  [PASS] Instruction Cache: ENABLED\r\n"
+    print_str(status.icache_enabled ? "  [PASS] Instruction Cache: ENABLED\r\n"
                                 : "  [INFO] Instruction Cache: DISABLED\r\n");
 }
 
-void test_el0() {
-    print("[TEST] Testing EL0 User-Mode Transition & SVC Trap...\r\n");
+void cmd_test_el0() {
+    print_str("[TEST] Testing EL0 User-Mode Transition & SVC Trap...\r\n");
     uintptr_t stack_top = reinterpret_cast<uintptr_t>(user_test_stack) + sizeof(user_test_stack);
 
-    print("  Entering EL0 user_space_code at ");
+    print_str("  Entering EL0 user_space_code at ");
     print_hex64(reinterpret_cast<uintptr_t>(user_space_code));
-    print("...\r\n");
+    print_str("...\r\n");
 
     // Jump to EL0; user_space_code executes SVC #0 and returns via return_to_kernel
     int64_t res = enter_user_mode(reinterpret_cast<uintptr_t>(user_space_code), stack_top);
 
-    print("  [PASS] Safely returned from EL0 to EL1! Exit status: ");
+    print_str("  [PASS] Safely returned from EL0 to EL1! Exit status: ");
     print_hex64(static_cast<uint64_t>(res));
-    print("\r\n");
+    print_str("\r\n");
 }
 
-void test_cpp() {
-    print("[TEST] Verifying Freestanding C++ Runtime...\r\n");
+void cmd_test_cpp() {
+    print_str("[TEST] Verifying Freestanding C++ Runtime...\r\n");
 
     if (bss_check_var == 0) {
-        print("  [PASS] .bss section correctly zero-initialized.\r\n");
+        print_str("  [PASS] .bss section correctly zero-initialized.\r\n");
     } else {
-        print("  [FAIL] .bss contains uninitialized garbage!\r\n");
+        print_str("  [FAIL] .bss contains uninitialized garbage!\r\n");
     }
 
-    print("  Testing Virtual Function Dynamic Dispatch... ");
+    print_str("  Testing Virtual Function Dynamic Dispatch... ");
     HAL::get_console().putc('[');
     HAL::get_console().putc('O');
     HAL::get_console().putc('K');
     HAL::get_console().putc(']');
-    print("\r\n  [PASS] HAL vtable dynamic dispatch operational.\r\n");
+    print_str("\r\n  [PASS] HAL vtable dynamic dispatch operational.\r\n");
 }
 
-void test_svc_trap() {
-    print("[TEST] Triggering 'svc #0' syscall trap via ARCH assembly helper...\r\n");
+void cmd_test_svc_trap() {
+    print_str("[TEST] Triggering 'svc #0' syscall trap via ARCH assembly helper...\r\n");
 
     uint64_t user_sp = (uint64_t)user_stack + sizeof(user_stack);
     // Drop to EL0 and execute the test routine
     enter_user_mode((uint64_t)trigger_svc_test, user_sp);
 
     asm volatile("" ::: "memory"); // Prevents Tail-Call Optimization (TCO)
-    print("  [PASS] SVC trap handled and returned to EL1 successfully!\r\n");
+    print_str("  [PASS] SVC trap handled and returned to EL1 successfully!\r\n");
 }
 
-void test_data_abort() {
-    print("[TEST] Triggering Data Abort by accessing invalid address 0x00000000DEADBEE0ULL...\r\n");
+void cmd_test_data_abort() {
+    print_str("[TEST] Triggering Data Abort by accessing invalid address 0x00000000DEADBEE0ULL...\r\n");
     volatile uint32_t* bad_ptr = reinterpret_cast<volatile uint32_t*>(0x00000000DEADBEE0ULL);
     *bad_ptr = 0x42; // Hardware Data Abort trap triggers here
 
-    print("  [PASS] Data Abort trapped and execution safely resumed!\r\n");
+    print_str("  [PASS] Data Abort trapped and execution safely resumed!\r\n");
 }
 
-void test_pfa() {
+void cmd_test_pfa() {
     uintptr_t kernel_end = reinterpret_cast<uintptr_t>(_text_end);
 
     // Simulated RAM layout for QEMU virt (128MB starting at 0x40000000)
@@ -203,100 +246,153 @@ void test_pfa() {
     free_frame(rw_page);
 }
 
-void execute_command(char* cmd) {
-    if (cmd[0] == '\0') {
-        return;
-    }
-    if (streq(cmd, "help")) {
-        print("Available Commands:\r\n");
-        print("  help        - Display this menu\r\n");
-        print("  info        - Display system hardware & Exception Level\r\n");
-        print("  clear       - Clear VT100 terminal screen\r\n");
-        print("  test cpu    - Test CPU HAL interrupt enable/disable masking\r\n");
-        print("  test mmu    - Read SCTLR_EL1 to verify MMU and Caches\r\n");
-        print("  test el0    - Test EL0 user space switch and SVC trap return\r\n");
-        print("  test cpp    - Verify .bss zeroing and C++ vtable dynamic dispatch\r\n");
-        print("  test svc    - Execute SVC #0 trap and verify handler routing\r\n");
-        print("  test abort  - Dereference unmapped pointer to test Data Abort trap\r\n");
-        print("  test pfa    - Execute Page Frame Allocator tests\r\n");
-        print("  test all    - Run entire verification test suite\r\n");
-        print("  halt        - Put CPU into low-power WFI state\r\n");
-    } else if (streq(cmd, "info")) {
-        uint8_t elvl = HAL::get_cpu().current_el(); // Clean HAL Call!
+// Test 1: Trigger Data Abort on Read-Only (.rodata) page write
+void cmd_test_ro() noexcept {
+    print_str("\r\n[TEST] Running Read-Only (.rodata) Protection Test...\r\n");
+    print_str("  Target Address: ");
+    print_hex64(reinterpret_cast<uintptr_t>(&g_rodata_test_target));
+    print_str("\r\n  Executing write store: *ptr = 0xCAFEBABE...\r\n");
 
-        print("Architecture : AArch64 (QEMU virt, Cortex-A53)\r\n");
-        print("Current EL   : EL");
-        HAL::get_console().putc(static_cast<char>('0' + elvl));
-        print("\r\nHAL Driver   : PL011 UART MMIO @ 0x09000000\r\n");
-    } else if (streq(cmd, "clear")) {
-        print("\033[2J\033[H");
-    } else if (streq(cmd, "test cpu")) {
-        test_cpu();
-    } else if (streq(cmd, "test mmu")) {
-        test_mmu();
-    } else if (streq(cmd, "test el0")) {
-        test_el0();
-    } else if (streq(cmd, "test cpp")) {
-        test_cpp();
-    } else if (streq(cmd, "test svc")) {
-        test_svc_trap();
-    } else if (streq(cmd, "test abort")) {
-        test_data_abort();
-    } else if (streq(cmd, "test pfa")) {
-        test_pfa();
-    } else if (streq(cmd, "test all")) {
-        test_cpp();
-        test_cpu();
-        test_mmu();
-        test_el0();
-        test_svc_trap();
-        test_data_abort();
-        test_pfa();
-    } else if (streq(cmd, "halt")) {
-        print("Halting CPU...\r\n");
-        while (true) {
-            HAL::get_cpu().halt();
-        }
-    } else {
-        print("Unknown command: ");
-        print(cmd);
-        print("\r\nType 'help' for available commands.\r\n");
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+    auto* const mutable_ptr = const_cast<volatile uint32_t*>(&g_rodata_test_target);
+
+    // Triggers EL1 Data Abort. Trap handler advances ELR_EL1 past this store.
+    *mutable_ptr = 0xCAFEBABE;
+
+    print_str("  [PASS] Data Abort trapped and recovered cleanly! Kernel active.\r\n");
+}
+
+// Test 2: Trigger Instruction Abort on Non-Executable (.data) page execution
+void cmd_test_nx() noexcept {
+    print_str("\r\n[TEST] Running Execute-Never (NX) Protection Test...\r\n");
+    print_str("  Target Address: ");
+    print_hex64(reinterpret_cast<uintptr_t>(g_data_nx_target));
+    print_str("\r\n  Branching into non-executable .data section...\r\n");
+
+    using FuncPtr = void (*)() noexcept;
+    // NOLINTNEXTLINE(performance-no-int-to-ptr)
+    auto code_in_data = reinterpret_cast<FuncPtr>(const_cast<uint32_t*>(g_data_nx_target));
+
+    // Triggers EL1 Instruction Abort. Trap handler advances ELR_EL1 past instruction.
+    code_in_data();
+
+    print_str("  [PASS] Instruction Abort trapped and recovered cleanly! Kernel active.\r\n");
+}
+
+// Test 3: Trigger EL0 System Register Access Trap (EC 0x18)
+void cmd_test_sys() noexcept {
+    print_str("\r\n[TEST] Running EL0 Privileged System Register Access Test...\r\n");
+    print_str("  Entering EL0 User Mode to execute privileged 'mrs x0, sctlr_el1'...\r\n");
+
+    const uintptr_t user_sp = reinterpret_cast<uintptr_t>(&g_el0_test_stack[4096]);
+    const uintptr_t entry   = reinterpret_cast<uintptr_t>(el0_sysreg_test_entry);
+
+    enter_user_mode(entry, user_sp);
+
+    print_str("  [PASS] EL0 System Register Trap (EC 0x18) handled! Process terminated cleanly.\r\n");
+}
+
+void print_help() noexcept {
+    print_str("\r\nAvailable Commands:\r\n");
+    print_str("  help        - Display this menu\r\n");
+    print_str("  info        - Display system hardware & Exception Level\r\n");
+    print_str("  clear       - Clear VT100 terminal screen\r\n");
+    print_str("  test cpu    - Test CPU HAL interrupt enable/disable masking\r\n");
+    print_str("  test mmu    - Read SCTLR_EL1 to verify MMU and Caches\r\n");
+    print_str("  test el0    - Test EL0 user space switch and SVC trap return\r\n");
+    print_str("  test cpp    - Verify .bss zeroing and C++ vtable dynamic dispatch\r\n");
+    print_str("  test svc    - Execute SVC #0 trap and verify handler routing\r\n");
+    print_str("  test abort  - Dereference unmapped pointer to test Data Abort trap\r\n");
+    print_str("  test pfa    - Execute Page Frame Allocator tests\r\n");
+    print_str("  test ro     - Test Read-Only protection write fault\r\n");
+    print_str("  test nx     - Test Execute-Never protection execution fault\r\n");
+    print_str("  test sys    - Test EL0 system register trap (EC 0x18)\r\n");
+    print_str("  test all    - Run entire verification test suite\r\n");
+    print_str("  halt        - Put CPU into low-power WFI state\r\n");
+}
+
+void dispatch_command(const char* buf) noexcept {
+    if (streq(buf, "info")) {
+        cmd_info();
+    } else if (streq(buf, "test cpu")) {
+        cmd_test_cpu();
+    } else if (streq(buf, "test mmu")) {
+        cmd_test_mmu();
+    } else if (streq(buf, "test el0")) {
+        cmd_test_el0();
+    } else if (streq(buf, "test cpp")) {
+        cmd_test_cpp();
+    } else if (streq(buf, "test svc")) {
+        cmd_test_svc_trap();
+    } else if (streq(buf, "test abort")) {
+        cmd_test_data_abort();
+    } else if (streq(buf, "test pfa")) {
+        cmd_test_pfa();
+    } else if (streq(buf, "test ro")) {
+        cmd_test_ro();
+    } else if (streq(buf, "test nx")) {
+        cmd_test_nx();
+    } else if (streq(buf, "test sys")) {
+        cmd_test_sys();
+    } else if (streq(buf, "halt")) {
+        print_str("[INFO] Halting CPU. Use QEMU 'Ctrl-A X' to exit.\r\n");
+        HAL::get_cpu().halt();
+    } else if (streq(buf, "clear")) {
+        print_str("\033[2J\033[H"); // VT100 Clear Screen and
+    } else if (streq(buf, "help")) {
+        print_help();
+        } else if (streq(buf, "test all")) {
+        cmd_test_cpu();
+        cmd_test_mmu();
+        cmd_test_el0();
+        cmd_test_cpp();
+        cmd_test_svc_trap();
+        cmd_test_data_abort();
+        cmd_test_pfa();
+        cmd_test_ro();
+        cmd_test_nx();
+        cmd_test_sys();
+    } else if (buf[0] != '\0') {
+        print_str("Unknown command: '");
+        print_str(buf);
+        print_str("'. Type 'help' for available commands.\r\n");
     }
 }
+
 } // namespace
 
 namespace Kernel {
-void Shell::run() {
-    print("\r\n========================================\r\n");
-    print("      AArch64 Bare-Metal C++ Shell      \r\n");
-    print("========================================\r\n");
-    print("Type 'help' or 'test all' to begin.\r\n\r\n");
+namespace Shell {
 
-    char buf[MAX_CMD_LEN];
-    size_t pos = 0;
+void run() noexcept {
+    char input_buf[INPUT_BUFFER_SIZE];
+    size_t buf_pos = 0;
 
-    print("milo> ");
+    print_str("\r\n=============================================\r\n");
+    print_str("       milo OS Kernel Shell Ready            \r\n");
+    print_str("=============================================\r\n");
+    print_str("milo> ");
 
     while (true) {
-        char chr = static_cast<char>(HAL::get_console().getc());
+        const char chr = static_cast<char>(HAL::get_console().getc());
 
         if (chr == '\r' || chr == '\n') {
-            print("\r\n");
-            buf[pos] = '\0';
-            execute_command(buf);
-            pos = 0;
-            print("milo> ");
-        } else if (chr == 0x08 || chr == 0x7F) { // Backspace
-            if (pos > 0) {
-                pos--;
-                print("\b \b");
+            print_str("\r\n");
+            input_buf[buf_pos] = '\0';
+            dispatch_command(input_buf);
+            buf_pos = 0;
+            print_str("milo> ");
+        } else if (chr == '\b' || chr == 127) { // Backspace handling
+            if (buf_pos > 0) {
+                buf_pos--;
+                print_str("\b \b");
             }
-        } else if (chr >= 32 && chr <= 126) {
-            if (pos < MAX_CMD_LEN - 1) {
-                buf[pos++] = chr;
-                HAL::get_console().putc(chr);
-            }
+        } else if (buf_pos < INPUT_BUFFER_SIZE - 1) {
+            input_buf[buf_pos++] = chr;
+            HAL::get_console().putc(chr);
         }
     }
 }
+
+} // namespace Shell
 } // namespace Kernel
