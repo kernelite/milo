@@ -88,6 +88,30 @@
       "-Iarch/aarch64-linux-gnu",
       "-c",
       "-o",
+      "build/arch/aarch64-linux-gnu/arch_test.o",
+      "arch/aarch64-linux-gnu/arch_test.cpp"
+    ],
+    "directory": "/workspaces/milo",
+    "file": "/workspaces/milo/arch/aarch64-linux-gnu/arch_test.cpp",
+    "output": "/workspaces/milo/build/arch/aarch64-linux-gnu/arch_test.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/aarch64-linux-gnu-g++",
+      "-std=c++20",
+      "-ffreestanding",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-fno-use-cxa-atexit",
+      "-fno-exceptions",
+      "-fno-rtti",
+      "-fno-threadsafe-statics",
+      "-g",
+      "-Ikernel",
+      "-Iarch/aarch64-linux-gnu",
+      "-c",
+      "-o",
       "build/kernel/main.o",
       "kernel/main.cpp"
     ],
@@ -190,5 +214,53 @@
     "directory": "/workspaces/milo",
     "file": "/workspaces/milo/kernel/shell/shell.cpp",
     "output": "/workspaces/milo/build/kernel/shell/shell.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/aarch64-linux-gnu-g++",
+      "-std=c++20",
+      "-ffreestanding",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-fno-use-cxa-atexit",
+      "-fno-exceptions",
+      "-fno-rtti",
+      "-fno-threadsafe-statics",
+      "-g",
+      "-Ikernel",
+      "-Iarch/aarch64-linux-gnu",
+      "-c",
+      "-o",
+      "build/kernel/mm/pfa.o",
+      "kernel/mm/pfa.cpp"
+    ],
+    "directory": "/workspaces/milo",
+    "file": "/workspaces/milo/kernel/mm/pfa.cpp",
+    "output": "/workspaces/milo/build/kernel/mm/pfa.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/aarch64-linux-gnu-g++",
+      "-std=c++20",
+      "-ffreestanding",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-fno-use-cxa-atexit",
+      "-fno-exceptions",
+      "-fno-rtti",
+      "-fno-threadsafe-statics",
+      "-g",
+      "-Ikernel",
+      "-Iarch/aarch64-linux-gnu",
+      "-c",
+      "-o",
+      "build/kernel/boot/fdt.o",
+      "kernel/boot/fdt.cpp"
+    ],
+    "directory": "/workspaces/milo",
+    "file": "/workspaces/milo/kernel/boot/fdt.cpp",
+    "output": "/workspaces/milo/build/kernel/boot/fdt.o"
   }
 ]
