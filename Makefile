@@ -6,8 +6,11 @@ PREFIX  := $(ARCH)-
 CXX     := $(PREFIX)g++
 AS      := $(PREFIX)as
 LD      := $(PREFIX)ld
+OBJCOPY := $(PREFIX)objcopy
 
 BUILD_DIR := build
+ROOTFS_DIR := $(BUILD_DIR)/rootfs
+ROOTFS_CPIO := $(BUILD_DIR)/rootfs.cpio
 
 # Freestanding C++ flags
 CXXFLAGS := -std=c++20 -ffreestanding -O2 -Wall -Wextra -fno-use-cxa-atexit \
@@ -30,16 +33,20 @@ DEPS := $(OBJS:.o=.d)
 
 .PHONY: all clean run debug gdb lint format format-check lint-report quality compile_commands.json ai-dump
 
-all: $(BUILD_DIR)/$(TARGET)
+all: $(BUILD_DIR)/$(TARGET) $(ROOTFS_CPIO)
 
-# Explicit target for memory_config.hpp to prevent race conditions during parallel builds
 arch/memory_config.hpp: arch/$(ARCH)/memory_config.hpp
 	@mkdir -p arch
 	cp $< $@
 
-$(BUILD_DIR)/$(TARGET): $(OBJS)
+# Link as ELF executable first
+$(BUILD_DIR)/kernel.elf: $(OBJS)
 	@mkdir -p $(dir $@)
 	$(LD) $(LDFLAGS) -o $@ $^
+
+# Extract flat binary image with objcopy for QEMU Linux bootloader
+$(BUILD_DIR)/$(TARGET): $(BUILD_DIR)/kernel.elf
+	$(OBJCOPY) -O binary $< $@
 
 $(BUILD_DIR)/%.o: %.cpp arch/memory_config.hpp
 	@mkdir -p $(dir $@)
@@ -49,6 +56,12 @@ $(BUILD_DIR)/%.o: %.s
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) $< -o $@
 
+# CPIO Archive Generation (Minimal RAMDisk Payload)
+$(ROOTFS_CPIO):
+	@mkdir -p $(ROOTFS_DIR)
+	@echo "milo-initrd-v1" > $(ROOTFS_DIR)/init.txt
+	@cd $(ROOTFS_DIR) && find . | cpio -o -H newc > ../rootfs.cpio 2>/dev/null
+
 -include $(DEPS)
 
 clean:
@@ -56,21 +69,19 @@ clean:
 
 # QEMU Executable & Flags
 QEMU      ?= qemu-system-aarch64
-QEMUFLAGS := -M virt -cpu cortex-a53 -nographic -kernel $(BUILD_DIR)/$(TARGET)
+QEMUFLAGS := -M virt -cpu cortex-a53 -m 256M -nographic -kernel $(BUILD_DIR)/$(TARGET) -initrd $(ROOTFS_CPIO)
 GDB       ?= gdb-multiarch
 
-# Run kernel directly inside QEMU
-run: $(BUILD_DIR)/$(TARGET)
+run: $(BUILD_DIR)/$(TARGET) $(ROOTFS_CPIO)
 	$(QEMU) $(QEMUFLAGS)
 
-# Start QEMU halted on startup (-S) listening for GDB on port 1234 (-s)
-debug: $(BUILD_DIR)/$(TARGET)
+debug: $(BUILD_DIR)/$(TARGET) $(ROOTFS_CPIO)
 	@echo "Starting QEMU in debug mode. Connect with: make gdb"
 	$(QEMU) $(QEMUFLAGS) -s -S
 
-# Launch GDB pre-configured and attached to the running QEMU instance
-gdb: $(BUILD_DIR)/$(TARGET)
-	$(GDB) $(BUILD_DIR)/$(TARGET) -ex "target remote localhost:1234" -ex "layout split"
+# Attach GDB using the ELF symbol file
+gdb: $(BUILD_DIR)/kernel.elf
+	$(GDB) $(BUILD_DIR)/kernel.elf -ex "target remote localhost:1234" -ex "layout split"
 
 # Find all header files for formatting/linting targets
 HDRS := $(shell find kernel arch -name '*.hpp' -o -name '*.h')

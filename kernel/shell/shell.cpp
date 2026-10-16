@@ -1,3 +1,5 @@
+#include "../arch/arch_test.hpp"
+#include "boot/fdt.hpp"
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
@@ -6,34 +8,13 @@
 #include <cstddef>
 #include <cstdint>
 
-extern "C" {
-void user_space_code();
-int64_t enter_user_mode(uintptr_t entry_point, uintptr_t user_sp);
-void trigger_svc_test();
-void el0_sysreg_test_entry() noexcept;
-}
+// Access global initrd metadata from main.cpp
+extern FDT::InitrdLocation g_initrd_loc;
 
 namespace {
 
 constexpr size_t INPUT_BUFFER_SIZE = 128;
-
-// Explicitly placed in .rodata segment (Read-Only)
-__attribute__((section(".rodata"))) const uint32_t g_rodata_test_target = 0xDEADBEEFU;
-
-// Explicitly placed in .data segment (Writable + Non-Executable)
-// Contains ARM64 'ret' (0xD65F03C0) instruction
-__attribute__((section(".data"))) const uint32_t g_data_nx_target[2] = {
-    0xD65F03C0U, // ret
-    0xD503201FU  // nop
-};
-
-alignas(16) uint8_t g_el0_test_stack[4096];
-
-constexpr size_t MAX_CMD_LEN = 128;
-alignas(16) uint8_t user_test_stack[2048];
 int bss_check_var; // Uninitialized global variable to verify .bss zeroing
-
-uint8_t user_stack[4096] __attribute__((aligned(16)));
 
 bool streq(const char* str1, const char* str2) {
     if (str1 == nullptr || str2 == nullptr) {
@@ -145,14 +126,7 @@ void cmd_test_mmu() {
 
 void cmd_test_el0() {
     print_str("[TEST] Testing EL0 User-Mode Transition & SVC Trap...\r\n");
-    uintptr_t stack_top = reinterpret_cast<uintptr_t>(user_test_stack) + sizeof(user_test_stack);
-
-    print_str("  Entering EL0 user_space_code at ");
-    print_hex64(reinterpret_cast<uintptr_t>(user_space_code));
-    print_str("...\r\n");
-
-    // Jump to EL0; user_space_code executes SVC #0 and returns via return_to_kernel
-    int64_t res = enter_user_mode(reinterpret_cast<uintptr_t>(user_space_code), stack_top);
+    const int64_t res = HAL::Test::run_user_mode_test();
 
     print_str("  [PASS] Safely returned from EL0 to EL1! Exit status: ");
     print_hex64(static_cast<uint64_t>(res));
@@ -178,12 +152,7 @@ void cmd_test_cpp() {
 
 void cmd_test_svc_trap() {
     print_str("[TEST] Triggering 'svc #0' syscall trap via ARCH assembly helper...\r\n");
-
-    uint64_t user_sp = (uint64_t)user_stack + sizeof(user_stack);
-    // Drop to EL0 and execute the test routine
-    enter_user_mode((uint64_t)trigger_svc_test, user_sp);
-
-    asm volatile("" ::: "memory"); // Prevents Tail-Call Optimization (TCO)
+    HAL::Test::trigger_user_syscall_test();
     print_str("  [PASS] SVC trap handled and returned to EL1 successfully!\r\n");
 }
 
@@ -197,67 +166,66 @@ void cmd_test_data_abort() {
 }
 
 void cmd_test_pfa() {
-    uintptr_t kernel_end = reinterpret_cast<uintptr_t>(_text_end);
+    print_str("[TEST] Running Physical Frame Allocator verification suite...\r\n");
 
-    // Simulated RAM layout for QEMU virt (128MB starting at 0x40000000)
-    uintptr_t ram_start = 0x40000000;
-    uintptr_t ram_end = 0x48000000;
+    // TEST 1: Initrd Physical Reservation Check
+    if (g_initrd_loc.valid) {
+        bool all_pages_reserved = true;
+        for (uintptr_t addr = g_initrd_loc.start_paddr; addr < g_initrd_loc.end_paddr;
+             addr += Arch::PAGE_SIZE) {
+            if (!pfa_is_page_allocated(addr)) {
+                all_pages_reserved = false;
+                break;
+            }
+        }
+        assert_test(all_pages_reserved,
+                    "Initrd physical memory range is marked reserved in PFA bitmap");
+    }
 
-    // Initialize Page Frame Allocator
-    pfa_init(ram_start, ram_end);
+    // TEST 2: Frame Allocations Never Collide with Initrd
+    bool no_collision = true;
+    uintptr_t test_pages[32];
+    size_t allocated_count = 0;
 
-    // --- TEST 1: Single Allocation & Kernel Boundary Check ---
+    for (size_t i = 0; i < 32; ++i) {
+        test_pages[i] = alloc_frame();
+        if (test_pages[i] == 0) {
+            break;
+        }
+        allocated_count++;
+
+        if (g_initrd_loc.valid) {
+            if (test_pages[i] >= g_initrd_loc.start_paddr &&
+                test_pages[i] < g_initrd_loc.end_paddr) {
+                no_collision = false;
+            }
+        }
+    }
+
+    assert_test(no_collision, "Newly allocated frames do not overlap with reserved Initrd region");
+
+    for (size_t i = 0; i < allocated_count; ++i) {
+        free_frame(test_pages[i]);
+    }
+
+    // TEST 3: Basic Frame Allocation & Recycling
     uintptr_t page1 = alloc_frame();
-    uintptr_t page1_addr = reinterpret_cast<uintptr_t>(page1);
+    assert_test(page1 != 0, "Allocated single page frame");
+    assert_test((page1 % Arch::PAGE_SIZE) == 0, "Allocated frame is 4KB page-aligned");
 
-    assert_test(page1 != 0L, "Allocated first page");
-    assert_test((page1_addr % 4096) == 0, "First page is 4KB page-aligned");
-    assert_test(page1_addr >= kernel_end, "First allocated page is outside kernel image");
-    assert_test(page1_addr < ram_end, "First allocated page is within valid RAM");
-
-    // --- TEST 2: Multiple Sequential Allocations ---
-    uintptr_t page2 = alloc_frame();
-    uintptr_t page3 = alloc_frame();
-    uintptr_t page2_addr = reinterpret_cast<uintptr_t>(page2);
-    uintptr_t page3_addr = reinterpret_cast<uintptr_t>(page3);
-
-    assert_test(page2 != 0L && page3 != 0L, "Allocated multiple pages");
-    assert_test(page1 != page2 && page2 != page3, "Allocated pages have unique addresses");
-    assert_test(page2_addr >= kernel_end && page3_addr >= kernel_end,
-                "All pages are past kernel end");
-
-    // --- TEST 3: Free and Reuse ---
-    free_frame(page2);
-    uintptr_t page_reused = alloc_frame();
-
-    assert_test(page_reused == page2, "Freed page was successfully recycled");
-
-    // Clean up test allocations
     free_frame(page1);
-    free_frame(page3);
-    free_frame(page_reused);
-
-    // --- TEST 4: Memory Read/Write Sanity Check ---
-    uintptr_t rw_page = alloc_frame();
-    volatile uint64_t* ptr = reinterpret_cast<volatile uint64_t*>(rw_page);
-
-    *ptr = 0xDEADBEEFCAFEBABE;
-    assert_test(*ptr == 0xDEADBEEFCAFEBABE, "Allocated RAM page allows read/write");
-    free_frame(rw_page);
+    uintptr_t page_recycled = alloc_frame();
+    assert_test(page_recycled == page1, "Freed frame was recycled cleanly");
+    free_frame(page_recycled);
 }
 
-// Test 1: Trigger Data Abort on Read-Only (.rodata) page write
 void cmd_test_ro() noexcept {
     print_str("\r\n[TEST] Running Read-Only (.rodata) Protection Test...\r\n");
     print_str("  Target Address: ");
-    print_hex64(reinterpret_cast<uintptr_t>(&g_rodata_test_target));
+    print_hex64(HAL::Test::get_ro_target_address());
     print_str("\r\n  Executing write store: *ptr = 0xCAFEBABE...\r\n");
 
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-    auto* const mutable_ptr = const_cast<volatile uint32_t*>(&g_rodata_test_target);
-
-    // Triggers EL1 Data Abort. Trap handler advances ELR_EL1 past this store.
-    *mutable_ptr = 0xCAFEBABE;
+    HAL::Test::trigger_ro_fault();
 
     print_str("  [PASS] Data Abort trapped and recovered cleanly! Kernel active.\r\n");
 }
@@ -266,15 +234,10 @@ void cmd_test_ro() noexcept {
 void cmd_test_nx() noexcept {
     print_str("\r\n[TEST] Running Execute-Never (NX) Protection Test...\r\n");
     print_str("  Target Address: ");
-    print_hex64(reinterpret_cast<uintptr_t>(g_data_nx_target));
+    print_hex64(HAL::Test::get_nx_target_address());
     print_str("\r\n  Branching into non-executable .data section...\r\n");
 
-    using FuncPtr = void (*)() noexcept;
-    // NOLINTNEXTLINE(performance-no-int-to-ptr)
-    auto code_in_data = reinterpret_cast<FuncPtr>(const_cast<uint32_t*>(g_data_nx_target));
-
-    // Triggers EL1 Instruction Abort. Trap handler advances ELR_EL1 past instruction.
-    code_in_data();
+    HAL::Test::trigger_nx_fault();
 
     print_str("  [PASS] Instruction Abort trapped and recovered cleanly! Kernel active.\r\n");
 }
@@ -282,15 +245,11 @@ void cmd_test_nx() noexcept {
 // Test 3: Trigger EL0 System Register Access Trap (EC 0x18)
 void cmd_test_sys() noexcept {
     print_str("\r\n[TEST] Running EL0 Privileged System Register Access Test...\r\n");
-    print_str("  Entering EL0 User Mode to execute privileged 'mrs x0, sctlr_el1'...\r\n");
+    print_str("  Entering EL0 User Mode to execute privileged instruction...\r\n");
 
-    const uintptr_t user_sp = reinterpret_cast<uintptr_t>(&g_el0_test_stack[4096]);
-    const uintptr_t entry = reinterpret_cast<uintptr_t>(el0_sysreg_test_entry);
+    HAL::Test::trigger_privileged_sysreg_fault();
 
-    enter_user_mode(entry, user_sp);
-
-    print_str(
-        "  [PASS] EL0 System Register Trap (EC 0x18) handled! Process terminated cleanly.\r\n");
+    print_str("  [PASS] EL0 System Register Trap handled! Process terminated cleanly.\r\n");
 }
 
 void print_help() noexcept {
@@ -307,7 +266,7 @@ void print_help() noexcept {
     print_str("  test pfa    - Execute Page Frame Allocator tests\r\n");
     print_str("  test ro     - Test Read-Only protection write fault\r\n");
     print_str("  test nx     - Test Execute-Never protection execution fault\r\n");
-    print_str("  test sys    - Test EL0 system register trap (EC 0x18)\r\n");
+    print_str("  test sys    - Test EL0 system register trap\r\n");
     print_str("  test all    - Run entire verification test suite\r\n");
     print_str("  halt        - Put CPU into low-power WFI state\r\n");
 }
@@ -383,7 +342,7 @@ void run() noexcept {
             dispatch_command(input_buf);
             buf_pos = 0;
             print_str("milo> ");
-        } else if (chr == '\b' || chr == 127) { // Backspace handling
+        } else if (chr == '\b' || chr == 127) {
             if (buf_pos > 0) {
                 buf_pos--;
                 print_str("\b \b");

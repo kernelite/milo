@@ -1,19 +1,88 @@
+#include "boot/fdt.hpp"
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
+#include "mm/pfa.hpp"
 #include "shell/shell.hpp"
 
-extern "C" void kmain() {
-    // 1. Initialize Early I/O Console via HAL Trait
+#include <cstdint>
+
+uintptr_t g_dtb_paddr = 0;
+FDT::InitrdLocation g_initrd_loc{};
+
+namespace {
+
+void print_str(const char* str) noexcept {
+    size_t len = 0;
+    while (str[len] != '\0') {
+        len++;
+    }
+    HAL::get_console().write(str, len);
+}
+
+void print_hex64(uint64_t val) noexcept {
+    char buf[19] = "0x0000000000000000";
+    const char hex_chars[] = "0123456789ABCDEF";
+    for (int i = 17; i >= 2; --i) {
+        buf[i] = hex_chars[val & 0xFU];
+        val >>= 4U;
+    }
+    print_str(buf);
+}
+
+} // namespace
+
+extern "C" void kmain(uintptr_t dtb_paddr) {
+    g_dtb_paddr = dtb_paddr;
+
+    // 1. Initialize Console Driver
     HAL::get_console().init();
-    HAL::get_console().write("[KERNEL] Core HAL initialised successfully.\n", 44);
+    print_str("[KERNEL] Core HAL initialised successfully.\r\n");
 
-    // 2. CPU Management via HAL Trait (No inline asm!)
-    HAL::get_cpu().disable_interrupts();
+    // 2. Initialize Physical Frame Allocator (256MB RAM)
+    constexpr size_t PLATFORM_RAM_SIZE = 256UL * 1024UL * 1024UL;
+    pfa_init(Arch::RAM_BASE, PLATFORM_RAM_SIZE);
 
-    if (!HAL::get_cpu().interrupts_enabled()) {
-        HAL::get_console().write("[KERNEL] Interrupts safely disabled.\n", 37);
+    // 3. Inspect DTB & Reserve DTB physical memory
+    print_str("[BOOT] DTB Pointer: ");
+    print_hex64(dtb_paddr);
+    print_str("\r\n");
+
+    if (FDT::is_valid(dtb_paddr)) {
+        const uint32_t dtb_size = FDT::get_total_size(dtb_paddr);
+        pfa_reserve_range(dtb_paddr, dtb_paddr + dtb_size);
+
+        print_str("[FDT] DTB reserved in PFA: ");
+        print_hex64(dtb_paddr);
+        print_str(" - ");
+        print_hex64(dtb_paddr + dtb_size);
+        print_str("\r\n");
+
+        // 4. Parse & Reserve Initrd
+        g_initrd_loc = FDT::find_initrd(dtb_paddr);
+        if (g_initrd_loc.valid) {
+            pfa_reserve_range(g_initrd_loc.start_paddr, g_initrd_loc.end_paddr);
+
+            print_str("[INITRD] Found via FDT /chosen!\r\n");
+            print_str("         Start: ");
+            print_hex64(g_initrd_loc.start_paddr);
+            print_str("\r\n         End  : ");
+            print_hex64(g_initrd_loc.end_paddr);
+            print_str("\r\n         Size : ");
+            print_hex64(g_initrd_loc.size);
+            print_str(" bytes\r\n");
+
+            const auto* cpio_magic = reinterpret_cast<const char*>(g_initrd_loc.start_paddr);
+            print_str("         Signature: ");
+            HAL::get_console().write(cpio_magic, 6);
+            print_str("\r\n");
+        } else {
+            print_str("[INITRD WARNING] No initrd found in /chosen.\r\n");
+        }
+    } else {
+        print_str("[FDT ERROR] Invalid DTB magic!\r\n");
     }
 
-    // 3. Kernel shell Loop
+    // 5. Disable interrupts and drop into shell
+    HAL::get_cpu().disable_interrupts();
     Kernel::Shell::run();
 }

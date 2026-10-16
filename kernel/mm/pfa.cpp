@@ -40,7 +40,13 @@ inline bool test_bit(size_t page_idx) noexcept {
     return (g_bitmap[page_idx / 8U] & static_cast<uint8_t>(1U << (page_idx % 8U))) != 0U;
 }
 
-void reserve_range(uintptr_t start_paddr, uintptr_t end_paddr) noexcept {
+} // namespace
+
+void pfa_reserve_range(uintptr_t start_paddr, uintptr_t end_paddr) noexcept {
+    if (start_paddr >= end_paddr || start_paddr >= g_ram_end || end_paddr <= g_ram_start) {
+        return;
+    }
+
     if (start_paddr < g_ram_start) {
         start_paddr = g_ram_start;
     }
@@ -48,15 +54,22 @@ void reserve_range(uintptr_t start_paddr, uintptr_t end_paddr) noexcept {
         end_paddr = g_ram_end;
     }
 
-    size_t start_idx = (start_paddr - RAM_BASE) >> PAGE_SHIFT;
-    size_t end_idx = (end_paddr - RAM_BASE + PAGE_SIZE - 1U) >> PAGE_SHIFT;
+    // Page-aligned lower bound and page-aligned upper bound
+    const size_t start_idx = (start_paddr - RAM_BASE) >> PAGE_SHIFT;
+    const size_t end_idx = (end_paddr - RAM_BASE + PAGE_SIZE - 1U) >> PAGE_SHIFT;
 
     for (size_t i = start_idx; i < end_idx && i < g_total_pages; ++i) {
         set_bit(i);
     }
 }
 
-} // namespace
+bool pfa_is_page_allocated(uintptr_t paddr) noexcept {
+    if (paddr < g_ram_start || paddr >= g_ram_end) {
+        return true;
+    }
+    const size_t page_idx = (paddr - RAM_BASE) >> PAGE_SHIFT;
+    return test_bit(page_idx);
+}
 
 void pfa_init(uintptr_t ram_start, size_t ram_size) noexcept {
     g_ram_start = ram_start;
@@ -73,13 +86,15 @@ void pfa_init(uintptr_t ram_start, size_t ram_size) noexcept {
         }
     }
 
+    // Reserve entire loaded kernel image (_text_start through __bss_end)
     const auto kernel_start = reinterpret_cast<uintptr_t>(_text_start);
-    const auto kernel_end = reinterpret_cast<uintptr_t>(_text_end);
-    reserve_range(kernel_start, kernel_end);
+    const auto kernel_end = reinterpret_cast<uintptr_t>(__bss_end);
+    pfa_reserve_range(kernel_start, kernel_end);
 
+    // Reserve PFA's own bitmap tracker array
     const auto bitmap_start = reinterpret_cast<uintptr_t>(&g_bitmap[0]);
     const auto bitmap_end = bitmap_start + sizeof(g_bitmap);
-    reserve_range(bitmap_start, bitmap_end);
+    pfa_reserve_range(bitmap_start, bitmap_end);
 
     print_str("[PFA] Physical Frame Allocator Initialized.\r\n");
     print_str("      RAM Range   : ");
