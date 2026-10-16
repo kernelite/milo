@@ -11,33 +11,36 @@ constexpr uint32_t FDT_END = 0x00000009;
 
 // Safe Big-Endian readers that prevent alignment faults
 inline uint32_t read_be32(const void* ptr) noexcept {
-    const auto* p = static_cast<const uint8_t*>(ptr);
-    return (static_cast<uint32_t>(p[0]) << 24U) | (static_cast<uint32_t>(p[1]) << 16U) |
-           (static_cast<uint32_t>(p[2]) << 8U) | (static_cast<uint32_t>(p[3]) << 0U);
+    const auto* uint8_ptr = static_cast<const uint8_t*>(ptr);
+    return (static_cast<uint32_t>(uint8_ptr[0]) << 24U) |
+           (static_cast<uint32_t>(uint8_ptr[1]) << 16U) |
+           (static_cast<uint32_t>(uint8_ptr[2]) << 8U) |
+           (static_cast<uint32_t>(uint8_ptr[3]) << 0U);
 }
 
 inline uint64_t read_be64(const void* ptr) noexcept {
-    const auto* p = static_cast<const uint8_t*>(ptr);
-    return (static_cast<uint64_t>(read_be32(p)) << 32U) | static_cast<uint64_t>(read_be32(p + 4));
+    const auto* uint8_ptr = static_cast<const uint8_t*>(ptr);
+    return (static_cast<uint64_t>(read_be32(uint8_ptr)) << 32U) |
+           static_cast<uint64_t>(read_be32(uint8_ptr + 4));
 }
 
-inline size_t str_len(const char* s) noexcept {
+inline size_t str_len(const char* str) noexcept {
     size_t len = 0;
-    while (s[len] != '\0') {
+    while (str[len] != '\0') {
         len++;
     }
     return len;
 }
 
-inline bool str_eq(const char* s1, const char* s2) noexcept {
-    if (s1 == nullptr || s2 == nullptr) {
-        return s1 == s2;
+inline bool str_eq(const char* str1, const char* str2) noexcept {
+    if (str1 == nullptr || str2 == nullptr) {
+        return str1 == str2;
     }
-    while (*s1 != '\0' && (*s1 == *s2)) {
-        s1++;
-        s2++;
+    while (*str1 != '\0' && (*str1 == *str2)) {
+        str1++;
+        str2++;
     }
-    return *s1 == *s2;
+    return *str1 == *str2;
 }
 
 inline uintptr_t align_up(uintptr_t val, uintptr_t alignment) noexcept {
@@ -83,8 +86,8 @@ InitrdLocation find_initrd(uintptr_t fdt_paddr) noexcept {
     const auto* base = reinterpret_cast<const uint8_t*>(fdt_paddr);
     const char* strings_block = reinterpret_cast<const char*>(base + off_strings);
 
-    const uint8_t* p = base + off_struct;
-    const uint8_t* struct_end = p + size_struct;
+    const uint8_t* ptr = base + off_struct;
+    const uint8_t* struct_end = ptr + size_struct;
 
     int depth = 0;
     bool in_chosen = false;
@@ -95,18 +98,18 @@ InitrdLocation find_initrd(uintptr_t fdt_paddr) noexcept {
     bool has_start = false;
     bool has_end = false;
 
-    while (p + sizeof(uint32_t) <= struct_end) {
-        const uint32_t token = read_be32(p);
-        p += sizeof(uint32_t);
+    while (ptr + sizeof(uint32_t) <= struct_end) {
+        const uint32_t token = read_be32(ptr);
+        ptr += sizeof(uint32_t);
 
         if (token == FDT_BEGIN_NODE) {
             depth++;
-            const char* node_name = reinterpret_cast<const char*>(p);
+            const char* node_name = reinterpret_cast<const char*>(ptr);
             const size_t name_len = str_len(node_name);
 
             // Node name is null-terminated and padded to 4 bytes
-            p = reinterpret_cast<const uint8_t*>(
-                align_up(reinterpret_cast<uintptr_t>(p + name_len + 1), 4));
+            ptr = reinterpret_cast<const uint8_t*>(
+                align_up(reinterpret_cast<uintptr_t>(ptr + name_len + 1), 4));
 
             // In FDT, root node is at depth 1 with name ""
             // /chosen is a direct child of root (depth 2)
@@ -121,20 +124,20 @@ InitrdLocation find_initrd(uintptr_t fdt_paddr) noexcept {
             }
             depth--;
         } else if (token == FDT_PROP) {
-            if (p + 2 * sizeof(uint32_t) > struct_end) {
+            if (ptr + 2 * sizeof(uint32_t) > struct_end) {
                 break;
             }
 
-            const uint32_t prop_len = read_be32(p);
-            const uint32_t nameoff = read_be32(p + 4);
-            p += 8;
+            const uint32_t prop_len = read_be32(ptr);
+            const uint32_t nameoff = read_be32(ptr + 4);
+            ptr += 8;
 
             const char* prop_name = strings_block + nameoff;
-            const uint8_t* prop_val = p;
+            const uint8_t* prop_val = ptr;
 
             // Property value payload is padded to 4 bytes
-            p = reinterpret_cast<const uint8_t*>(
-                align_up(reinterpret_cast<uintptr_t>(p + prop_len), 4));
+            ptr = reinterpret_cast<const uint8_t*>(
+                align_up(reinterpret_cast<uintptr_t>(ptr + prop_len), 4));
 
             if (in_chosen) {
                 if (str_eq(prop_name, "linux,initrd-start")) {
@@ -156,10 +159,8 @@ InitrdLocation find_initrd(uintptr_t fdt_paddr) noexcept {
         } else if (token == FDT_NOP) {
             // No payload
             continue;
-        } else if (token == FDT_END) {
-            break;
         } else {
-            // Malformed token encountered; abort parse
+            // Malformed token or FDT_ENMD encountered; abort parse
             break;
         }
     }
