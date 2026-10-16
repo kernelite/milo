@@ -11,6 +11,7 @@ void user_space_code();
 int64_t enter_user_mode(uintptr_t entry_point, uintptr_t user_sp);
 void trigger_svc_test();
 void el0_sysreg_test_entry() noexcept;
+char *_text_end;
 }
 
 namespace {

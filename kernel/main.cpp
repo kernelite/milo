@@ -1,11 +1,13 @@
 #include "boot/fdt.hpp"
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
+#include "mm/pfa.hpp"
 #include "shell/shell.hpp"
 
 #include <cstdint>
 
 uintptr_t g_dtb_paddr = 0;
+FDT::InitrdLocation g_initrd_loc{};
 
 namespace {
 
@@ -32,41 +34,55 @@ void print_hex64(uint64_t val) noexcept {
 extern "C" void kmain(uintptr_t dtb_paddr) {
     g_dtb_paddr = dtb_paddr;
 
+    // 1. Initialize Console Driver
     HAL::get_console().init();
-    print_str("[KERNEL] Core HAL initialised successfully.\n");
+    print_str("[KERNEL] Core HAL initialised successfully.\r\n");
 
+    // 2. Initialize Physical Frame Allocator (256MB RAM)
+    constexpr size_t PLATFORM_RAM_SIZE = 256UL * 1024UL * 1024UL;
+    pfa_init(Arch::RAM_BASE, PLATFORM_RAM_SIZE);
+
+    // 3. Inspect DTB & Reserve DTB physical memory
     print_str("[BOOT] DTB Pointer: ");
     print_hex64(dtb_paddr);
-    print_str("\n");
+    print_str("\r\n");
 
     if (FDT::is_valid(dtb_paddr)) {
-        print_str("[FDT] Valid Device Tree Blob found. Total size: ");
-        print_hex64(FDT::get_total_size(dtb_paddr));
-        print_str(" bytes\n");
+        const uint32_t dtb_size = FDT::get_total_size(dtb_paddr);
+        pfa_reserve_range(dtb_paddr, dtb_paddr + dtb_size);
 
-        auto initrd = FDT::find_initrd(dtb_paddr);
-        if (initrd.valid) {
-            print_str("[INITRD] Found via FDT /chosen node!\n");
+        print_str("[FDT] DTB reserved in PFA: ");
+        print_hex64(dtb_paddr);
+        print_str(" - ");
+        print_hex64(dtb_paddr + dtb_size);
+        print_str("\r\n");
+
+        // 4. Parse & Reserve Initrd
+        g_initrd_loc = FDT::find_initrd(dtb_paddr);
+        if (g_initrd_loc.valid) {
+            pfa_reserve_range(g_initrd_loc.start_paddr, g_initrd_loc.end_paddr);
+
+            print_str("[INITRD] Found via FDT /chosen!\r\n");
             print_str("         Start: ");
-            print_hex64(initrd.start_paddr);
-            print_str("\n         End  : ");
-            print_hex64(initrd.end_paddr);
-            print_str("\n         Size : ");
-            print_hex64(initrd.size);
-            print_str(" bytes\n");
+            print_hex64(g_initrd_loc.start_paddr);
+            print_str("\r\n         End  : ");
+            print_hex64(g_initrd_loc.end_paddr);
+            print_str("\r\n         Size : ");
+            print_hex64(g_initrd_loc.size);
+            print_str(" bytes\r\n");
 
-            // Verify CPIO magic header ("070701" or "070702")
-            const auto* cpio_magic = reinterpret_cast<const char*>(initrd.start_paddr);
+            const auto* cpio_magic = reinterpret_cast<const char*>(g_initrd_loc.start_paddr);
             print_str("         Signature: ");
             HAL::get_console().write(cpio_magic, 6);
-            print_str("\n");
+            print_str("\r\n");
         } else {
-            print_str("[INITRD] No initrd region found in /chosen.\n");
+            print_str("[INITRD WARNING] No initrd found in /chosen.\r\n");
         }
     } else {
-        print_str("[FDT ERROR] Invalid DTB magic at given address!\n");
+        print_str("[FDT ERROR] Invalid DTB magic!\r\n");
     }
 
+    // 5. Disable interrupts and drop into shell
     HAL::get_cpu().disable_interrupts();
     Kernel::Shell::run();
 }
