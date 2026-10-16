@@ -1,9 +1,9 @@
 #pragma once
 
+#include "../arch/memory_config.hpp"
+
 #include <cstddef>
 #include <cstdint>
-
-#include "../arch/memory_config.hpp"
 
 constexpr uintptr_t RAM_BASE = Arch::RAM_BASE;
 constexpr size_t PAGE_SIZE = Arch::PAGE_SIZE;

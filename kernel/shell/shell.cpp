@@ -1,5 +1,5 @@
-#include "boot/fdt.hpp"
 #include "../arch/arch_test.hpp"
+#include "boot/fdt.hpp"
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"

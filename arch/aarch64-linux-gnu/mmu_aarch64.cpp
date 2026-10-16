@@ -219,10 +219,10 @@ class AArch64MemoryControl : public HAL::MemoryControl {
         map_page_in_root(g_ttbr0_l0, 0x09000000U, 0x09000000U,
                          HAL::PageFlags::Read | HAL::PageFlags::Write | HAL::PageFlags::Device);
 
-        // 2. Identity map low RAM below kernel text (0x40000000 to text_start) for DTB & boot structures
+        // 2. Identity map low RAM below kernel text (0x40000000 to text_start) for DTB & boot
+        // structures
         for (uintptr_t addr = Arch::RAM_BASE; addr < text_start; addr += Arch::PAGE_SIZE) {
-            map_page_in_root(g_ttbr0_l0, addr, addr,
-                             HAL::PageFlags::Read | HAL::PageFlags::Write);
+            map_page_in_root(g_ttbr0_l0, addr, addr, HAL::PageFlags::Read | HAL::PageFlags::Write);
         }
 
         // 3. Identity map Kernel .text (RO + Executable)
@@ -236,7 +236,8 @@ class AArch64MemoryControl : public HAL::MemoryControl {
             map_page_in_root(g_ttbr0_l0, addr, addr, HAL::PageFlags::Read);
         }
 
-        // 5. Identity map Kernel .data, .bss, boot stack, and physical RAM pool up to ram_end (RW + NX)
+        // 5. Identity map Kernel .data, .bss, boot stack, and physical RAM pool up to ram_end (RW +
+        // NX)
         for (uintptr_t addr = data_start; addr < ram_end; addr += Arch::PAGE_SIZE) {
             map_page_in_root(g_ttbr0_l0, addr, addr, HAL::PageFlags::Read | HAL::PageFlags::Write);
         }

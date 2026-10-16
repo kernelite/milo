@@ -4,24 +4,21 @@ namespace {
 
 // Token definitions from devicetree specification
 constexpr uint32_t FDT_BEGIN_NODE = 0x00000001;
-constexpr uint32_t FDT_END_NODE   = 0x00000002;
-constexpr uint32_t FDT_PROP       = 0x00000003;
-constexpr uint32_t FDT_NOP        = 0x00000004;
-constexpr uint32_t FDT_END        = 0x00000009;
+constexpr uint32_t FDT_END_NODE = 0x00000002;
+constexpr uint32_t FDT_PROP = 0x00000003;
+constexpr uint32_t FDT_NOP = 0x00000004;
+constexpr uint32_t FDT_END = 0x00000009;
 
 // Safe Big-Endian readers that prevent alignment faults
 inline uint32_t read_be32(const void* ptr) noexcept {
     const auto* p = static_cast<const uint8_t*>(ptr);
-    return (static_cast<uint32_t>(p[0]) << 24U) |
-           (static_cast<uint32_t>(p[1]) << 16U) |
-           (static_cast<uint32_t>(p[2]) << 8U)  |
-           (static_cast<uint32_t>(p[3]) << 0U);
+    return (static_cast<uint32_t>(p[0]) << 24U) | (static_cast<uint32_t>(p[1]) << 16U) |
+           (static_cast<uint32_t>(p[2]) << 8U) | (static_cast<uint32_t>(p[3]) << 0U);
 }
 
 inline uint64_t read_be64(const void* ptr) noexcept {
     const auto* p = static_cast<const uint8_t*>(ptr);
-    return (static_cast<uint64_t>(read_be32(p)) << 32U) |
-           static_cast<uint64_t>(read_be32(p + 4));
+    return (static_cast<uint64_t>(read_be32(p)) << 32U) | static_cast<uint64_t>(read_be32(p + 4));
 }
 
 inline size_t str_len(const char* s) noexcept {
@@ -108,7 +105,8 @@ InitrdLocation find_initrd(uintptr_t fdt_paddr) noexcept {
             const size_t name_len = str_len(node_name);
 
             // Node name is null-terminated and padded to 4 bytes
-            p = reinterpret_cast<const uint8_t*>(align_up(reinterpret_cast<uintptr_t>(p + name_len + 1), 4));
+            p = reinterpret_cast<const uint8_t*>(
+                align_up(reinterpret_cast<uintptr_t>(p + name_len + 1), 4));
 
             // In FDT, root node is at depth 1 with name ""
             // /chosen is a direct child of root (depth 2)
@@ -135,7 +133,8 @@ InitrdLocation find_initrd(uintptr_t fdt_paddr) noexcept {
             const uint8_t* prop_val = p;
 
             // Property value payload is padded to 4 bytes
-            p = reinterpret_cast<const uint8_t*>(align_up(reinterpret_cast<uintptr_t>(p + prop_len), 4));
+            p = reinterpret_cast<const uint8_t*>(
+                align_up(reinterpret_cast<uintptr_t>(p + prop_len), 4));
 
             if (in_chosen) {
                 if (str_eq(prop_name, "linux,initrd-start")) {
