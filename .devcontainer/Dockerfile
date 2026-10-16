@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/devcontainers/rust:1-bookworm
+FROM mcr.microsoft.com/devcontainers/base:bookworm
 
 # Install Arm64 cross-compilation toolchain, QEMU, ROMs, and debugging tools
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
