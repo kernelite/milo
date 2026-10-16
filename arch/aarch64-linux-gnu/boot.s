@@ -6,6 +6,22 @@
 .global _start
 
 _start:
+    // --- 64-byte Linux AArch64 Image Header ---
+    b       .Lreal_start            // 0x00: code0 (branch to kernel entry)
+    .word   0                       // 0x04: code1
+    .quad   0x80000                 // 0x08: text_offset (512KB offset from RAM base)
+    .quad   0                       // 0x10: image_size (0 = unknown/use file size)
+    .quad   0                       // 0x18: flags
+    .quad   0                       // 0x20: res2
+    .quad   0                       // 0x28: res3
+    .quad   0                       // 0x30: res4
+    .ascii  "ARM\x64"               // 0x38: magic signature (0x644d5241)
+    .word   0                       // 0x3c: res5
+
+.balign 8
+.Lreal_start:
+    mov     x21, x0                 // Stash genuine DTB pointer passed by QEMU in x0
+
     mrs     x0, CurrentEL
     lsr     x0, x0, #2
     cmp     x0, #3
@@ -48,6 +64,7 @@ _start:
     msr     vbar_el1, x0
     isb
 
+    mov     x0, x21                 // Pass DTB pointer as first parameter (x0) to kmain
     b       kmain
 
 .ltorg

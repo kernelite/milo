@@ -15,4 +15,5 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
         bear \
         clang-format \
         clang-tidy \
+        cpio \
     && apt-get clean && rm -rf /var/lib/apt/lists/*

@@ -208,38 +208,45 @@ class AArch64MemoryControl : public HAL::MemoryControl {
     }
 
     void activate() override {
-        // Build initial identity & hardware section mappings prior to MMU enable
         const uintptr_t text_start = reinterpret_cast<uintptr_t>(_text_start);
         const uintptr_t text_end = reinterpret_cast<uintptr_t>(_text_end);
         const uintptr_t rodata_start = reinterpret_cast<uintptr_t>(_rodata_start);
         const uintptr_t rodata_end = reinterpret_cast<uintptr_t>(_rodata_end);
         const uintptr_t data_start = reinterpret_cast<uintptr_t>(_data_start);
-        // bss_end = (bss_end + Arch::PAGE_SIZE - 1U) & ~(Arch::PAGE_SIZE - 1U);
+        const uintptr_t ram_end = Arch::RAM_BASE + (256UL * 1024UL * 1024UL); // 256 MB platform RAM
 
         // 1. Identity map UART MMIO register space (0x09000000) as Device-nGnRnE (RW + NX)
         map_page_in_root(g_ttbr0_l0, 0x09000000U, 0x09000000U,
                          HAL::PageFlags::Read | HAL::PageFlags::Write | HAL::PageFlags::Device);
 
-        // 2. Identity map Kernel .text (RO + Executable)
+        // 2. Identity map low RAM below kernel text (0x40000000 to text_start) for DTB & boot structures
+        for (uintptr_t addr = Arch::RAM_BASE; addr < text_start; addr += Arch::PAGE_SIZE) {
+            map_page_in_root(g_ttbr0_l0, addr, addr,
+                             HAL::PageFlags::Read | HAL::PageFlags::Write);
+        }
+
+        // 3. Identity map Kernel .text (RO + Executable)
         for (uintptr_t addr = text_start; addr < text_end; addr += Arch::PAGE_SIZE) {
             map_page_in_root(g_ttbr0_l0, addr, addr,
                              HAL::PageFlags::Read | HAL::PageFlags::Execute);
         }
 
-        // 3. Identity map Kernel .rodata (RO + NX)
+        // 4. Identity map Kernel .rodata (RO + NX)
         for (uintptr_t addr = rodata_start; addr < rodata_end; addr += Arch::PAGE_SIZE) {
             map_page_in_root(g_ttbr0_l0, addr, addr, HAL::PageFlags::Read);
         }
 
-        // 4. Identity map Kernel .data, .bss, boot stack, and physical RAM pool (RW + NX)
-        const uintptr_t ram_end =
-            Arch::RAM_BASE + (64UL * 1024UL * 1024UL); // 64 MB Identity mapped RAM
+        // 5. Identity map Kernel .data, .bss, boot stack, and physical RAM pool up to ram_end (RW + NX)
         for (uintptr_t addr = data_start; addr < ram_end; addr += Arch::PAGE_SIZE) {
             map_page_in_root(g_ttbr0_l0, addr, addr, HAL::PageFlags::Read | HAL::PageFlags::Write);
         }
 
-        // 5. Higher-half kernel space mappings for TTBR1_EL1 (0xFFFF800040000000+)
+        // 6. Higher-half kernel space mappings for TTBR1_EL1 (0xFFFF800040000000+)
         const uintptr_t higher_half_offset = 0xFFFF800000000000ULL;
+        for (uintptr_t addr = Arch::RAM_BASE; addr < text_start; addr += Arch::PAGE_SIZE) {
+            map_page_in_root(g_ttbr1_l0, addr + higher_half_offset, addr,
+                             HAL::PageFlags::Read | HAL::PageFlags::Write);
+        }
         for (uintptr_t addr = text_start; addr < text_end; addr += Arch::PAGE_SIZE) {
             map_page_in_root(g_ttbr1_l0, addr + higher_half_offset, addr,
                              HAL::PageFlags::Read | HAL::PageFlags::Execute);

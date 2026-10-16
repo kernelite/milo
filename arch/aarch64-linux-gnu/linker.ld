@@ -9,7 +9,8 @@ PHDRS
 
 SECTIONS
 {
-    . = 0x40000000;
+    /* Relocate kernel to 0x40080000 (RAM_BASE + 512KB) to leave room for QEMU bootloader & DTB */
+    . = 0x40080000;
 
     /* Executable Code Segment (RX) */
     .text : {
