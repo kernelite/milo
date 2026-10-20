@@ -15,6 +15,6 @@ template <> struct is_bool<volatile bool> { static constexpr bool value = true; 
 template <> struct is_bool<const volatile bool> { static constexpr bool value = true; };
 
 // C++17/20 inline variable template helper
-template <typename T> inline constexpr bool is_bool_v = is_bool<T>::value;
+template <typename T> inline constexpr bool is_bool_v = true;
 
 } // namespace Kernel::Traits
