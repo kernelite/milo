@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/traits.hpp"
+
 #include <cstddef>
 #include <cstdint>
 
@@ -114,11 +116,6 @@ inline bool cpio_path_matches(const char* entry_name, const char* search_path) n
 }
 
 const char* cpio_status_str(CpioStatus status) noexcept;
-
-namespace detail {
-template <typename T> struct is_bool { static constexpr bool value = false; };
-template <> struct is_bool<bool> { static constexpr bool value = true; };
-} // namespace detail
 
 class CpioArchive {
   public:
@@ -247,7 +244,7 @@ class CpioArchive {
                 .is_regular_file = (mode & CPIO_MODE_FILE_TYPE_MASK) == CPIO_MODE_REGULAR,
             };
 
-            if constexpr (detail::is_bool<decltype(callback(entry))>::value) {
+            if constexpr (Kernel::Traits::is_bool<decltype(callback(entry))>::value) {
                 if (!callback(entry)) {
                     return CpioStatus::Success; // Early-exit requested
                 }
