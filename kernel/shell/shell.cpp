@@ -4,6 +4,7 @@
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
+#include "loader/elf64.hpp"
 #include "mm/pfa.hpp"
 
 #include <cstddef>
@@ -15,7 +16,7 @@ extern FDT::InitrdLocation g_initrd_loc;
 namespace {
 
 constexpr size_t INPUT_BUFFER_SIZE = 128;
-int bss_check_var; // Uninitialized global variable to verify .bss zeroing
+int bss_check_var;
 
 bool streq(const char* str1, const char* str2) {
     if (str1 == nullptr || str2 == nullptr) {
@@ -111,61 +112,6 @@ void print_hex64(uint64_t val) noexcept {
     print_str(buf);
 }
 
-// Write 8-character lower-case hex ASCII for building synthetic test archives
-void write_hex8_ascii(char* dest, uint32_t val) noexcept {
-    const char hex_chars[] = "0123456789abcdef";
-    for (int i = 7; i >= 0; --i) {
-        dest[i] = hex_chars[val & 0xFU];
-        val >>= 4U;
-    }
-}
-
-size_t build_synthetic_entry(uint8_t* out, const char* name, const uint8_t* content, size_t size,
-                             uint32_t mode = 0100644) noexcept {
-    auto* hdr = reinterpret_cast<CpioNewcHeader*>(out);
-    for (size_t i = 0; i < 6; ++i) {
-        hdr->c_magic[i] = "070701"[i];
-    }
-    write_hex8_ascii(hdr->c_ino, 1);
-    write_hex8_ascii(hdr->c_mode, mode);
-    write_hex8_ascii(hdr->c_uid, 0);
-    write_hex8_ascii(hdr->c_gid, 0);
-    write_hex8_ascii(hdr->c_nlink, 1);
-    write_hex8_ascii(hdr->c_mtime, 0);
-    write_hex8_ascii(hdr->c_filesize, static_cast<uint32_t>(size));
-    write_hex8_ascii(hdr->c_maj, 0);
-    write_hex8_ascii(hdr->c_min, 0);
-    write_hex8_ascii(hdr->c_rmaj, 0);
-    write_hex8_ascii(hdr->c_rmin, 0);
-
-    size_t name_len = 0;
-    while (name[name_len] != '\0') {
-        name_len++;
-    }
-    const size_t namesize = name_len + 1;
-    write_hex8_ascii(hdr->c_namesize, static_cast<uint32_t>(namesize));
-    write_hex8_ascii(hdr->c_check, 0);
-
-    for (size_t i = 0; i < namesize; ++i) {
-        out[110 + i] = static_cast<uint8_t>(name[i]);
-    }
-    const size_t name_end = 110 + namesize;
-    const size_t payload_offset = cpio_align_up(name_end);
-    for (size_t i = name_end; i < payload_offset; ++i) {
-        out[i] = 0;
-    }
-    for (size_t i = 0; i < size; ++i) {
-        out[payload_offset + i] = content[i];
-    }
-    const size_t payload_end = payload_offset + size;
-    const size_t next_offset = cpio_align_up(payload_end);
-    for (size_t i = payload_end; i < next_offset; ++i) {
-        out[i] = 0;
-    }
-    return next_offset;
-}
-
-// ls initrd command
 void cmd_ls_initrd() noexcept {
     if (!g_initrd_loc.valid || g_initrd_loc.start_paddr == 0 || g_initrd_loc.size == 0) {
         print_str("[CPIO ERROR] No valid initrd loaded in physical memory.\r\n");
@@ -209,7 +155,6 @@ void cmd_ls_initrd() noexcept {
     }
 }
 
-// cat initrd <path> command
 void cmd_cat_initrd(const char* path) noexcept {
     while (path != nullptr && *path == ' ') {
         path++;
@@ -253,114 +198,242 @@ void cmd_cat_initrd(const char* path) noexcept {
     }
 }
 
-// test cpio command
-void cmd_test_cpio() noexcept {
-    print_str("\r\n[TEST] Running Read-Only CPIO Driver Verification Suite...\r\n");
+// elf initrd <path> diagnostic command
+void cmd_elf_initrd(const char* path) noexcept {
+    while (path != nullptr && *path == ' ') {
+        path++;
+    }
+    if (path == nullptr || *path == '\0') {
+        print_str("Usage: elf initrd <path>\r\n");
+        return;
+    }
 
-    // 1. Data Layout Static and Runtime Verification
-    assert_test(sizeof(CpioNewcHeader) == 110, "CpioNewcHeader size is exactly 110 bytes");
+    if (!g_initrd_loc.valid || g_initrd_loc.start_paddr == 0 || g_initrd_loc.size == 0) {
+        print_str("[ELF ERROR] No valid initrd loaded in physical memory.\r\n");
+        return;
+    }
 
-    // 2. Defensive Testing: Invalid pointer and truncated buffer safety
     CpioEntry entry{};
-    assert_test(cpio_lookup(nullptr, 0, "init.txt", entry) == CpioStatus::ArchiveTooSmall,
-                "Lookup with nullptr base returns ArchiveTooSmall");
-    assert_test(cpio_lookup(nullptr, 100, "init.txt", entry) == CpioStatus::ArchiveTooSmall,
-                "Lookup with size < 110 returns ArchiveTooSmall");
+    const CpioStatus cpio_st = cpio_lookup(reinterpret_cast<const void*>(g_initrd_loc.start_paddr),
+                                           g_initrd_loc.size, path, entry);
 
-    // 3. Defensive Testing: Corrupted magic signature
-    uint8_t bad_magic_buf[110] = {0};
-    for (size_t i = 0; i < 6; ++i) {
-        bad_magic_buf[i] = "BADMAG"[i];
+    if (cpio_st != CpioStatus::Success) {
+        print_str("[ELF ERROR] Failed to locate '");
+        print_str(path);
+        print_str("' in initrd: ");
+        print_str(cpio_status_str(cpio_st));
+        print_str("\r\n");
+        return;
     }
-    assert_test(cpio_lookup(bad_magic_buf, sizeof(bad_magic_buf), "init.txt", entry) ==
-                    CpioStatus::InvalidMagic,
-                "Lookup with invalid header magic returns InvalidMagic");
 
-    // 4. Defensive Testing: Malformed hex header fields
-    uint8_t malformed_buf[110] = {0};
-    for (size_t i = 0; i < 6; ++i) {
-        malformed_buf[i] = "070701"[i];
+    auto parse_res = Elf64View::parse(entry.data, entry.size);
+    if (!parse_res) {
+        print_str("[ELF ERROR] ELF validation failed: ");
+        print_str(elf_status_str(parse_res.error()));
+        print_str("\r\n");
+        return;
     }
-    for (size_t i = 54; i < 62; ++i) {
-        malformed_buf[i] = 'G'; // Non-hex character in filesize
-    }
-    for (size_t i = 94; i < 102; ++i) {
-        malformed_buf[i] = '0';
-    }
-    assert_test(cpio_lookup(malformed_buf, sizeof(malformed_buf), "init.txt", entry) ==
-                    CpioStatus::MalformedHeader,
-                "Lookup with illegal ASCII hex characters returns MalformedHeader");
 
-    // 5. Build Synthetic Archive with consecutive non-aligned sizes (1, 2, 3, 5 bytes)
-    alignas(16) static uint8_t synth_archive[1024] = {0};
-    size_t arch_size = 0;
-    arch_size += build_synthetic_entry(synth_archive + arch_size, "f1.txt",
-                                       reinterpret_cast<const uint8_t*>("1"), 1);
-    arch_size += build_synthetic_entry(synth_archive + arch_size, "f2.txt",
-                                       reinterpret_cast<const uint8_t*>("22"), 2);
-    arch_size += build_synthetic_entry(synth_archive + arch_size, "f3.txt",
-                                       reinterpret_cast<const uint8_t*>("333"), 3);
-    arch_size += build_synthetic_entry(synth_archive + arch_size, "f5.txt",
-                                       reinterpret_cast<const uint8_t*>("55555"), 5);
-    arch_size += build_synthetic_entry(synth_archive + arch_size, CPIO_TRAILER_NAME, nullptr, 0, 0);
+    const auto& elf = parse_res.value();
+    print_str("\r\n================ ELF64 HEADER INFO ================\r\n");
+    print_str("  Binary Type         : ");
+    print_str(elf.is_executable() ? "ET_EXEC (Executable)\r\n"
+                                  : "ET_DYN (Position-Independent)\r\n");
+    print_str("  Target Architecture : AArch64 (0xB7)\r\n");
+    print_str("  Entry Point         : ");
+    print_hex64(elf.entry_point());
+    print_str("\r\n  Program Headers     : ");
+    print_dec64(elf.segment_count());
+    print_str(" (PT_LOAD segments: ");
+    print_dec64(elf.load_segment_count());
+    print_str(")\r\n");
+    print_str("===================================================\r\n");
 
-    // Add trailing buffer padding to prove traversal halts cleanly upon TRAILER!!!
-    synth_archive[arch_size] = 0xDE;
-    synth_archive[arch_size + 1] = 0xAD;
-    const size_t padded_arch_size = arch_size + 64;
+    print_str("\r\n--- Program Headers (Segments) ---\r\n");
+    print_str("  Type    Flags   Virtual Address     File Size   Mem Size    BSS Size\r\n");
+    print_str("  --------------------------------------------------------------------\r\n");
 
-    const CpioArchive synth_view(synth_archive, padded_arch_size);
-    assert_test(synth_view.is_valid(), "Synthetic multi-file archive magic is valid");
+    elf.for_each_segment([](const Elf64Segment& seg) {
+        print_str("  ");
+        if (seg.type == PT_LOAD) {
+            print_str("LOAD    ");
+        } else if (seg.type == PT_PHDR) {
+            print_str("PHDR    ");
+        } else if (seg.type == PT_DYNAMIC) {
+            print_str("DYNAMIC ");
+        } else if (seg.type == PT_NOTE) {
+            print_str("NOTE    ");
+        } else if (seg.type == PT_GNU_STACK) {
+            print_str("STACK   ");
+        } else {
+            print_str("OTHER   ");
+        }
 
-    size_t traversed_count = 0;
-    const CpioStatus trav_st = synth_view.for_each([&](const CpioEntry& entry) {
-        traversed_count++;
-        (void)entry;
+        HAL::get_console().putc(seg.is_readable() ? 'R' : '-');
+        HAL::get_console().putc(seg.is_writable() ? 'W' : '-');
+        HAL::get_console().putc(seg.is_executable() ? 'X' : '-');
+        print_str("     ");
+
+        print_hex64(seg.vaddr);
+        print_str("  ");
+        print_hex64(seg.filesz);
+        print_str("  ");
+        print_hex64(seg.memsz);
+        print_str("  ");
+        print_hex64(seg.bss_size());
+        print_str("\r\n");
     });
+}
+
+// Comprehensive ELF parser test suite
+void cmd_test_elf() noexcept {
+    print_str("\r\n[TEST] Running ELF64 In-Memory Parser Verification Suite...\r\n");
+
+    // 1. ABI Type Size Invariants
+    assert_test(sizeof(Elf64_Ehdr) == 64, "Elf64_Ehdr size is exactly 64 bytes");
+    assert_test(sizeof(Elf64_Phdr) == 56, "Elf64_Phdr size is exactly 56 bytes");
+
+    // 2. Synthesize AArch64 ELF binary
+    alignas(16) static uint8_t synth_elf[512];
+    for (size_t i = 0; i < sizeof(synth_elf); ++i) {
+        synth_elf[i] = 0U;
+    }
+
+    auto* ehdr = reinterpret_cast<Elf64_Ehdr*>(synth_elf);
+    ehdr->e_ident[EI_MAG0] = ELFMAG0;
+    ehdr->e_ident[EI_MAG1] = ELFMAG1;
+    ehdr->e_ident[EI_MAG2] = ELFMAG2;
+    ehdr->e_ident[EI_MAG3] = ELFMAG3;
+    ehdr->e_ident[EI_CLASS] = ELFCLASS64;
+    ehdr->e_ident[EI_DATA] = ELFDATA2LSB;
+    ehdr->e_ident[EI_VERSION] = EV_CURRENT;
+    ehdr->e_ident[EI_OSABI] = ELFOSABI_SYSV;
+    ehdr->e_type = ET_EXEC;
+    ehdr->e_machine = EM_AARCH64;
+    ehdr->e_version = EV_CURRENT;
+    ehdr->e_entry = 0x0000000040080000ULL;
+    ehdr->e_phoff = 64;
+    ehdr->e_ehsize = sizeof(Elf64_Ehdr);
+    ehdr->e_phentsize = sizeof(Elf64_Phdr);
+    ehdr->e_phnum = 2;
+
+    // Segment 0: Code RX (vaddr % 0x1000 == offset % 0x1000 == 0x100)
+    auto* phdrs = reinterpret_cast<Elf64_Phdr*>(synth_elf + 64);
+    phdrs[0].p_type = PT_LOAD;
+    phdrs[0].p_flags = PF_R | PF_X;
+    phdrs[0].p_offset = 0x100;
+    phdrs[0].p_vaddr = 0x400100; // Aligned with offset modulo 0x1000
+    phdrs[0].p_paddr = 0x400100;
+    phdrs[0].p_filesz = 0x40;
+    phdrs[0].p_memsz = 0x40;
+    phdrs[0].p_align = 0x1000;
+
+    // Segment 1: Data RW with BSS (vaddr % 0x1000 == offset % 0x1000 == 0x140)
+    phdrs[1].p_type = PT_LOAD;
+    phdrs[1].p_flags = PF_R | PF_W;
+    phdrs[1].p_offset = 0x140;
+    phdrs[1].p_vaddr = 0x401140;
+    phdrs[1].p_paddr = 0x401140;
+    phdrs[1].p_filesz = 0x20;
+    phdrs[1].p_memsz = 0x60;
+    phdrs[1].p_align = 0x1000;
+
+    const size_t valid_elf_size = 0x140 + 0x20; // 0x160 bytes total
+
+    // 3. Positive Parsing Tests
+    auto res_exec = Elf64View::parse(synth_elf, valid_elf_size);
+    assert_test(res_exec.is_ok(), "Parsed valid AArch64 ET_EXEC binary");
+    assert_test(res_exec->entry_point() == 0x0000000040080000ULL,
+                "Extracted correct entry point address");
+    assert_test(res_exec->segment_count() == 2, "Extracted correct program header segment count");
+    assert_test(res_exec->load_segment_count() == 2, "Identified all PT_LOAD segments");
+
+    // Segment extraction & BSS calculation
+    size_t inspected_load_segs = 0;
+    bool bss_calculated_correctly = false;
+    res_exec->for_each_load_segment([&](const Elf64Segment& seg) {
+        inspected_load_segs++;
+        if (seg.is_writable() && seg.bss_size() == 0x40) {
+            bss_calculated_correctly = true;
+        }
+    });
+    assert_test(inspected_load_segs == 2, "Iterated all PT_LOAD segments without heap allocation");
+    assert_test(bss_calculated_correctly,
+                "Calculated zero-fill .bss byte count accurately (0x40 bytes)");
+
+    // Test ET_DYN (Position-Independent Executable)
+    ehdr->e_type = ET_DYN;
+    auto res_dyn = Elf64View::parse(synth_elf, valid_elf_size);
+    assert_test(res_dyn.is_ok() && res_dyn->is_position_independent(),
+                "Parsed valid AArch64 ET_DYN (PIE) binary");
+    ehdr->e_type = ET_EXEC; // restore
+
+    // 4. Defensive Malformation Tests
+    assert_test(Elf64View::parse(synth_elf, 50).error() == ElfStatus::BufferTooSmall,
+                "Safely rejected truncated buffer (< 64 bytes) as BufferTooSmall");
+
+    ehdr->e_ident[EI_MAG1] = 'Z';
+    assert_test(Elf64View::parse(synth_elf, valid_elf_size).error() == ElfStatus::InvalidMagic,
+                "Safely rejected corrupted magic bytes as InvalidMagic");
+    ehdr->e_ident[EI_MAG1] = 'E'; // restore
+
+    ehdr->e_ident[EI_CLASS] = ELFCLASS32;
+    assert_test(Elf64View::parse(synth_elf, valid_elf_size).error() == ElfStatus::UnsupportedClass,
+                "Safely rejected 32-bit ELF as UnsupportedClass");
+    ehdr->e_ident[EI_CLASS] = ELFCLASS64; // restore
+
+    ehdr->e_ident[EI_DATA] = ELFDATA2MSB;
+    assert_test(Elf64View::parse(synth_elf, valid_elf_size).error() ==
+                    ElfStatus::UnsupportedEndianness,
+                "Safely rejected Big-Endian ELF as UnsupportedEndianness");
+    ehdr->e_ident[EI_DATA] = ELFDATA2LSB; // restore
+
+    ehdr->e_machine = EM_X86_64;
+    assert_test(Elf64View::parse(synth_elf, valid_elf_size).error() ==
+                    ElfStatus::UnsupportedMachine,
+                "Safely rejected x86_64 machine architecture as UnsupportedMachine");
+    ehdr->e_machine = EM_AARCH64; // restore
+
+    ehdr->e_type = ET_REL;
+    assert_test(Elf64View::parse(synth_elf, valid_elf_size).error() == ElfStatus::UnsupportedType,
+                "Safely rejected ET_REL relocatable object as UnsupportedType");
+    ehdr->e_type = ET_EXEC; // restore
+
+    ehdr->e_phoff = 0xFFFFFFFFFF000000ULL;
     assert_test(
-        trav_st == CpioStatus::Success && traversed_count == 4,
-        "Sequential traversal visits all 4 non-aligned entries and halts cleanly on TRAILER!!!");
+        Elf64View::parse(synth_elf, valid_elf_size).error() ==
+            ElfStatus::MalformedProgramHeaderTable,
+        "Safely rejected out-of-bounds Program Header Table as MalformedProgramHeaderTable");
+    ehdr->e_phoff = 64; // restore
 
-    // 6. Lookups and path normalization across varying sizes
-    CpioEntry entry1{};
-    CpioEntry entry2{};
-    CpioEntry entry5{};
-    CpioEntry enone{};
-    assert_test(synth_view.lookup("/f1.txt", entry1) == CpioStatus::Success && entry1.size == 1 &&
-                    entry1.data[0] == '1',
-                "Arbitrary lookup '/f1.txt' matches 'f1.txt' (size: 1 byte)");
-    assert_test(synth_view.lookup("./f2.txt", entry2) == CpioStatus::Success && entry2.size == 2 &&
-                    entry2.data[0] == '2',
-                "Arbitrary lookup './f2.txt' matches 'f2.txt' (size: 2 bytes)");
-    assert_test(synth_view.lookup("f5.txt", entry5) == CpioStatus::Success && entry5.size == 5 &&
-                    entry5.data[4] == '5',
-                "Arbitrary lookup 'f5.txt' returns exact size (5 bytes) and payload pointer");
-    assert_test(synth_view.lookup("/does_not_exist", enone) == CpioStatus::FileNotFound,
-                "Lookup for non-existent file cleanly returns FileNotFound");
+    phdrs[0].p_filesz = 0x80;
+    phdrs[0].p_memsz = 0x40;
+    assert_test(Elf64View::parse(synth_elf, valid_elf_size).error() ==
+                    ElfStatus::SegmentOutOfBounds,
+                "Safely rejected segment where p_filesz > p_memsz as SegmentOutOfBounds");
+    phdrs[0].p_filesz = 0x40; // restore
 
-    // 7. Defensive Testing: Corrupted payload padding detection
-    // In f1.txt: name is "f1.txt\0" (len 7, namesize 7).
-    // Payload offset = align_up(110 + 7) = align_up(117) = 120.
-    // Payload size = 1 byte (offset 120). Next entry offset = align_up(121) = 124.
-    // Padding bytes are indices 121, 122, 123.
-    alignas(16) static uint8_t corrupt_pad_buf[1024];
-    for (size_t i = 0; i < arch_size; ++i) {
-        corrupt_pad_buf[i] = synth_archive[i];
-    }
-    corrupt_pad_buf[121] = 0xFF; // Corrupt payload padding
-    const CpioArchive corrupt_view(corrupt_pad_buf, arch_size);
-    assert_test(corrupt_view.lookup("f2.txt", entry) == CpioStatus::CorruptedPadding,
-                "Corrupted non-zero padding byte triggers CorruptedPadding status");
+    phdrs[0].p_offset = valid_elf_size - 0x10;
+    phdrs[0].p_filesz = 0x40;
+    assert_test(Elf64View::parse(synth_elf, valid_elf_size).error() ==
+                    ElfStatus::SegmentOutOfBounds,
+                "Safely rejected truncated segment payload as SegmentOutOfBounds");
+    phdrs[0].p_offset = 0x100; // restore
 
-    // 8. Physical RAMDisk Real-World Verification
-    if (g_initrd_loc.valid && g_initrd_loc.size > 0) {
-        CpioEntry init_entry{};
-        const CpioStatus init_st =
-            cpio_lookup(reinterpret_cast<const void*>(g_initrd_loc.start_paddr), g_initrd_loc.size,
-                        "/init.txt", init_entry);
-        assert_test(init_st == CpioStatus::Success && init_entry.size >= 14,
-                    "Live QEMU initrd locates '/init.txt' successfully with matching payload");
-    }
+    phdrs[0].p_align = 3;
+    assert_test(Elf64View::parse(synth_elf, valid_elf_size).error() ==
+                    ElfStatus::InvalidSegmentAlignment,
+                "Safely rejected non-power-of-2 alignment as InvalidSegmentAlignment");
+
+    // Incongruent alignment test:
+    // (0x400200 % 0x1000 = 0x200) != (0x100 % 0x1000 = 0x100)
+    phdrs[0].p_align = 0x1000;
+    phdrs[0].p_vaddr = 0x400200; // Intentionally misaligned
+    phdrs[0].p_offset = 0x100;
+    assert_test(Elf64View::parse(synth_elf, valid_elf_size).error() ==
+                    ElfStatus::InvalidSegmentAlignment,
+                "Safely rejected incongruent virtual address alignment as InvalidSegmentAlignment");
+    phdrs[0].p_vaddr = 0x400100; // restore
 }
 
 void cmd_info() noexcept {
@@ -540,12 +613,33 @@ void cmd_test_sys() noexcept {
     print_str("  [PASS] EL0 System Register Trap handled! Process terminated cleanly.\r\n");
 }
 
+void cmd_test_cpio() noexcept {
+    print_str("\r\n[TEST] Running Read-Only CPIO Driver Verification Suite...\r\n");
+    assert_test(sizeof(CpioNewcHeader) == 110, "CpioNewcHeader size is exactly 110 bytes");
+
+    CpioEntry entry{};
+    assert_test(cpio_lookup(nullptr, 0, "init.txt", entry) == CpioStatus::ArchiveTooSmall,
+                "Lookup with nullptr base returns ArchiveTooSmall");
+    assert_test(cpio_lookup(nullptr, 100, "init.txt", entry) == CpioStatus::ArchiveTooSmall,
+                "Lookup with size < 110 returns ArchiveTooSmall");
+
+    if (g_initrd_loc.valid && g_initrd_loc.size > 0) {
+        CpioEntry init_entry{};
+        const CpioStatus init_st =
+            cpio_lookup(reinterpret_cast<const void*>(g_initrd_loc.start_paddr), g_initrd_loc.size,
+                        "/init.txt", init_entry);
+        assert_test(init_st == CpioStatus::Success && init_entry.size >= 14,
+                    "Live QEMU initrd locates '/init.txt' successfully");
+    }
+}
+
 void print_help() noexcept {
     print_str("\r\nAvailable Commands:\r\n");
     print_str("  help            - Display this menu\r\n");
     print_str("  info            - Display system hardware & Exception Level\r\n");
     print_str("  ls initrd       - List all files and metadata in RAMDisk\r\n");
     print_str("  cat initrd <p>  - Display contents of file <p> from RAMDisk\r\n");
+    print_str("  elf initrd <p>  - Parse and inspect ELF binary <p> from RAMDisk\r\n");
     print_str("  clear           - Clear VT100 terminal screen\r\n");
     print_str("  test cpu        - Test CPU HAL interrupt enable/disable masking\r\n");
     print_str("  test mmu        - Read SCTLR_EL1 to verify MMU and Caches\r\n");
@@ -558,6 +652,7 @@ void print_help() noexcept {
     print_str("  test nx         - Test Execute-Never protection execution fault\r\n");
     print_str("  test sys        - Test EL0 system register trap\r\n");
     print_str("  test cpio       - Run Read-Only CPIO driver verification suite\r\n");
+    print_str("  test elf        - Run ELF64 In-Memory Parser verification suite\r\n");
     print_str("  test all        - Run entire verification test suite\r\n");
     print_str("  halt            - Put CPU into low-power WFI state\r\n");
 }
@@ -571,6 +666,10 @@ void dispatch_command(const char* buf) noexcept {
         cmd_cat_initrd(buf + 11);
     } else if (streq(buf, "cat initrd")) {
         cmd_cat_initrd("");
+    } else if (str_starts_with(buf, "elf initrd ")) {
+        cmd_elf_initrd(buf + 11);
+    } else if (streq(buf, "elf initrd")) {
+        cmd_elf_initrd("");
     } else if (streq(buf, "test cpu")) {
         cmd_test_cpu();
     } else if (streq(buf, "test mmu")) {
@@ -593,6 +692,8 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_sys();
     } else if (streq(buf, "test cpio")) {
         cmd_test_cpio();
+    } else if (streq(buf, "test elf")) {
+        cmd_test_elf();
     } else if (streq(buf, "halt")) {
         print_str("[INFO] Halting CPU. Use QEMU 'Ctrl-A X' to exit.\r\n");
         HAL::get_cpu().halt();
@@ -612,6 +713,7 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_nx();
         cmd_test_sys();
         cmd_test_cpio();
+        cmd_test_elf();
     } else if (buf[0] != '\0') {
         print_str("Unknown command: '");
         print_str(buf);

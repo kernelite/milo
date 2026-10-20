@@ -5,4 +5,5 @@ SRCS_CXX += kernel/main.cpp \
 			kernel/shell/shell.cpp \
 			kernel/mm/pfa.cpp \
 			kernel/boot/fdt.cpp \
-			kernel/fs/cpio.cpp
+			kernel/fs/cpio.cpp \
+			kernel/loader/elf64.cpp
