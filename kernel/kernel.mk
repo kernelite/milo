@@ -4,4 +4,5 @@ SRCS_CXX += kernel/main.cpp \
 			arch/$(ARCH)/cpu.cpp \
 			kernel/shell/shell.cpp \
 			kernel/mm/pfa.cpp \
-			kernel/boot/fdt.cpp
+			kernel/boot/fdt.cpp \
+			kernel/fs/cpio.cpp
