@@ -28,9 +28,8 @@ bool CpioArchive::is_valid() const noexcept {
         return false;
     }
     const auto* hdr = reinterpret_cast<const CpioNewcHeader*>(m_base);
-    if (hdr->c_magic[0] != '0' || hdr->c_magic[1] != '7' ||
-        hdr->c_magic[2] != '0' || hdr->c_magic[3] != '7' ||
-        hdr->c_magic[4] != '0') {
+    if (hdr->c_magic[0] != '0' || hdr->c_magic[1] != '7' || hdr->c_magic[2] != '0' ||
+        hdr->c_magic[3] != '7' || hdr->c_magic[4] != '0') {
         return false;
     }
     return (hdr->c_magic[5] == '1' || hdr->c_magic[5] == '2');

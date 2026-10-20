@@ -120,8 +120,8 @@ void write_hex8_ascii(char* dest, uint32_t val) noexcept {
     }
 }
 
-size_t build_synthetic_entry(uint8_t* out, const char* name, const uint8_t* content,
-                            size_t size, uint32_t mode = 0100644) noexcept {
+size_t build_synthetic_entry(uint8_t* out, const char* name, const uint8_t* content, size_t size,
+                             uint32_t mode = 0100644) noexcept {
     auto* hdr = reinterpret_cast<CpioNewcHeader*>(out);
     for (size_t i = 0; i < 6; ++i) {
         hdr->c_magic[i] = "070701"[i];
@@ -225,9 +225,8 @@ void cmd_cat_initrd(const char* path) noexcept {
     }
 
     CpioEntry entry{};
-    const CpioStatus status = cpio_lookup(
-        reinterpret_cast<const void*>(g_initrd_loc.start_paddr),
-        g_initrd_loc.size, path, entry);
+    const CpioStatus status = cpio_lookup(reinterpret_cast<const void*>(g_initrd_loc.start_paddr),
+                                          g_initrd_loc.size, path, entry);
 
     if (status == CpioStatus::Success) {
         print_str("[CPIO] Located '");
@@ -318,8 +317,9 @@ void cmd_test_cpio() noexcept {
         traversed_count++;
         (void)entry;
     });
-    assert_test(trav_st == CpioStatus::Success && traversed_count == 4,
-                "Sequential traversal visits all 4 non-aligned entries and halts cleanly on TRAILER!!!");
+    assert_test(
+        trav_st == CpioStatus::Success && traversed_count == 4,
+        "Sequential traversal visits all 4 non-aligned entries and halts cleanly on TRAILER!!!");
 
     // 6. Lookups and path normalization across varying sizes
     CpioEntry entry1{};
@@ -355,9 +355,9 @@ void cmd_test_cpio() noexcept {
     // 8. Physical RAMDisk Real-World Verification
     if (g_initrd_loc.valid && g_initrd_loc.size > 0) {
         CpioEntry init_entry{};
-        const CpioStatus init_st = cpio_lookup(
-            reinterpret_cast<const void*>(g_initrd_loc.start_paddr),
-            g_initrd_loc.size, "/init.txt", init_entry);
+        const CpioStatus init_st =
+            cpio_lookup(reinterpret_cast<const void*>(g_initrd_loc.start_paddr), g_initrd_loc.size,
+                        "/init.txt", init_entry);
         assert_test(init_st == CpioStatus::Success && init_entry.size >= 14,
                     "Live QEMU initrd locates '/init.txt' successfully with matching payload");
     }
