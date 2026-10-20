@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#define ENABLE_REGISTER_DUMP false
+
 extern "C" {
 void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t far) noexcept;
 void aarch64_handle_invalid_exception(HAL::CpuContext* ctx, uint64_t type) noexcept;
@@ -32,6 +34,10 @@ void print_hex64(uint64_t val) noexcept {
 }
 
 void dump_registers(const HAL::CpuContext* ctx) noexcept {
+    if constexpr (!ENABLE_REGISTER_DUMP) {
+        return;
+    }
+
     print_str("\r\n================ CPU REGISTER DUMP ================\r\n");
     for (int i = 0; i < 31; i += 2) {
         print_str("  X");

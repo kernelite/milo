@@ -22,16 +22,6 @@ extern char __bss_end[];
 uintptr_t alloc_frame() __attribute__((weak));
 }
 
-// Ensure bitwise operations work seamlessly on HAL::PageFlags enum class
-constexpr HAL::PageFlags operator|(HAL::PageFlags first, HAL::PageFlags second) noexcept {
-    return static_cast<HAL::PageFlags>(static_cast<uint32_t>(first) |
-                                       static_cast<uint32_t>(second));
-}
-
-constexpr bool has_flag(HAL::PageFlags flags, HAL::PageFlags test) noexcept {
-    return (static_cast<uint32_t>(flags) & static_cast<uint32_t>(test)) != 0U;
-}
-
 namespace {
 
 alignas(4096) uint64_t g_ttbr0_l0[512] = {0}; // TTBR0_EL1 (User / Lower VA space)

@@ -5,14 +5,45 @@
 namespace HAL {
 
 enum class PageFlags : uint32_t {
-    None = 0,
-    Read = 1 << 0,
-    Write = 1 << 1,
-    Execute = 1 << 2,
-    User = 1 << 3,
-    Device = 1 << 4,
+    None      = 0,
+    Read      = 1 << 0,
+    Write     = 1 << 1,
+    Execute   = 1 << 2,
+    User      = 1 << 3,
+    Device    = 1 << 4,
     Cacheable = 1 << 5
 };
+
+// Bitwise operator overloads for PageFlags bitmask operations
+constexpr PageFlags operator|(PageFlags lhs, PageFlags rhs) noexcept {
+    return static_cast<PageFlags>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+}
+
+constexpr PageFlags operator&(PageFlags lhs, PageFlags rhs) noexcept {
+    return static_cast<PageFlags>(static_cast<uint32_t>(lhs) & static_cast<uint32_t>(rhs));
+}
+
+constexpr PageFlags operator^(PageFlags lhs, PageFlags rhs) noexcept {
+    return static_cast<PageFlags>(static_cast<uint32_t>(lhs) ^ static_cast<uint32_t>(rhs));
+}
+
+constexpr PageFlags operator~(PageFlags flags) noexcept {
+    return static_cast<PageFlags>(~static_cast<uint32_t>(flags));
+}
+
+constexpr PageFlags& operator|=(PageFlags& lhs, PageFlags rhs) noexcept {
+    lhs = lhs | rhs;
+    return lhs;
+}
+
+constexpr PageFlags& operator&=(PageFlags& lhs, PageFlags rhs) noexcept {
+    lhs = lhs & rhs;
+    return lhs;
+}
+
+constexpr bool has_flag(PageFlags flags, PageFlags test) noexcept {
+    return (static_cast<uint32_t>(flags) & static_cast<uint32_t>(test)) != 0U;
+}
 
 struct MmuStatus {
     bool mmu_enabled;
