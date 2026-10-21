@@ -122,7 +122,7 @@ Result<AddressSpace, AddressSpaceError> AddressSpace::create() noexcept {
 }
 
 bool AddressSpace::map_user_page(uintptr_t vaddr, uintptr_t paddr,
-                                 HAL::PageFlags flags) noexcept {
+                                 HAL::PageFlags flags) const noexcept {
     if (m_root_paddr == 0U) {
         return false;
     }
@@ -214,7 +214,7 @@ bool AddressSpace::map_user_page(uintptr_t vaddr, uintptr_t paddr,
     return true;
 }
 
-bool AddressSpace::unmap_user_page(uintptr_t vaddr) noexcept {
+bool AddressSpace::unmap_user_page(uintptr_t vaddr) const noexcept {
     if (m_root_paddr == 0U || vaddr >= 0x40000000ULL) {
         return false;
     }
@@ -282,29 +282,29 @@ void AddressSpace::destroy() noexcept {
         return;
     }
 
-    auto* const l0 = reinterpret_cast<uint64_t*>(phys_to_virt(m_root_paddr));
-    if ((l0[0] & 1U) != 0U) {
-        const uintptr_t l1_paddr = l0[0] & TABLE_ADDR_MASK;
-        auto* const l1 = reinterpret_cast<uint64_t*>(phys_to_virt(l1_paddr));
+    auto* const lvl0 = reinterpret_cast<uint64_t*>(phys_to_virt(m_root_paddr));
+    if ((lvl0[0] & 1U) != 0U) {
+        const uintptr_t l1_paddr = lvl0[0] & TABLE_ADDR_MASK;
+        auto* const lvl1 = reinterpret_cast<uint64_t*>(phys_to_virt(l1_paddr));
 
         // Only traverse L1[0] (user space). L1[1..511] are shared kernel mappings!
-        if ((l1[0] & 1U) != 0U) {
-            const uintptr_t l2_paddr = l1[0] & TABLE_ADDR_MASK;
-            auto* const l2 = reinterpret_cast<uint64_t*>(phys_to_virt(l2_paddr));
+        if ((lvl1[0] & 1U) != 0U) {
+            const uintptr_t l2_paddr = lvl1[0] & TABLE_ADDR_MASK;
+            auto* const lvl2 = reinterpret_cast<uint64_t*>(phys_to_virt(l2_paddr));
 
             for (size_t i2 = 0U; i2 < PAGE_ENTRY_COUNT; ++i2) {
                 // i2 == 45 is UART MMIO mirrored from kernel; do not free!
-                if (i2 != 45U && (l2[i2] & 1U) != 0U) {
-                    const uintptr_t l3_paddr = l2[i2] & TABLE_ADDR_MASK;
+                if (i2 != 45U && (lvl2[i2] & 1U) != 0U) {
+                    const uintptr_t l3_paddr = lvl2[i2] & TABLE_ADDR_MASK;
                     free_frame(l3_paddr);
-                    l2[i2] = 0ULL;
+                    lvl2[i2] = 0ULL;
                 }
             }
             free_frame(l2_paddr);
-            l1[0] = 0ULL;
+            lvl1[0] = 0ULL;
         }
         free_frame(l1_paddr);
-        l0[0] = 0ULL;
+        lvl0[0] = 0ULL;
     }
 
     free_frame(m_root_paddr);

@@ -59,9 +59,9 @@ class AddressSpace {
 
     [[nodiscard]] uintptr_t root_paddr() const noexcept { return m_root_paddr; }
 
-    bool map_user_page(uintptr_t vaddr, uintptr_t paddr, HAL::PageFlags flags) noexcept;
+    bool map_user_page(uintptr_t vaddr, uintptr_t paddr, HAL::PageFlags flags) const noexcept;
 
-    bool unmap_user_page(uintptr_t vaddr) noexcept;
+    bool unmap_user_page(uintptr_t vaddr) const noexcept;
 
     void activate() const noexcept;
 

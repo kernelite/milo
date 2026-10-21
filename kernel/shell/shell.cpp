@@ -126,26 +126,26 @@ void cmd_test_vmm() noexcept {
     {
         auto as_res = Kernel::MM::AddressSpace::create();
         assert_test(as_res.is_ok(), "AddressSpace L0 Root Table frame allocated");
-        auto as = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
+        auto adrsp = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
 
         // Map non-aligned user addresses
         const uintptr_t test_vaddr = 0x0000000000400000ULL;
         const uintptr_t test_paddr = alloc_frame();
         assert_test(test_paddr != 0U, "Allocated user physical test frame");
 
-        const bool map_ok = as.map_user_page(
+        const bool map_ok = adrsp.map_user_page(
             test_vaddr, test_paddr,
             HAL::PageFlags::User | HAL::PageFlags::Read | HAL::PageFlags::Execute);
         assert_test(map_ok, "Mapped RX page in AddressSpace with L1/L2/L3 table creation");
 
         // Attempt mapping out-of-bounds higher-half address in user table
-        const bool bad_map = as.map_user_page(
+        const bool bad_map = adrsp.map_user_page(
             0xFFFF800000400000ULL, test_paddr,
             HAL::PageFlags::User | HAL::PageFlags::Read);
         assert_test(!bad_map, "Rejected higher-half virtual address in user space translation table");
 
         free_frame(test_paddr);
-        as.destroy();
+        adrsp.destroy();
     }
 
     const size_t pages_after = pfa_allocated_pages_count();
