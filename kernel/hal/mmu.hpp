@@ -14,6 +14,37 @@ enum class PageFlags : uint32_t {
     Cacheable = 1 << 5
 };
 
+// Bitwise operator overloads for PageFlags bitmask operations
+constexpr PageFlags operator|(PageFlags lhs, PageFlags rhs) noexcept {
+    return static_cast<PageFlags>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+}
+
+constexpr PageFlags operator&(PageFlags lhs, PageFlags rhs) noexcept {
+    return static_cast<PageFlags>(static_cast<uint32_t>(lhs) & static_cast<uint32_t>(rhs));
+}
+
+constexpr PageFlags operator^(PageFlags lhs, PageFlags rhs) noexcept {
+    return static_cast<PageFlags>(static_cast<uint32_t>(lhs) ^ static_cast<uint32_t>(rhs));
+}
+
+constexpr PageFlags operator~(PageFlags flags) noexcept {
+    return static_cast<PageFlags>(~static_cast<uint32_t>(flags));
+}
+
+constexpr PageFlags& operator|=(PageFlags& lhs, PageFlags rhs) noexcept {
+    lhs = lhs | rhs;
+    return lhs;
+}
+
+constexpr PageFlags& operator&=(PageFlags& lhs, PageFlags rhs) noexcept {
+    lhs = lhs & rhs;
+    return lhs;
+}
+
+constexpr bool has_flag(PageFlags flags, PageFlags test) noexcept {
+    return (static_cast<uint32_t>(flags) & static_cast<uint32_t>(test)) != 0U;
+}
+
 struct MmuStatus {
     bool mmu_enabled;
     bool dcache_enabled;

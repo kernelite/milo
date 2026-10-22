@@ -17,20 +17,10 @@ extern char _data_end[];
 extern char __bss_start[];
 // NOLINTNEXTLINE(bugprone-reserved-identifier)
 extern char __bss_end[];
+}
 
 // Weak declaration for physical frame allocator if present in kernel
-uintptr_t alloc_frame() __attribute__((weak));
-}
-
-// Ensure bitwise operations work seamlessly on HAL::PageFlags enum class
-constexpr HAL::PageFlags operator|(HAL::PageFlags first, HAL::PageFlags second) noexcept {
-    return static_cast<HAL::PageFlags>(static_cast<uint32_t>(first) |
-                                       static_cast<uint32_t>(second));
-}
-
-constexpr bool has_flag(HAL::PageFlags flags, HAL::PageFlags test) noexcept {
-    return (static_cast<uint32_t>(flags) & static_cast<uint32_t>(test)) != 0U;
-}
+extern uintptr_t alloc_frame() noexcept __attribute__((weak));
 
 namespace {
 

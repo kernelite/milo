@@ -13,6 +13,8 @@ void aarch64_handle_invalid_exception(HAL::CpuContext* ctx, uint64_t type) noexc
 
 namespace {
 
+constexpr bool ENABLE_REGISTER_DUMP = false;
+
 void print_str(const char* str) noexcept {
     size_t len = 0;
     while (str[len] != '\0') {
@@ -32,6 +34,10 @@ void print_hex64(uint64_t val) noexcept {
 }
 
 void dump_registers(const HAL::CpuContext* ctx) noexcept {
+    if constexpr (!ENABLE_REGISTER_DUMP) {
+        return;
+    }
+
     print_str("\r\n================ CPU REGISTER DUMP ================\r\n");
     for (int i = 0; i < 31; i += 2) {
         print_str("  X");
@@ -107,8 +113,6 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
             ctx->x[0] = static_cast<uint64_t>(-38); // -ENOSYS
         }
 
-        // Advance ELR_EL1 past the 4-byte SVC instruction to prevent re-triggering
-        ctx->elr_el1 += 4U;
         return;
     }
 
@@ -129,6 +133,12 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
         if ((ctx->spsr_el1 & 0x0FU) == 0U) {
             print_str("[TRAP] Terminating faulting EL0 process.\r\n");
             return_to_kernel(-1);
+        }
+
+        if (eclass == 0x21U) {
+            print_str("[TRAP] EL1 Instruction Fault detected! Returning to caller via LR...\r\n");
+            ctx->elr_el1 = ctx->x[30];
+            return;
         }
 
         print_str("[TRAP] EL1 Fault detected! Advancing ELR_EL1 past faulting instruction...\r\n");

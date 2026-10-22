@@ -174,3 +174,17 @@ void free_frames(uintptr_t paddr, size_t count) noexcept {
         clear_bit(page_idx);
     }
 }
+
+size_t pfa_allocated_pages_count() noexcept {
+    size_t count = 0U;
+    for (size_t i = 0U; i < g_total_pages; ++i) {
+        if (test_bit(i)) {
+            count++;
+        }
+    }
+    return count;
+}
+
+size_t pfa_free_pages_count() noexcept {
+    return g_total_pages - pfa_allocated_pages_count();
+}

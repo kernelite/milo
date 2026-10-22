@@ -5,10 +5,14 @@
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
 #include "loader/elf64.hpp"
+#include "loader/elf_loader.hpp"
+#include "mm/address_space.hpp"
 #include "mm/pfa.hpp"
 
 #include <cstddef>
 #include <cstdint>
+
+extern "C" int64_t enter_user_mode(uintptr_t entry_point, uintptr_t user_sp);
 
 // Access global initrd metadata from main.cpp
 extern FDT::InitrdLocation g_initrd_loc;
@@ -110,6 +114,192 @@ void print_hex64(uint64_t val) noexcept {
         val >>= 4U;
     }
     print_str(buf);
+}
+
+void cmd_test_vmm() noexcept {
+    print_str("\r\n[TEST] Running AddressSpace Lifecycle & Mapping Test...\r\n");
+
+    const size_t pages_before = pfa_allocated_pages_count();
+
+    {
+        auto as_res = Kernel::MM::AddressSpace::create();
+        assert_test(as_res.is_ok(), "AddressSpace L0 Root Table frame allocated");
+        auto adrsp = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
+
+        // Map non-aligned user addresses
+        const uintptr_t test_vaddr = 0x0000000000400000ULL;
+        const uintptr_t test_paddr = alloc_frame();
+        assert_test(test_paddr != 0U, "Allocated user physical test frame");
+
+        const bool map_ok = adrsp.map_user_page(test_vaddr, test_paddr,
+                                                HAL::PageFlags::User | HAL::PageFlags::Read |
+                                                    HAL::PageFlags::Execute);
+        assert_test(map_ok, "Mapped RX page in AddressSpace with L1/L2/L3 table creation");
+
+        // Attempt mapping out-of-bounds higher-half address in user table
+        const bool bad_map = adrsp.map_user_page(0xFFFF800000400000ULL, test_paddr,
+                                                 HAL::PageFlags::User | HAL::PageFlags::Read);
+        assert_test(!bad_map,
+                    "Rejected higher-half virtual address in user space translation table");
+
+        free_frame(test_paddr);
+        adrsp.destroy();
+    }
+
+    const size_t pages_after = pfa_allocated_pages_count();
+    assert_test(pages_before == pages_after,
+                "AddressSpace destruction freed all intermediate L1/L2/L3 & L0 tables");
+}
+
+void cmd_test_loader_pipeline() noexcept {
+    print_str("\r\n[TEST] Running Segment Loader Pipeline & OOM Rollback Suite...\r\n");
+
+    alignas(16) static uint8_t test_elf_buf[1024] = {0};
+    auto* ehdr = reinterpret_cast<Elf64_Ehdr*>(test_elf_buf);
+    ehdr->e_ident[EI_MAG0] = ELFMAG0;
+    ehdr->e_ident[EI_MAG1] = ELFMAG1;
+    ehdr->e_ident[EI_MAG2] = ELFMAG2;
+    ehdr->e_ident[EI_MAG3] = ELFMAG3;
+    ehdr->e_ident[EI_CLASS] = ELFCLASS64;
+    ehdr->e_ident[EI_DATA] = ELFDATA2LSB;
+    ehdr->e_ident[EI_VERSION] = EV_CURRENT;
+    ehdr->e_type = ET_EXEC;
+    ehdr->e_machine = EM_AARCH64;
+    ehdr->e_version = EV_CURRENT;
+    ehdr->e_entry = 0x00400180ULL;
+    ehdr->e_phoff = 64;
+    ehdr->e_ehsize = sizeof(Elf64_Ehdr);
+    ehdr->e_phentsize = sizeof(Elf64_Phdr);
+    ehdr->e_phnum = 2;
+
+    auto* phdrs = reinterpret_cast<Elf64_Phdr*>(test_elf_buf + 64);
+
+    // Segment 0: Code RX (non-page aligned offset 0x180, vaddr 0x400180 -> congruent modulo 0x1000)
+    phdrs[0].p_type = PT_LOAD;
+    phdrs[0].p_flags = PF_R | PF_X;
+    phdrs[0].p_offset = 0x180;
+    phdrs[0].p_vaddr = 0x00400180ULL;
+    phdrs[0].p_paddr = 0x00400180ULL;
+    phdrs[0].p_filesz = 0x40;
+    phdrs[0].p_memsz = 0x40;
+    phdrs[0].p_align = 0x1000;
+
+    // Segment 1: Data RW with BSS (offset 0x240, vaddr 0x401240 -> congruent modulo 0x1000)
+    phdrs[1].p_type = PT_LOAD;
+    phdrs[1].p_flags = PF_R | PF_W;
+    phdrs[1].p_offset = 0x240;
+    phdrs[1].p_vaddr = 0x00401240ULL;
+    phdrs[1].p_paddr = 0x00401240ULL;
+    phdrs[1].p_filesz = 0x20;
+    phdrs[1].p_memsz = 0x80;
+    phdrs[1].p_align = 0x1000;
+
+    for (size_t i = 0; i < 0x20; ++i) {
+        test_elf_buf[0x240 + i] = static_cast<uint8_t>(0xAAU);
+    }
+
+    const size_t pages_initial = pfa_allocated_pages_count();
+
+    auto load_res = Kernel::Loader::load_elf(test_elf_buf, sizeof(test_elf_buf));
+    assert_test(load_res.is_ok(), "Segment Loader loaded valid multi-segment ELF");
+    assert_test(load_res->entry_point == 0x00400180ULL, "Extracted accurate execution entry point");
+
+    load_res->address_space.destroy();
+    assert_test(pfa_allocated_pages_count() == pages_initial,
+                "Clean teardown returned all allocated frames to PFA");
+
+    // OOM Rollback Test
+    print_str("  Simulating OOM condition on Segment 1 memsz...\r\n");
+    const size_t pages_before_oom = pfa_allocated_pages_count();
+
+    phdrs[1].p_memsz = 0x20000000ULL; // 512 MB request exceeds platform RAM
+    auto oom_res = Kernel::Loader::load_elf(test_elf_buf, sizeof(test_elf_buf));
+
+    assert_test(oom_res.is_err() && oom_res.error() == Kernel::Loader::ElfLoaderError::OutOfMemory,
+                "Loader detected OutOfMemory and aborted instantiation safely");
+
+    const size_t pages_after_oom = pfa_allocated_pages_count();
+    assert_test(pages_before_oom == pages_after_oom,
+                "OOM Rollback Verification: Zero physical frames leaked");
+
+    phdrs[1].p_memsz = 0x80; // restore
+}
+
+void cmd_test_user_isolation() noexcept {
+    print_str("\r\n[TEST] Running EL0 User Execution & Fault Isolation Tests...\r\n");
+
+    alignas(16) static uint8_t synth_bin[512] = {0};
+    auto* ehdr = reinterpret_cast<Elf64_Ehdr*>(synth_bin);
+    ehdr->e_ident[EI_MAG0] = ELFMAG0;
+    ehdr->e_ident[EI_MAG1] = ELFMAG1;
+    ehdr->e_ident[EI_MAG2] = ELFMAG2;
+    ehdr->e_ident[EI_MAG3] = ELFMAG3;
+    ehdr->e_ident[EI_CLASS] = ELFCLASS64;
+    ehdr->e_ident[EI_DATA] = ELFDATA2LSB;
+    ehdr->e_ident[EI_VERSION] = EV_CURRENT;
+    ehdr->e_ident[EI_OSABI] = ELFOSABI_SYSV;
+    ehdr->e_type = ET_EXEC;
+    ehdr->e_machine = EM_AARCH64;
+    ehdr->e_version = EV_CURRENT;
+    ehdr->e_entry = 0x00400100ULL; // Congruent with p_offset 0x100 modulo 0x1000
+    ehdr->e_phoff = 64;
+    ehdr->e_ehsize = sizeof(Elf64_Ehdr);
+    ehdr->e_phentsize = sizeof(Elf64_Phdr);
+    ehdr->e_phnum = 1;
+
+    auto* phdr = reinterpret_cast<Elf64_Phdr*>(synth_bin + 64);
+    phdr->p_type = PT_LOAD;
+    phdr->p_flags = PF_R | PF_X;
+    phdr->p_offset = 0x100;
+    phdr->p_vaddr = 0x00400100ULL;
+    phdr->p_paddr = 0x00400100ULL;
+    phdr->p_filesz = 16;
+    phdr->p_memsz = 16;
+    phdr->p_align = 0x1000;
+
+    // AArch64 code:
+    // mov x8, #93 (SYS_EXIT)
+    // mov x0, #42
+    // svc #0
+    const uint32_t code[] = {
+        0xD2800BA8U, // mov x8, #93
+        0xD2800540U, // mov x0, #42
+        0xD4000001U, // svc #0
+        0xD65F03C0U  // ret
+    };
+    for (size_t i = 0; i < 4; ++i) {
+        *reinterpret_cast<uint32_t*>(synth_bin + 0x100 + i * 4) = code[i];
+    }
+
+    auto load_res = Kernel::Loader::load_elf(synth_bin, sizeof(synth_bin));
+    assert_test(load_res.is_ok(), "Loaded user-space test payload");
+    if (!load_res.is_ok()) {
+        return;
+    }
+
+    // Allocate isolated user stack
+    const uintptr_t user_stack_frame = alloc_frame();
+    load_res->address_space.map_user_page(0x0000000000800000ULL, user_stack_frame,
+                                          HAL::PageFlags::User | HAL::PageFlags::Read |
+                                              HAL::PageFlags::Write);
+
+    const uintptr_t orig_root = Kernel::MM::AddressSpace::current_root_paddr();
+
+    // Switch TTBR0_EL1 to user address space
+    load_res->address_space.activate();
+    assert_test(Kernel::MM::AddressSpace::current_root_paddr() ==
+                    load_res->address_space.root_paddr(),
+                "TTBR0_EL1 switched to isolated user address space");
+
+    // Enter EL0
+    const int64_t exit_code = enter_user_mode(load_res->entry_point, 0x0000000000801000ULL);
+    assert_test(exit_code == 42, "EL0 process executed and exited with clean status 42");
+
+    // Restore kernel translation table
+    Kernel::MM::AddressSpace::activate_root(orig_root);
+
+    free_frame(user_stack_frame);
+    load_res->address_space.destroy();
 }
 
 void cmd_ls_initrd() noexcept {
@@ -478,7 +668,7 @@ void cmd_test_cpu() {
 void cmd_test_mmu() {
     print_str("[TEST] Inspecting System MMU & Cache Status via HAL...\r\n");
 
-    HAL::MmuStatus status = HAL::MmuStatus();
+    const HAL::MmuStatus status = HAL::get_mmu().status();
     print_str("  Control Register Value: ");
     print_hex64(status.raw_control_reg);
     print_str("\r\n");
@@ -653,6 +843,9 @@ void print_help() noexcept {
     print_str("  test sys        - Test EL0 system register trap\r\n");
     print_str("  test cpio       - Run Read-Only CPIO driver verification suite\r\n");
     print_str("  test elf        - Run ELF64 In-Memory Parser verification suite\r\n");
+    print_str("  test vmm        - Test AddressSpace lifecycle and page mappings\r\n");
+    print_str("  test loader     - Test ELF segment loading and OOM rollback\r\n");
+    print_str("  test user       - Instantiate EL0 process and verify syscall exit\r\n");
     print_str("  test all        - Run entire verification test suite\r\n");
     print_str("  halt            - Put CPU into low-power WFI state\r\n");
 }
@@ -694,6 +887,12 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_cpio();
     } else if (streq(buf, "test elf")) {
         cmd_test_elf();
+    } else if (streq(buf, "test vmm")) {
+        cmd_test_vmm();
+    } else if (streq(buf, "test loader")) {
+        cmd_test_loader_pipeline();
+    } else if (streq(buf, "test user")) {
+        cmd_test_user_isolation();
     } else if (streq(buf, "halt")) {
         print_str("[INFO] Halting CPU. Use QEMU 'Ctrl-A X' to exit.\r\n");
         HAL::get_cpu().halt();
@@ -714,6 +913,9 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_sys();
         cmd_test_cpio();
         cmd_test_elf();
+        cmd_test_vmm();
+        cmd_test_loader_pipeline();
+        cmd_test_user_isolation();
     } else if (buf[0] != '\0') {
         print_str("Unknown command: '");
         print_str(buf);

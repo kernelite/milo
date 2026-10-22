@@ -6,6 +6,7 @@
   "customizations": {
     "vscode": {
       "extensions": [
+        "google.google-antigravity",
         "ms-vscode.makefile-tools",
         "ms-vscode.cpptools",
         "ms-vscode.cpptools-extension-pack"

@@ -29,3 +29,6 @@ uintptr_t alloc_frame() noexcept;
 uintptr_t alloc_frames(size_t count) noexcept;
 void free_frame(uintptr_t paddr) noexcept;
 void free_frames(uintptr_t paddr, size_t count) noexcept;
+
+size_t pfa_allocated_pages_count() noexcept;
+size_t pfa_free_pages_count() noexcept;
