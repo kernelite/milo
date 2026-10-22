@@ -17,10 +17,10 @@ extern char _data_end[];
 extern char __bss_start[];
 // NOLINTNEXTLINE(bugprone-reserved-identifier)
 extern char __bss_end[];
+}
 
 // Weak declaration for physical frame allocator if present in kernel
-uintptr_t alloc_frame() __attribute__((weak));
-}
+extern uintptr_t alloc_frame() noexcept __attribute__((weak));
 
 namespace {
 

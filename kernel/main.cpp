@@ -1,6 +1,7 @@
 #include "boot/fdt.hpp"
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
+#include "hal/mmu.hpp"
 #include "mm/pfa.hpp"
 #include "shell/shell.hpp"
 
@@ -82,7 +83,12 @@ extern "C" void kmain(uintptr_t dtb_paddr) {
         print_str("[FDT ERROR] Invalid DTB magic!\r\n");
     }
 
-    // 5. Disable interrupts and drop into shell
+    // 5. Initialize MMU and Paging
+    print_str("[KERNEL] Activating MMU and Translation Tables...\r\n");
+    HAL::get_mmu().activate();
+    print_str("[KERNEL] MMU Activated successfully.\r\n");
+
+    // 6. Disable interrupts and drop into shell
     HAL::get_cpu().disable_interrupts();
     Kernel::Shell::run();
 }

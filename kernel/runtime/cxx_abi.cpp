@@ -12,45 +12,45 @@ int __cxa_atexit([[maybe_unused]] void (*func)(void*), [[maybe_unused]] void* ar
     return 0; // No-op in bare-metal kernel
 }
 
-void* memset(void* dest, int c, size_t n) noexcept {
-    auto* p = static_cast<unsigned char*>(dest);
-    const auto val = static_cast<unsigned char>(c);
-    for (size_t i = 0; i < n; ++i) {
-        p[i] = val;
+void* memset(void* dest, int byte_val, size_t count) noexcept {
+    auto* dest_ptr = static_cast<unsigned char*>(dest);
+    const auto val = static_cast<unsigned char>(byte_val);
+    for (size_t i = 0; i < count; ++i) {
+        dest_ptr[i] = val;
     }
     return dest;
 }
 
-void* memcpy(void* dest, const void* src, size_t n) noexcept {
-    auto* d = static_cast<unsigned char*>(dest);
-    const auto* s = static_cast<const unsigned char*>(src);
-    for (size_t i = 0; i < n; ++i) {
-        d[i] = s[i];
+void* memcpy(void* dest, const void* src, size_t count) noexcept {
+    auto* dest_ptr = static_cast<unsigned char*>(dest);
+    const auto* src_ptr = static_cast<const unsigned char*>(src);
+    for (size_t i = 0; i < count; ++i) {
+        dest_ptr[i] = src_ptr[i];
     }
     return dest;
 }
 
-void* memmove(void* dest, const void* src, size_t n) noexcept {
-    auto* d = static_cast<unsigned char*>(dest);
-    const auto* s = static_cast<const unsigned char*>(src);
-    if (d < s) {
-        for (size_t i = 0; i < n; ++i) {
-            d[i] = s[i];
+void* memmove(void* dest, const void* src, size_t count) noexcept {
+    auto* dest_ptr = static_cast<unsigned char*>(dest);
+    const auto* src_ptr = static_cast<const unsigned char*>(src);
+    if (dest_ptr < src_ptr) {
+        for (size_t i = 0; i < count; ++i) {
+            dest_ptr[i] = src_ptr[i];
         }
-    } else if (d > s) {
-        for (size_t i = n; i > 0; --i) {
-            d[i - 1] = s[i - 1];
+    } else if (dest_ptr > src_ptr) {
+        for (size_t i = count; i > 0; --i) {
+            dest_ptr[i - 1] = src_ptr[i - 1];
         }
     }
     return dest;
 }
 
-int memcmp(const void* s1, const void* s2, size_t n) noexcept {
-    const auto* p1 = static_cast<const unsigned char*>(s1);
-    const auto* p2 = static_cast<const unsigned char*>(s2);
-    for (size_t i = 0; i < n; ++i) {
-        if (p1[i] != p2[i]) {
-            return (p1[i] < p2[i]) ? -1 : 1;
+int memcmp(const void* str1, const void* str2, size_t count) noexcept {
+    const auto* ptr1 = static_cast<const unsigned char*>(str1);
+    const auto* ptr2 = static_cast<const unsigned char*>(str2);
+    for (size_t i = 0; i < count; ++i) {
+        if (ptr1[i] != ptr2[i]) {
+            return (ptr1[i] < ptr2[i]) ? -1 : 1;
         }
     }
     return 0;

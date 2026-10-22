@@ -5,14 +5,12 @@
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
 #include "loader/elf64.hpp"
-#include "mm/pfa.hpp"
 #include "loader/elf_loader.hpp"
 #include "mm/address_space.hpp"
-
+#include "mm/pfa.hpp"
 
 #include <cstddef>
 #include <cstdint>
-
 
 extern "C" int64_t enter_user_mode(uintptr_t entry_point, uintptr_t user_sp);
 
@@ -133,16 +131,16 @@ void cmd_test_vmm() noexcept {
         const uintptr_t test_paddr = alloc_frame();
         assert_test(test_paddr != 0U, "Allocated user physical test frame");
 
-        const bool map_ok = adrsp.map_user_page(
-            test_vaddr, test_paddr,
-            HAL::PageFlags::User | HAL::PageFlags::Read | HAL::PageFlags::Execute);
+        const bool map_ok = adrsp.map_user_page(test_vaddr, test_paddr,
+                                                HAL::PageFlags::User | HAL::PageFlags::Read |
+                                                    HAL::PageFlags::Execute);
         assert_test(map_ok, "Mapped RX page in AddressSpace with L1/L2/L3 table creation");
 
         // Attempt mapping out-of-bounds higher-half address in user table
-        const bool bad_map = adrsp.map_user_page(
-            0xFFFF800000400000ULL, test_paddr,
-            HAL::PageFlags::User | HAL::PageFlags::Read);
-        assert_test(!bad_map, "Rejected higher-half virtual address in user space translation table");
+        const bool bad_map = adrsp.map_user_page(0xFFFF800000400000ULL, test_paddr,
+                                                 HAL::PageFlags::User | HAL::PageFlags::Read);
+        assert_test(!bad_map,
+                    "Rejected higher-half virtual address in user space translation table");
 
         free_frame(test_paddr);
         adrsp.destroy();
@@ -281,9 +279,9 @@ void cmd_test_user_isolation() noexcept {
 
     // Allocate isolated user stack
     const uintptr_t user_stack_frame = alloc_frame();
-    load_res->address_space.map_user_page(
-        0x0000000000800000ULL, user_stack_frame,
-        HAL::PageFlags::User | HAL::PageFlags::Read | HAL::PageFlags::Write);
+    load_res->address_space.map_user_page(0x0000000000800000ULL, user_stack_frame,
+                                          HAL::PageFlags::User | HAL::PageFlags::Read |
+                                              HAL::PageFlags::Write);
 
     const uintptr_t orig_root = Kernel::MM::AddressSpace::current_root_paddr();
 
@@ -670,7 +668,7 @@ void cmd_test_cpu() {
 void cmd_test_mmu() {
     print_str("[TEST] Inspecting System MMU & Cache Status via HAL...\r\n");
 
-    HAL::MmuStatus status = HAL::MmuStatus();
+    const HAL::MmuStatus status = HAL::get_mmu().status();
     print_str("  Control Register Value: ");
     print_hex64(status.raw_control_reg);
     print_str("\r\n");
@@ -894,7 +892,7 @@ void dispatch_command(const char* buf) noexcept {
     } else if (streq(buf, "test loader")) {
         cmd_test_loader_pipeline();
     } else if (streq(buf, "test user")) {
-        cmd_test_user_isolation(); 
+        cmd_test_user_isolation();
     } else if (streq(buf, "halt")) {
         print_str("[INFO] Halting CPU. Use QEMU 'Ctrl-A X' to exit.\r\n");
         HAL::get_cpu().halt();

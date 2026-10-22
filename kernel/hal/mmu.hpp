@@ -5,12 +5,12 @@
 namespace HAL {
 
 enum class PageFlags : uint32_t {
-    None      = 0,
-    Read      = 1 << 0,
-    Write     = 1 << 1,
-    Execute   = 1 << 2,
-    User      = 1 << 3,
-    Device    = 1 << 4,
+    None = 0,
+    Read = 1 << 0,
+    Write = 1 << 1,
+    Execute = 1 << 2,
+    User = 1 << 3,
+    Device = 1 << 4,
     Cacheable = 1 << 5
 };
 

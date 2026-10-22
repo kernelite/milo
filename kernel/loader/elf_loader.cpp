@@ -150,11 +150,11 @@ Result<LoadedElf, ElfLoaderError> load_elf(const uint8_t* elf_data, size_t elf_s
 
         // Instruction cache invalidation if segment is executable
         if ((seg.flags & PF_X) != 0U) {
-            asm volatile(
-                "dsb ish\n\t"
-                "ic ialluis\n\t"
-                "dsb ish\n\t"
-                "isb" ::: "memory");
+            asm volatile("dsb ish\n\t"
+                         "ic ialluis\n\t"
+                         "dsb ish\n\t"
+                         "isb" ::
+                             : "memory");
         }
 
         // Step 4: Page Table Mapping

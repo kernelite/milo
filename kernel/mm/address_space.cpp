@@ -111,8 +111,9 @@ Result<AddressSpace, AddressSpaceError> AddressSpace::create() noexcept {
             const auto* const k_l2 =
                 reinterpret_cast<const uint64_t*>(phys_to_virt(k_l1[0] & TABLE_ADDR_MASK));
 
-            // Mirror UART MMIO (0x09000000 >> 21 = 45) so kernel syscalls can write to console
-            new_l2[45] = k_l2[45];
+            // Mirror UART MMIO (0x09000000 >> 21 = 72) so kernel syscalls can write to console
+            constexpr size_t UART_L2_IDX = (0x09000000ULL >> 21U) & 0x1FFU;
+            new_l2[UART_L2_IDX] = k_l2[UART_L2_IDX];
             flush_dcache_range(reinterpret_cast<uintptr_t>(new_l2), Arch::PAGE_SIZE);
         }
         flush_dcache_range(reinterpret_cast<uintptr_t>(new_l1), Arch::PAGE_SIZE);
@@ -131,7 +132,8 @@ bool AddressSpace::map_user_page(uintptr_t vaddr, uintptr_t paddr,
         return false;
     }
 
-    // Enforce lower-half user address space boundary (< 1GB, preventing collision with kernel in L1[1])
+    // Enforce lower-half user address space boundary (< 1GB, preventing collision with kernel in
+    // L1[1])
     if (vaddr >= 0x40000000ULL) {
         return false;
     }
@@ -261,14 +263,13 @@ void AddressSpace::activate() const noexcept {
 }
 
 void AddressSpace::activate_root(uintptr_t root_paddr) noexcept {
-    asm volatile(
-        "dsb ish\n\t"
-        "msr ttbr0_el1, %0\n\t"
-        "isb\n\t"
-        "tlbi vmalle1is\n\t"
-        "dsb ish\n\t"
-        "isb" ::"r"(root_paddr)
-        : "memory");
+    asm volatile("dsb ish\n\t"
+                 "msr ttbr0_el1, %0\n\t"
+                 "isb\n\t"
+                 "tlbi vmalle1is\n\t"
+                 "dsb ish\n\t"
+                 "isb" ::"r"(root_paddr)
+                 : "memory");
 }
 
 uintptr_t AddressSpace::current_root_paddr() noexcept {
@@ -292,10 +293,21 @@ void AddressSpace::destroy() noexcept {
             const uintptr_t l2_paddr = lvl1[0] & TABLE_ADDR_MASK;
             auto* const lvl2 = reinterpret_cast<uint64_t*>(phys_to_virt(l2_paddr));
 
+            constexpr size_t UART_L2_IDX = (0x09000000ULL >> 21U) & 0x1FFU;
             for (size_t i2 = 0U; i2 < PAGE_ENTRY_COUNT; ++i2) {
-                // i2 == 45 is UART MMIO mirrored from kernel; do not free!
-                if (i2 != 45U && (lvl2[i2] & 1U) != 0U) {
+                // i2 == UART_L2_IDX is UART MMIO mirrored from kernel; do not free!
+                if (i2 != UART_L2_IDX && (lvl2[i2] & 1U) != 0U) {
                     const uintptr_t l3_paddr = lvl2[i2] & TABLE_ADDR_MASK;
+                    auto* const lvl3 = reinterpret_cast<uint64_t*>(phys_to_virt(l3_paddr));
+                    for (size_t i3 = 0U; i3 < PAGE_ENTRY_COUNT; ++i3) {
+                        if ((lvl3[i3] & 1U) != 0U) {
+                            const uintptr_t page_paddr = lvl3[i3] & TABLE_ADDR_MASK;
+                            if (pfa_is_page_allocated(page_paddr)) {
+                                free_frame(page_paddr);
+                            }
+                            lvl3[i3] = 0ULL;
+                        }
+                    }
                     free_frame(l3_paddr);
                     lvl2[i2] = 0ULL;
                 }
