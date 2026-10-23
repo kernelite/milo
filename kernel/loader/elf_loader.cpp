@@ -1,12 +1,13 @@
 #include "loader/elf_loader.hpp"
 
-#include "../arch/memory_config.hpp"
+#include "../../arch/memory_config.hpp"
+#include "mm/address_space.hpp"
 #include "mm/pfa.hpp"
 
 #include <cstddef>
 #include <cstdint>
 
-namespace {
+namespace Kernel::Loader {
 
 constexpr size_t MAX_TRACKED_SEGMENTS = 32U;
 
@@ -25,9 +26,19 @@ inline void flush_dcache_range(uintptr_t addr, size_t size) noexcept {
     asm volatile("dsb sy" ::: "memory");
 }
 
-} // namespace
-
-namespace Kernel::Loader {
+constexpr HAL::PageFlags translate_segment_flags(uint32_t pf_flags) noexcept {
+    HAL::PageFlags flags = HAL::PageFlags::User;
+    if ((pf_flags & PF_R) != 0U) {
+        flags |= HAL::PageFlags::Read;
+    }
+    if ((pf_flags & PF_W) != 0U) {
+        flags |= HAL::PageFlags::Write;
+    }
+    if ((pf_flags & PF_X) != 0U) {
+        flags |= HAL::PageFlags::Execute;
+    }
+    return flags;
+}
 
 const char* elf_loader_error_str(ElfLoaderError error) noexcept {
     switch (error) {

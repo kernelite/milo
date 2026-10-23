@@ -78,6 +78,13 @@ inline constexpr Elf64_Word PF_X = 1U << 0; // Execute
 inline constexpr Elf64_Word PF_W = 1U << 1; // Write
 inline constexpr Elf64_Word PF_R = 1U << 2; // Read
 
+typedef struct {
+    uint64_t a_type; /* Entry type */
+    union {
+        uint64_t a_val; /* Integer value */
+    } a_un;
+} Elf64_auxv_t;
+
 // 64-byte Execution Header
 struct [[gnu::packed]] Elf64_Ehdr {
     unsigned char e_ident[EI_NIDENT];

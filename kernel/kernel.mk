@@ -8,4 +8,6 @@ SRCS_CXX += kernel/main.cpp \
             kernel/boot/fdt.cpp \
             kernel/fs/cpio.cpp \
             kernel/loader/elf64.cpp \
-            kernel/loader/elf_loader.cpp
+            kernel/loader/elf_loader.cpp \
+            kernel/process/stack_builder.cpp \
+            kernel/process/process.cpp

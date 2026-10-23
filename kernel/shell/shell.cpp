@@ -8,12 +8,14 @@
 #include "loader/elf_loader.hpp"
 #include "mm/address_space.hpp"
 #include "mm/pfa.hpp"
+#include "process/process.hpp"
 
 #include <cstddef>
 #include <cstdint>
 
 extern "C" int64_t enter_user_mode(uintptr_t entry_point, uintptr_t user_sp);
-
+extern "C" void cmd_test_uxn_fault();
+extern "C" void cmd_test_user_echo();
 // Access global initrd metadata from main.cpp
 extern FDT::InitrdLocation g_initrd_loc;
 
@@ -823,6 +825,148 @@ void cmd_test_cpio() noexcept {
     }
 }
 
+void cmd_test_stack_and_abi() noexcept {
+    print_str("\r\n[TEST] Running User Stack Allocation & System V ABI Construction Tests...\r\n");
+
+    auto as_res = Kernel::MM::AddressSpace::create();
+    assert_test(as_res.is_ok(), "Target process AddressSpace initialized");
+    auto address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
+
+    // 1. Stack Memory Allocation & UXN Mapping
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(address_space);
+    assert_test(stack_res.is_ok(),
+                "Allocated 64 KiB stack physical frames and mapped into user space");
+
+    auto user_stack = stack_res.value();
+    assert_test(user_stack.virt_top == Kernel::Process::DEFAULT_USER_STACK_TOP,
+                "Stack top virtual address configured at 0x3FFF0000");
+
+    // 2. System V ABI Layout Population
+    const char* const test_argv[] = {"milo_init", "hello_aarch64", "system_v_abi", "test_arg"};
+    const char* const test_envp[] = {"PATH=/usr/bin:/bin", "USER=milo", "TERM=vt100", nullptr};
+
+    auto abi_res =
+        Kernel::Process::UserStackBuilder::build_abi_layout(user_stack, 4, test_argv, test_envp);
+
+    assert_test(abi_res.is_ok(), "System V ABI stack layout built successfully");
+    const uintptr_t final_sp_el0 = abi_res.value();
+
+    // 3. Alignment Assertion Verification
+    assert_test((final_sp_el0 % 16U) == 0U,
+                "SP_EL0 is strictly 16-byte aligned (final_sp_el0 % 16 == 0)");
+    assert_test(user_stack.argc == 4U, "Extracted argc = 4 accurately");
+    assert_test(user_stack.argv_vaddr == final_sp_el0 + 8U,
+                "argv array virtual address positioned at SP_EL0 + 8");
+
+    address_space.destroy();
+}
+
+void cmd_test_user_echo() noexcept {
+    print_str("\r\n[TEST] Executing EL0 User Space Echo Test (x0=argc, x1=argv)...\r\n");
+
+    auto as_res = Kernel::MM::AddressSpace::create();
+    if (!as_res) {
+        print_str("[FAIL] Failed to create AddressSpace\r\n");
+        return;
+    }
+    auto address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
+
+    // Map executable page for user_space_echo_test entry
+    const uintptr_t code_frame = alloc_frame();
+    const uintptr_t entry_vaddr = 0x0000000000400000ULL;
+
+    address_space.map_user_page(entry_vaddr, code_frame,
+                                HAL::PageFlags::User | HAL::PageFlags::Read |
+                                    HAL::PageFlags::Execute);
+
+    // Copy user_space_echo_test routine into code frame
+    auto* const k_code = reinterpret_cast<uint8_t*>(Kernel::MM::phys_to_virt(code_frame));
+    const auto* const src_code = reinterpret_cast<const uint8_t*>(cmd_test_user_echo);
+    for (size_t i = 0U; i < 256U; ++i) {
+        k_code[i] = src_code[i];
+    }
+
+    // Allocate stack and build System V ABI layout
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(address_space);
+    if (!stack_res) {
+        print_str("[FAIL] Stack creation failed\r\n");
+        return;
+    }
+    auto user_stack = stack_res.value();
+
+    const char* const echo_argv[] = {"echo_app", "Param1", "SystemV_ABI_Valid", "AArch64_OK"};
+    auto abi_res = Kernel::Process::UserStackBuilder::build_abi_layout(user_stack, 4, echo_argv);
+
+    assert_test(abi_res.is_ok(), "ABI stack layout populated");
+
+    // Initialize CpuContext
+    HAL::CpuContext ctx{};
+    Kernel::Process::init_user_cpu_context(ctx, entry_vaddr, user_stack.final_sp_el0,
+                                           user_stack.argc, user_stack.argv_vaddr);
+
+    const uintptr_t orig_root = Kernel::MM::AddressSpace::current_root_paddr();
+    address_space.activate();
+
+    // Context switch to EL0
+    const int64_t exit_status = Kernel::Process::enter_user_context(&ctx);
+
+    Kernel::MM::AddressSpace::activate_root(orig_root);
+
+    assert_test(exit_status == 0,
+                "EL0 Echo process received argc/argv, printed payload, and exited status 0");
+
+    free_frame(code_frame);
+    address_space.destroy();
+}
+
+void cmd_test_uxn_fault() noexcept {
+    print_str("\r\n[TEST] Executing User Stack Execute-Never (UXN) Fault Test...\r\n");
+
+    auto as_res = Kernel::MM::AddressSpace::create();
+    if (!as_res) {
+        print_str("[FAIL] Failed to create AddressSpace\r\n");
+        return;
+    }
+    auto address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
+
+    const uintptr_t code_frame = alloc_frame();
+    const uintptr_t entry_vaddr = 0x0000000000400000ULL;
+
+    address_space.map_user_page(entry_vaddr, code_frame,
+                                HAL::PageFlags::User | HAL::PageFlags::Read |
+                                    HAL::PageFlags::Execute);
+
+    auto* const k_code = reinterpret_cast<uint8_t*>(Kernel::MM::phys_to_virt(code_frame));
+    const auto* const src_code = reinterpret_cast<const uint8_t*>(cmd_test_uxn_fault);
+    for (size_t i = 0U; i < 64U; ++i) {
+        k_code[i] = src_code[i];
+    }
+
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(address_space);
+    auto user_stack = stack_res.value();
+
+    const char* const dummy_argv[] = {"uxn_test"};
+    Kernel::Process::UserStackBuilder::build_abi_layout(user_stack, 1, dummy_argv);
+
+    HAL::CpuContext ctx{};
+    Kernel::Process::init_user_cpu_context(ctx, entry_vaddr, user_stack.final_sp_el0,
+                                           user_stack.argc, user_stack.argv_vaddr);
+
+    const uintptr_t orig_root = Kernel::MM::AddressSpace::current_root_paddr();
+    address_space.activate();
+
+    print_str("  Branching to user stack from EL0...\r\n");
+    const int64_t exit_status = Kernel::Process::enter_user_context(&ctx);
+
+    Kernel::MM::AddressSpace::activate_root(orig_root);
+
+    assert_test(exit_status == -1,
+                "UXN Instruction Abort caught by Trap Handler! Process terminated safely.");
+
+    free_frame(code_frame);
+    address_space.destroy();
+}
+
 void print_help() noexcept {
     print_str("\r\nAvailable Commands:\r\n");
     print_str("  help            - Display this menu\r\n");
@@ -847,6 +991,9 @@ void print_help() noexcept {
     print_str("  test loader     - Test ELF segment loading and OOM rollback\r\n");
     print_str("  test user       - Instantiate EL0 process and verify syscall exit\r\n");
     print_str("  test all        - Run entire verification test suite\r\n");
+    print_str("  test stack_abi  - Run user atack allocation & System V ABI construction tests");
+    print_str("  test user_echo  - Run EL0 user space echo test (x0=argc, x1=argv)");
+    print_str("  test uxn_fault  - Run user stack execute-never (UXN) fault test");
     print_str("  halt            - Put CPU into low-power WFI state\r\n");
 }
 
@@ -893,6 +1040,12 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_loader_pipeline();
     } else if (streq(buf, "test user")) {
         cmd_test_user_isolation();
+    } else if (streq(buf, "test user_echo")) {
+        cmd_test_user_echo();
+    } else if (streq(buf, "test stack_abi")) {
+        cmd_test_stack_and_abi();
+    } else if (streq(buf, "test uxn_fault")) {
+        cmd_test_uxn_fault();
     } else if (streq(buf, "halt")) {
         print_str("[INFO] Halting CPU. Use QEMU 'Ctrl-A X' to exit.\r\n");
         HAL::get_cpu().halt();
@@ -916,6 +1069,8 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_vmm();
         cmd_test_loader_pipeline();
         cmd_test_user_isolation();
+        cmd_test_user_echo();
+        cmd_test_uxn_fault();
     } else if (buf[0] != '\0') {
         print_str("Unknown command: '");
         print_str(buf);
