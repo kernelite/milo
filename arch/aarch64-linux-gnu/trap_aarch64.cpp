@@ -87,11 +87,7 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
 
     switch (eclass) {
     case 0x15U: { // SVC in AArch64
-        HAL::TrapFrame frame{
-            .type = HAL::TrapType::Syscall,
-            .error_code = esr,
-            .context = ctx
-        };
+        HAL::TrapFrame frame{.type = HAL::TrapType::Syscall, .error_code = esr, .context = ctx};
         HAL::get_trap_dispatcher().handle_trap(frame);
         return;
     }

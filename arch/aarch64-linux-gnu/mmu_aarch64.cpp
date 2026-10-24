@@ -1,9 +1,9 @@
 #include "cpu_context.hpp"
 #include "hal/console.hpp"
 #include "hal/mmu.hpp"
-#include "mm/pfa.hpp"
-#include "mm/address_space.hpp"
 #include "memory_config.hpp"
+#include "mm/address_space.hpp"
+#include "mm/pfa.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -29,7 +29,6 @@ namespace {
 constexpr size_t PAGE_ENTRY_COUNT = 512U;
 constexpr uint64_t TABLE_ADDR_MASK = 0x000FFFFFFFFFF000ULL;
 constexpr uint64_t DESC_TYPE_TABLE = 0x3ULL;
-
 
 inline void flush_dcache_range(uintptr_t addr, size_t size) noexcept {
     const uintptr_t line_size = 64U;
@@ -369,7 +368,8 @@ uintptr_t AddressSpaceBackend::create_root() noexcept {
     const uintptr_t boot_ttbr0 = get_boot_ttbr0();
     if (boot_ttbr0 != 0U) {
         auto* const new_l0 = reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(root_phys));
-        const auto* const k_l0 = reinterpret_cast<const uint64_t*>(Kernel::MM::phys_to_virt(boot_ttbr0));
+        const auto* const k_l0 =
+            reinterpret_cast<const uint64_t*>(Kernel::MM::phys_to_virt(boot_ttbr0));
 
         const uintptr_t l1_phys = allocate_zeroed_table();
         if (l1_phys == 0U) {
@@ -392,8 +392,8 @@ uintptr_t AddressSpaceBackend::create_root() noexcept {
         if (l2_phys != 0U) {
             new_l1[0] = (l2_phys & TABLE_ADDR_MASK) | DESC_TYPE_TABLE;
             auto* const new_l2 = reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(l2_phys));
-            const auto* const k_l2 =
-                reinterpret_cast<const uint64_t*>(Kernel::MM::phys_to_virt(k_l1[0] & TABLE_ADDR_MASK));
+            const auto* const k_l2 = reinterpret_cast<const uint64_t*>(
+                Kernel::MM::phys_to_virt(k_l1[0] & TABLE_ADDR_MASK));
 
             constexpr size_t UART_L2_IDX = (0x09000000ULL >> 21U) & 0x1FFU;
             new_l2[UART_L2_IDX] = k_l2[UART_L2_IDX];
@@ -405,7 +405,8 @@ uintptr_t AddressSpaceBackend::create_root() noexcept {
     return root_phys;
 }
 
-bool AddressSpaceBackend::map_user_page(uintptr_t root_paddr, uintptr_t vaddr, uintptr_t paddr, HAL::PageFlags flags) noexcept {
+bool AddressSpaceBackend::map_user_page(uintptr_t root_paddr, uintptr_t vaddr, uintptr_t paddr,
+                                        HAL::PageFlags flags) noexcept {
     if (root_paddr == 0U || vaddr >= 0x40000000ULL) {
         return false;
     }
@@ -455,7 +456,8 @@ void AddressSpaceBackend::destroy_root(uintptr_t root_paddr) noexcept {
             for (size_t i2 = 0U; i2 < PAGE_ENTRY_COUNT; ++i2) {
                 if (i2 != UART_L2_IDX && (lvl2[i2] & 1U) != 0U) {
                     const uintptr_t l3_paddr = lvl2[i2] & TABLE_ADDR_MASK;
-                    auto* const lvl3 = reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(l3_paddr));
+                    auto* const lvl3 =
+                        reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(l3_paddr));
                     for (size_t i3 = 0U; i3 < PAGE_ENTRY_COUNT; ++i3) {
                         if ((lvl3[i3] & 1U) != 0U) {
                             const uintptr_t page_paddr = lvl3[i3] & TABLE_ADDR_MASK;

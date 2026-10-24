@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hal/cpu.hpp"
+
 #include <cstddef>
 #include <cstdint>
 

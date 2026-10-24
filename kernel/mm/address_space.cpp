@@ -1,4 +1,5 @@
 #include "mm/address_space.hpp"
+
 #include "hal/mmu.hpp"
 
 namespace Kernel::MM {
@@ -11,7 +12,8 @@ Result<AddressSpace, AddressSpaceError> AddressSpace::create() noexcept {
     return AddressSpace(root_phys);
 }
 
-bool AddressSpace::map_user_page(uintptr_t vaddr, uintptr_t paddr, HAL::PageFlags flags) const noexcept {
+bool AddressSpace::map_user_page(uintptr_t vaddr, uintptr_t paddr,
+                                 HAL::PageFlags flags) const noexcept {
     return HAL::AddressSpaceBackend::map_user_page(m_root_paddr, vaddr, paddr, flags);
 }
 

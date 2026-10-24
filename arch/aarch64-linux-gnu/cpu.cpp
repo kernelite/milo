@@ -43,7 +43,8 @@ class AArch64CpuControl : public HAL::CpuControl {
         asm volatile("dsb ish\n\t"
                      "ic ialluis\n\t"
                      "dsb ish\n\t"
-                     "isb" ::: "memory");
+                     "isb" ::
+                         : "memory");
     }
 
     int64_t enter_user_mode(uintptr_t entry_point, uintptr_t user_sp) noexcept override {
@@ -55,13 +56,12 @@ constinit AArch64CpuControl aarch64_cpu{};
 } // namespace
 
 namespace HAL {
-CpuControl& get_cpu() noexcept { return aarch64_cpu; }
+CpuControl& get_cpu() noexcept {
+    return aarch64_cpu;
+}
 
 PlatformInfo get_platform_info() noexcept {
     return PlatformInfo{
-        .ram_base = 0x40000000U,
-        .ram_size = 256UL * 1024UL * 1024UL,
-        .page_size = 4096U
-    };
+        .ram_base = 0x40000000U, .ram_size = 256UL * 1024UL * 1024UL, .page_size = 4096U};
 }
 } // namespace HAL

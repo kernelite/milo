@@ -1,10 +1,10 @@
-#include "hal/test_hooks.hpp"
 #include "../arch/memory_config.hpp"
 #include "boot/fdt.hpp"
 #include "fs/cpio.hpp"
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
+#include "hal/test_hooks.hpp"
 #include "loader/elf64.hpp"
 #include "loader/elf_loader.hpp"
 #include "mm/address_space.hpp"
@@ -294,7 +294,8 @@ void cmd_test_user_isolation() noexcept {
                 "TTBR0_EL1 switched to isolated user address space");
 
     // Enter EL0
-    const int64_t exit_code = HAL::get_cpu().enter_user_mode(load_res->entry_point, 0x0000000000801000ULL);
+    const int64_t exit_code =
+        HAL::get_cpu().enter_user_mode(load_res->entry_point, 0x0000000000801000ULL);
     assert_test(exit_code == 42, "EL0 process executed and exited with clean status 42");
 
     // Restore kernel translation table
