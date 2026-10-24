@@ -1,4 +1,4 @@
-#include "../arch/arch_test.hpp"
+#include "hal/test_hooks.hpp"
 #include "../arch/memory_config.hpp"
 #include "boot/fdt.hpp"
 #include "fs/cpio.hpp"
@@ -14,7 +14,6 @@
 #include <cstddef>
 #include <cstdint>
 
-extern "C" int64_t enter_user_mode(uintptr_t entry_point, uintptr_t user_sp);
 extern "C" void cmd_test_uxn_fault();
 extern "C" void cmd_test_user_echo();
 // Access global initrd metadata from main.cpp
@@ -295,7 +294,7 @@ void cmd_test_user_isolation() noexcept {
                 "TTBR0_EL1 switched to isolated user address space");
 
     // Enter EL0
-    const int64_t exit_code = enter_user_mode(load_res->entry_point, 0x0000000000801000ULL);
+    const int64_t exit_code = HAL::get_cpu().enter_user_mode(load_res->entry_point, 0x0000000000801000ULL);
     assert_test(exit_code == 42, "EL0 process executed and exited with clean status 42");
 
     // Restore kernel translation table

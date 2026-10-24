@@ -1,19 +1,9 @@
 #include "process/stack_builder.hpp"
 
-#include "../arch/memory_config.hpp"
+#include "hal/cpu.hpp"
 #include "mm/pfa.hpp"
 
 namespace {
-
-inline void flush_dcache_range(uintptr_t addr, size_t size) noexcept {
-    constexpr uintptr_t line_size = 64U;
-    const uintptr_t end = addr + size;
-    addr &= ~(line_size - 1U);
-    for (; addr < end; addr += line_size) {
-        asm volatile("dc civac, %0" ::"r"(addr) : "memory");
-    }
-    asm volatile("dsb sy" ::: "memory");
-}
 
 size_t str_len(const char* str) noexcept {
     size_t len = 0U;
@@ -49,11 +39,14 @@ const char* stack_builder_error_str(StackBuilderError error) noexcept {
 Result<UserStack, StackBuilderError>
 UserStackBuilder::create_and_map(MM::AddressSpace& address_space, uintptr_t virt_top,
                                  size_t stack_size) noexcept {
-    if (stack_size == 0U || (stack_size % Arch::PAGE_SIZE) != 0U) {
+
+    const size_t page_size = HAL::get_platform_info().page_size;
+    if (stack_size == 0U || (stack_size % page_size != 0U)) {
         return StackBuilderError::InvalidAlignment;
     }
 
-    const size_t num_pages = stack_size / Arch::PAGE_SIZE;
+    const size_t num_pages = stack_size / page_size;
+
     const uintptr_t phys_base = alloc_frames(num_pages);
     if (phys_base == 0U) {
         return StackBuilderError::AllocationFailed;
@@ -72,8 +65,8 @@ UserStackBuilder::create_and_map(MM::AddressSpace& address_space, uintptr_t virt
         HAL::PageFlags::User | HAL::PageFlags::Read | HAL::PageFlags::Write;
 
     for (size_t i = 0U; i < num_pages; ++i) {
-        const uintptr_t page_vaddr = virt_base + (i * Arch::PAGE_SIZE);
-        const uintptr_t page_paddr = phys_base + (i * Arch::PAGE_SIZE);
+        const uintptr_t page_vaddr = virt_base + (i * HAL::get_platform_info().page_size);
+        const uintptr_t page_paddr = phys_base + (i * HAL::get_platform_info().page_size);
 
         if (!address_space.map_user_page(page_vaddr, page_paddr, flags)) {
             free_frames(phys_base, num_pages);
@@ -81,7 +74,7 @@ UserStackBuilder::create_and_map(MM::AddressSpace& address_space, uintptr_t virt
         }
     }
 
-    flush_dcache_range(reinterpret_cast<uintptr_t>(kptr), stack_size);
+    HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(kptr), stack_size);
 
     UserStack stack{};
     stack.phys_base = phys_base;
@@ -210,7 +203,7 @@ UserStackBuilder::build_abi_layout(UserStack& stack, int argc, const char* const
     curr_vaddr &= ~0xFULL;
     stack.final_sp_el0 = curr_vaddr;
 
-    flush_dcache_range(reinterpret_cast<uintptr_t>(kbuf), stack.size);
+    HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(kbuf), stack.size);
     return stack.final_sp_el0;
 }
 

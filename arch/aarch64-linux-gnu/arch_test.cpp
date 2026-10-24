@@ -1,4 +1,4 @@
-#include "../arch_test.hpp"
+#include "hal/test_hooks.hpp"
 
 #include <cstddef>
 #include <cstdint>
