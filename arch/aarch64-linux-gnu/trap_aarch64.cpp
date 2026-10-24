@@ -80,39 +80,19 @@ constinit AArch64TrapHandler aarch64_trap_handler{};
 
 } // namespace
 
-namespace HAL {
-TrapHandler& get_trap_dispatcher() noexcept {
-    return aarch64_trap_handler;
-}
-} // namespace HAL
-
 extern "C" {
 
 void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t far) noexcept {
     const uint32_t eclass = static_cast<uint32_t>((esr >> 26U) & 0x3FU); // Exception Class (EC)
 
     switch (eclass) {
-    case 0x15U: // SVC in AArch64
-    {
-        const auto syscall_num = ctx->x[8];
-
-        if (syscall_num == 64U) { // SYS_WRITE
-            const auto filedesc = ctx->x[0];
-            // NOLINTNEXTLINE(performance-no-int-to-ptr)
-            const auto* const buf = reinterpret_cast<const char*>(ctx->x[1]);
-            const auto count = ctx->x[2];
-            if (filedesc == 1U || filedesc == 2U) {
-                HAL::get_console().write(buf, count);
-            }
-            ctx->x[0] = count;           // Return bytes written
-        } else if (syscall_num == 93U) { // SYS_EXIT
-            print_str("[TRAP] Process exited cleanly via SYS_EXIT (93).\r\n");
-            const auto exit_status = static_cast<int64_t>(ctx->x[0]);
-            return_to_kernel(exit_status);
-        } else {
-            ctx->x[0] = static_cast<uint64_t>(-38); // -ENOSYS
-        }
-
+    case 0x15U: { // SVC in AArch64
+        HAL::TrapFrame frame{
+            .type = HAL::TrapType::Syscall,
+            .error_code = esr,
+            .context = ctx
+        };
+        HAL::get_trap_dispatcher().handle_trap(frame);
         return;
     }
 

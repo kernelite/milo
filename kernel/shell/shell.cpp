@@ -1,4 +1,5 @@
 #include "../arch/arch_test.hpp"
+#include "../arch/memory_config.hpp"
 #include "boot/fdt.hpp"
 #include "fs/cpio.hpp"
 #include "hal/console.hpp"

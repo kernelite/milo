@@ -1,6 +1,8 @@
 #include "cpu_context.hpp"
 #include "hal/console.hpp"
 #include "hal/mmu.hpp"
+#include "mm/pfa.hpp"
+#include "mm/address_space.hpp"
 #include "memory_config.hpp"
 
 #include <cstddef>
@@ -24,8 +26,10 @@ extern uintptr_t alloc_frame() noexcept __attribute__((weak));
 
 namespace {
 
-alignas(4096) uint64_t g_ttbr0_l0[512] = {0}; // TTBR0_EL1 (User / Lower VA space)
-alignas(4096) uint64_t g_ttbr1_l0[512] = {0}; // TTBR1_EL1 (Kernel / Higher VA space)
+constexpr size_t PAGE_ENTRY_COUNT = 512U;
+constexpr uint64_t TABLE_ADDR_MASK = 0x000FFFFFFFFFF000ULL;
+constexpr uint64_t DESC_TYPE_TABLE = 0x3ULL;
+
 
 inline void flush_dcache_range(uintptr_t addr, size_t size) noexcept {
     const uintptr_t line_size = 64U;
@@ -36,6 +40,31 @@ inline void flush_dcache_range(uintptr_t addr, size_t size) noexcept {
     }
     asm volatile("dsb sy" ::: "memory");
 }
+
+uintptr_t allocate_zeroed_table() noexcept {
+    const uintptr_t phys = alloc_frame();
+    if (phys == 0U) {
+        return 0U;
+    }
+
+    auto* const table = reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(phys));
+    for (size_t i = 0U; i < PAGE_ENTRY_COUNT; ++i) {
+        table[i] = 0ULL;
+    }
+    flush_dcache_range(reinterpret_cast<uintptr_t>(table), Arch::PAGE_SIZE);
+    return phys;
+}
+
+uintptr_t get_boot_ttbr0() noexcept {
+    static uintptr_t boot_ttbr0 = 0U;
+    if (boot_ttbr0 == 0U) {
+        asm volatile("mrs %0, ttbr0_el1" : "=r"(boot_ttbr0));
+    }
+    return boot_ttbr0;
+}
+
+alignas(4096) uint64_t g_ttbr0_l0[512] = {0}; // TTBR0_EL1 (User / Lower VA space)
+alignas(4096) uint64_t g_ttbr1_l0[512] = {0}; // TTBR1_EL1 (Kernel / Higher VA space)
 
 uintptr_t allocate_table_page() noexcept {
     uintptr_t phys = 0U;
@@ -106,10 +135,10 @@ bool map_page_in_root(uint64_t* root_l0, uintptr_t virt_addr, uintptr_t phys_add
     uint64_t desc = (phys_addr & 0x000FFFFFFFFFF000ULL) | 0x3ULL; // Valid + Page Descriptor
     desc |= (1ULL << 10U);                                        // Access Flag (AF)
 
-    const bool is_write = has_flag(flags, HAL::PageFlags::Write);
-    const bool is_user = has_flag(flags, HAL::PageFlags::User);
-    const bool is_exec = has_flag(flags, HAL::PageFlags::Execute);
-    const bool is_device = has_flag(flags, HAL::PageFlags::Device);
+    const bool is_write = HAL::has_flag(flags, HAL::PageFlags::Write);
+    const bool is_user = HAL::has_flag(flags, HAL::PageFlags::User);
+    const bool is_exec = HAL::has_flag(flags, HAL::PageFlags::Execute);
+    const bool is_device = HAL::has_flag(flags, HAL::PageFlags::Device);
 
     // Select MAIR_EL1 Index: Attr 0 = Device-nGnRnE (0x00), Attr 1 = Normal WB (0xFF)
     const uint64_t attr_idx = is_device ? 0ULL : 1ULL;
@@ -330,5 +359,123 @@ void init_mmu(uintptr_t ttbr0_base, uintptr_t ttbr1_base) {
 namespace HAL {
 MemoryControl& get_mmu() noexcept {
     return aarch64_mmu;
+}
+uintptr_t AddressSpaceBackend::create_root() noexcept {
+    const uintptr_t root_phys = allocate_zeroed_table();
+    if (root_phys == 0U) {
+        return 0U;
+    }
+
+    const uintptr_t boot_ttbr0 = get_boot_ttbr0();
+    if (boot_ttbr0 != 0U) {
+        auto* const new_l0 = reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(root_phys));
+        const auto* const k_l0 = reinterpret_cast<const uint64_t*>(Kernel::MM::phys_to_virt(boot_ttbr0));
+
+        const uintptr_t l1_phys = allocate_zeroed_table();
+        if (l1_phys == 0U) {
+            free_frame(root_phys);
+            return 0U;
+        }
+
+        new_l0[0] = (l1_phys & TABLE_ADDR_MASK) | DESC_TYPE_TABLE;
+        flush_dcache_range(reinterpret_cast<uintptr_t>(&new_l0[0]), sizeof(uint64_t));
+
+        auto* const new_l1 = reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(l1_phys));
+        const auto* const k_l1 =
+            reinterpret_cast<const uint64_t*>(Kernel::MM::phys_to_virt(k_l0[0] & TABLE_ADDR_MASK));
+
+        for (size_t i = 1U; i < PAGE_ENTRY_COUNT; ++i) {
+            new_l1[i] = k_l1[i];
+        }
+
+        const uintptr_t l2_phys = allocate_zeroed_table();
+        if (l2_phys != 0U) {
+            new_l1[0] = (l2_phys & TABLE_ADDR_MASK) | DESC_TYPE_TABLE;
+            auto* const new_l2 = reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(l2_phys));
+            const auto* const k_l2 =
+                reinterpret_cast<const uint64_t*>(Kernel::MM::phys_to_virt(k_l1[0] & TABLE_ADDR_MASK));
+
+            constexpr size_t UART_L2_IDX = (0x09000000ULL >> 21U) & 0x1FFU;
+            new_l2[UART_L2_IDX] = k_l2[UART_L2_IDX];
+            flush_dcache_range(reinterpret_cast<uintptr_t>(new_l2), Arch::PAGE_SIZE);
+        }
+        flush_dcache_range(reinterpret_cast<uintptr_t>(new_l1), Arch::PAGE_SIZE);
+    }
+
+    return root_phys;
+}
+
+bool AddressSpaceBackend::map_user_page(uintptr_t root_paddr, uintptr_t vaddr, uintptr_t paddr, HAL::PageFlags flags) noexcept {
+    if (root_paddr == 0U || vaddr >= 0x40000000ULL) {
+        return false;
+    }
+    auto* const root_l0 = reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(root_paddr));
+    return map_page_in_root(root_l0, vaddr, paddr, flags);
+}
+
+bool AddressSpaceBackend::unmap_user_page(uintptr_t root_paddr, uintptr_t vaddr) noexcept {
+    if (root_paddr == 0U || vaddr >= 0x40000000ULL) {
+        return false;
+    }
+    auto* const root_l0 = reinterpret_cast<const uint64_t*>(Kernel::MM::phys_to_virt(root_paddr));
+    return unmap_page_in_root(root_l0, vaddr);
+}
+
+void AddressSpaceBackend::activate_root(uintptr_t root_paddr) noexcept {
+    asm volatile("dsb ish\n\t"
+                 "msr ttbr0_el1, %0\n\t"
+                 "isb\n\t"
+                 "tlbi vmalle1is\n\t"
+                 "dsb ish\n\t"
+                 "isb" ::"r"(root_paddr)
+                 : "memory");
+}
+
+uintptr_t AddressSpaceBackend::current_root_paddr() noexcept {
+    uintptr_t val = 0U;
+    asm volatile("mrs %0, ttbr0_el1" : "=r"(val));
+    return val;
+}
+
+void AddressSpaceBackend::destroy_root(uintptr_t root_paddr) noexcept {
+    if (root_paddr == 0U) {
+        return;
+    }
+
+    auto* const lvl0 = reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(root_paddr));
+    if ((lvl0[0] & 1U) != 0U) {
+        const uintptr_t l1_paddr = lvl0[0] & TABLE_ADDR_MASK;
+        auto* const lvl1 = reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(l1_paddr));
+
+        if ((lvl1[0] & 1U) != 0U) {
+            const uintptr_t l2_paddr = lvl1[0] & TABLE_ADDR_MASK;
+            auto* const lvl2 = reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(l2_paddr));
+
+            constexpr size_t UART_L2_IDX = (0x09000000ULL >> 21U) & 0x1FFU;
+            for (size_t i2 = 0U; i2 < PAGE_ENTRY_COUNT; ++i2) {
+                if (i2 != UART_L2_IDX && (lvl2[i2] & 1U) != 0U) {
+                    const uintptr_t l3_paddr = lvl2[i2] & TABLE_ADDR_MASK;
+                    auto* const lvl3 = reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(l3_paddr));
+                    for (size_t i3 = 0U; i3 < PAGE_ENTRY_COUNT; ++i3) {
+                        if ((lvl3[i3] & 1U) != 0U) {
+                            const uintptr_t page_paddr = lvl3[i3] & TABLE_ADDR_MASK;
+                            if (pfa_is_page_allocated(page_paddr)) {
+                                free_frame(page_paddr);
+                            }
+                            lvl3[i3] = 0ULL;
+                        }
+                    }
+                    free_frame(l3_paddr);
+                    lvl2[i2] = 0ULL;
+                }
+            }
+            free_frame(l2_paddr);
+            lvl1[0] = 0ULL;
+        }
+        free_frame(l1_paddr);
+        lvl0[0] = 0ULL;
+    }
+
+    free_frame(root_paddr);
 }
 } // namespace HAL
