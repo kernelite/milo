@@ -11,7 +11,7 @@
 namespace Kernel::Process {
 
 constexpr uintptr_t DEFAULT_USER_STACK_TOP = 0x000000003FFF0000ULL;
-constexpr size_t DEFAULT_USER_STACK_SIZE = 64U * 1024U; // 64 KiB (16 pages)
+constexpr size_t DEFAULT_USER_STACK_SIZE = 64UL * 1024UL; // 64 KiB (16 pages)
 
 struct UserStack {
     uintptr_t phys_base{0U};

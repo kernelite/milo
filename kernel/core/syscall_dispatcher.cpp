@@ -17,7 +17,7 @@ class SyscallDispatcher : public HAL::TrapHandler {
 
         if (syscall_num == 64U) { // SYS_WRITE
             const auto filedesc = ctx->x[0];
-            const auto* const buf = reinterpret_cast<const char*>(ctx->x[1]);
+            const auto* buf = reinterpret_cast<const char*>(ctx->x[1]);
             const auto count = ctx->x[2];
 
             if (filedesc == 1U || filedesc == 2U) {
@@ -26,7 +26,11 @@ class SyscallDispatcher : public HAL::TrapHandler {
             ctx->x[0] = count;
         } else if (syscall_num == 93U) { // SYS_EXIT
             const auto exit_status = static_cast<int64_t>(ctx->x[0]);
-            HAL::get_console().write("[SYSCALL] Process exited cleanly.\r\n", 35);
+            if (exit_status == 0) {
+                HAL::get_console().write("[SYSCALL] Process exited cleanly.", 35);
+            } else {
+                HAL::get_console().write("[SYSCALL] Process exited with error.", 38);
+            }
             // Schedule next process thread or exit
         } else {
             ctx->x[0] = static_cast<uint64_t>(-38); // -ENOSYS

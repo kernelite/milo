@@ -21,9 +21,6 @@ extern char __bss_start[];
 extern char __bss_end[];
 }
 
-// Weak declaration for physical frame allocator if present in kernel
-extern uintptr_t alloc_frame() noexcept __attribute__((weak));
-
 namespace {
 
 constexpr size_t PAGE_ENTRY_COUNT = 512U;
@@ -418,7 +415,8 @@ bool AddressSpaceBackend::unmap_user_page(uintptr_t root_paddr, uintptr_t vaddr)
     if (root_paddr == 0U || vaddr >= 0x40000000ULL) {
         return false;
     }
-    auto* const root_l0 = reinterpret_cast<const uint64_t*>(Kernel::MM::phys_to_virt(root_paddr));
+    const auto* const root_l0 =
+        reinterpret_cast<const uint64_t*>(Kernel::MM::phys_to_virt(root_paddr));
     return unmap_page_in_root(root_l0, vaddr);
 }
 
