@@ -1,5 +1,6 @@
 #include "mm/pfa.hpp"
 
+#include "../arch/memory_config.hpp"
 #include "hal/console.hpp"
 
 namespace {
@@ -55,8 +56,8 @@ void pfa_reserve_range(uintptr_t start_paddr, uintptr_t end_paddr) noexcept {
     }
 
     // Page-aligned lower bound and page-aligned upper bound
-    const size_t start_idx = (start_paddr - RAM_BASE) >> PAGE_SHIFT;
-    const size_t end_idx = (end_paddr - RAM_BASE + PAGE_SIZE - 1U) >> PAGE_SHIFT;
+    const size_t start_idx = (start_paddr - Arch::RAM_BASE) >> Arch::PAGE_SHIFT;
+    const size_t end_idx = (end_paddr - Arch::RAM_BASE + Arch::PAGE_SIZE - 1U) >> Arch::PAGE_SHIFT;
 
     for (size_t i = start_idx; i < end_idx && i < g_total_pages; ++i) {
         set_bit(i);
@@ -67,20 +68,20 @@ bool pfa_is_page_allocated(uintptr_t paddr) noexcept {
     if (paddr < g_ram_start || paddr >= g_ram_end) {
         return true;
     }
-    const size_t page_idx = (paddr - RAM_BASE) >> PAGE_SHIFT;
+    const size_t page_idx = (paddr - Arch::RAM_BASE) >> Arch::PAGE_SHIFT;
     return test_bit(page_idx);
 }
 
 void pfa_init(uintptr_t ram_start, size_t ram_size) noexcept {
     g_ram_start = ram_start;
     g_ram_end = ram_start + ram_size;
-    g_total_pages = ram_size >> PAGE_SHIFT;
+    g_total_pages = ram_size >> Arch::PAGE_SHIFT;
 
     for (size_t i = 0; i < BITMAP_SIZE_BYTES; ++i) {
         g_bitmap[i] = 0U;
     }
 
-    if (ram_size < MAX_RAM_SIZE) {
+    if (ram_size < Arch::MAX_RAM_SIZE) {
         for (size_t i = g_total_pages; i < MAX_PAGES; ++i) {
             set_bit(i);
         }
@@ -131,7 +132,7 @@ uintptr_t alloc_frames(size_t count) noexcept {
                 for (size_t j = start_idx; j < start_idx + count; ++j) {
                     set_bit(j);
                 }
-                return RAM_BASE + (start_idx << PAGE_SHIFT);
+                return Arch::RAM_BASE + (start_idx << Arch::PAGE_SHIFT);
             }
         } else {
             consecutive = 0U;
@@ -147,7 +148,7 @@ void free_frame(uintptr_t paddr) noexcept {
 }
 
 void free_frames(uintptr_t paddr, size_t count) noexcept {
-    if ((paddr & (PAGE_SIZE - 1U)) != 0U) {
+    if ((paddr & (Arch::PAGE_SIZE - 1U)) != 0U) {
         print_str("[PFA PANIC] Unaligned physical frame address passed to free_frame: ");
         print_hex64(paddr);
         print_str("\r\n");
@@ -161,13 +162,13 @@ void free_frames(uintptr_t paddr, size_t count) noexcept {
         return;
     }
 
-    const size_t start_idx = (paddr - RAM_BASE) >> PAGE_SHIFT;
+    const size_t start_idx = (paddr - Arch::RAM_BASE) >> Arch::PAGE_SHIFT;
 
     for (size_t i = 0U; i < count; ++i) {
         const size_t page_idx = start_idx + i;
         if (!test_bit(page_idx)) {
             print_str("[PFA WARNING] Double-free detected at physical address: ");
-            print_hex64(RAM_BASE + (page_idx << PAGE_SHIFT));
+            print_hex64(Arch::RAM_BASE + (page_idx << Arch::PAGE_SHIFT));
             print_str("\r\n");
             continue;
         }

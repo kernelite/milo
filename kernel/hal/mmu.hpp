@@ -1,4 +1,5 @@
 #pragma once
+
 #include <cstddef>
 #include <cstdint>
 
@@ -14,7 +15,6 @@ enum class PageFlags : uint32_t {
     Cacheable = 1 << 5
 };
 
-// Bitwise operator overloads for PageFlags bitmask operations
 constexpr PageFlags operator|(PageFlags lhs, PageFlags rhs) noexcept {
     return static_cast<PageFlags>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
 }
@@ -64,5 +64,15 @@ class MemoryControl {
 };
 
 MemoryControl& get_mmu() noexcept;
+
+struct AddressSpaceBackend {
+    static uintptr_t create_root() noexcept;
+    static bool map_user_page(uintptr_t root_paddr, uintptr_t vaddr, uintptr_t paddr,
+                              PageFlags flags) noexcept;
+    static bool unmap_user_page(uintptr_t root_paddr, uintptr_t vaddr) noexcept;
+    static void activate_root(uintptr_t root_paddr) noexcept;
+    static uintptr_t current_root_paddr() noexcept;
+    static void destroy_root(uintptr_t root_paddr) noexcept;
+};
 
 } // namespace HAL

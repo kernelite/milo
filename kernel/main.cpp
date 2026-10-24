@@ -39,9 +39,9 @@ extern "C" void kmain(uintptr_t dtb_paddr) {
     HAL::get_console().init();
     print_str("[KERNEL] Core HAL initialised successfully.\r\n");
 
-    // 2. Initialize Physical Frame Allocator (256MB RAM)
-    constexpr size_t PLATFORM_RAM_SIZE = 256UL * 1024UL * 1024UL;
-    pfa_init(Arch::RAM_BASE, PLATFORM_RAM_SIZE);
+    // 2. Initialize Physical Frame Allocator via HAL Platform Query
+    const auto platform = HAL::get_platform_info();
+    pfa_init(platform.ram_base, platform.ram_size);
 
     // 3. Inspect DTB & Reserve DTB physical memory
     print_str("[BOOT] DTB Pointer: ");
