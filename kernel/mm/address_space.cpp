@@ -8,8 +8,6 @@ extern "C" void* memcpy(void* dest, const void* src, size_t count) noexcept;
 namespace {
 
 constexpr int64_t ERR_EFAULT = -14;
-constexpr size_t USER_PAGE_SIZE = 4096U;
-constexpr uintptr_t USER_PAGE_OFFSET_MASK = USER_PAGE_SIZE - 1U;
 
 } // namespace
 
@@ -62,15 +60,19 @@ void AddressSpace::destroy() noexcept {
 }
 
 int64_t copy_from_user(uintptr_t root_paddr, void* dst, uintptr_t user_src, size_t len) noexcept {
-    if (user_src >= USER_ADDR_SPACE_LIMIT) {
+    const uintptr_t va_limit = user_addr_space_limit();
+    if (user_src >= va_limit) {
         return ERR_EFAULT;
     }
     if (len == 0U) {
         return 0;
     }
-    if (root_paddr == 0U || dst == nullptr || len > (USER_ADDR_SPACE_LIMIT - user_src)) {
+    if (root_paddr == 0U || dst == nullptr || len > (va_limit - user_src)) {
         return ERR_EFAULT;
     }
+
+    const size_t page_size = HAL::get_platform_info().page_size;
+    const uintptr_t page_offset_mask = page_size - 1U;
 
     auto* dst_bytes = static_cast<uint8_t*>(dst);
     uintptr_t curr_vaddr = user_src;
@@ -87,8 +89,8 @@ int64_t copy_from_user(uintptr_t root_paddr, void* dst, uintptr_t user_src, size
             return ERR_EFAULT;
         }
 
-        const size_t page_offset = static_cast<size_t>(curr_vaddr & USER_PAGE_OFFSET_MASK);
-        const size_t bytes_in_page = USER_PAGE_SIZE - page_offset;
+        const size_t page_offset = static_cast<size_t>(curr_vaddr & page_offset_mask);
+        const size_t bytes_in_page = page_size - page_offset;
         const size_t chunk = (remaining < bytes_in_page) ? remaining : bytes_in_page;
 
         const auto* const src_kva = reinterpret_cast<const uint8_t*>(phys_to_virt(paddr));
@@ -104,15 +106,19 @@ int64_t copy_from_user(uintptr_t root_paddr, void* dst, uintptr_t user_src, size
 
 int64_t copy_to_user(uintptr_t root_paddr, uintptr_t user_dst, const void* src,
                      size_t len) noexcept {
-    if (user_dst >= USER_ADDR_SPACE_LIMIT) {
+    const uintptr_t va_limit = user_addr_space_limit();
+    if (user_dst >= va_limit) {
         return ERR_EFAULT;
     }
     if (len == 0U) {
         return 0;
     }
-    if (root_paddr == 0U || src == nullptr || len > (USER_ADDR_SPACE_LIMIT - user_dst)) {
+    if (root_paddr == 0U || src == nullptr || len > (va_limit - user_dst)) {
         return ERR_EFAULT;
     }
+
+    const size_t page_size = HAL::get_platform_info().page_size;
+    const uintptr_t page_offset_mask = page_size - 1U;
 
     const auto* src_bytes = static_cast<const uint8_t*>(src);
     uintptr_t curr_vaddr = user_dst;
@@ -129,8 +135,8 @@ int64_t copy_to_user(uintptr_t root_paddr, uintptr_t user_dst, const void* src,
             return ERR_EFAULT;
         }
 
-        const size_t page_offset = static_cast<size_t>(curr_vaddr & USER_PAGE_OFFSET_MASK);
-        const size_t bytes_in_page = USER_PAGE_SIZE - page_offset;
+        const size_t page_offset = static_cast<size_t>(curr_vaddr & page_offset_mask);
+        const size_t bytes_in_page = page_size - page_offset;
         const size_t chunk = (remaining < bytes_in_page) ? remaining : bytes_in_page;
 
         auto* const dst_kva = reinterpret_cast<uint8_t*>(phys_to_virt(paddr));

@@ -421,7 +421,8 @@ bool AddressSpaceBackend::unmap_user_page(uintptr_t root_paddr, uintptr_t vaddr)
 }
 
 bool AddressSpaceBackend::query_user_page(uintptr_t root_paddr, uintptr_t vaddr,
-                                          uintptr_t& out_paddr, HAL::PageFlags& out_flags) noexcept {
+                                          uintptr_t& out_paddr,
+                                          HAL::PageFlags& out_flags) noexcept {
     constexpr uintptr_t USER_VA_LIMIT = 0x40000000ULL;
     constexpr uintptr_t PAGE_OFFSET_MASK = Arch::PAGE_SIZE - 1U;
     constexpr uint64_t AP_USER_BIT = 1ULL << 6U;

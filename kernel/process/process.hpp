@@ -11,8 +11,6 @@ namespace Kernel::Process {
 
 constexpr size_t MAX_PROCESSES = 16U;
 constexpr size_t MAX_FDS_PER_PROCESS = 16U;
-constexpr uintptr_t DEFAULT_USER_BRK_BASE = 0x0000000010000000ULL;
-constexpr uintptr_t DEFAULT_USER_MMAP_BASE = 0x0000000020000000ULL;
 
 constexpr uint32_t FD_FLAG_READ = 1U << 0U;
 constexpr uint32_t FD_FLAG_WRITE = 1U << 1U;
@@ -69,9 +67,14 @@ void set_current_process(Process* proc) noexcept;
 void init_user_cpu_context(HAL::CpuContext& ctx, uintptr_t entry_point, uintptr_t sp_el0,
                            uint64_t argc, uintptr_t argv_vaddr) noexcept;
 
-// Activates the process's AddressSpace, enters EL0, and restores kernel state on return
-int64_t execute_process(Process& proc) noexcept;
+inline int64_t enter_user_context(const HAL::CpuContext* ctx) noexcept {
+    if (ctx == nullptr) {
+        return -1;
+    }
+    return HAL::get_cpu().enter_user_context(*ctx);
+}
 
-extern "C" int64_t enter_user_context(const HAL::CpuContext* ctx) noexcept;
+// Activates the process's AddressSpace, enters user mode via HAL, and restores state on return
+int64_t execute_process(Process& proc) noexcept;
 
 } // namespace Kernel::Process

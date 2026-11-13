@@ -1021,18 +1021,15 @@ void cmd_test_syscall() noexcept {
         "copy_from_user reconstructed page-straddling buffer accurately");
     assert_test(Kernel::MM::copy_to_user(proc->address_space, RO_PAGE_VADDR, test_msg, 4U) == -14,
                 "copy_to_user rejected write to read-only user page with -EFAULT (-14)");
-    assert_test(
-        Kernel::MM::copy_from_user(proc->address_space, readback_msg, 0x0000000000501FF8ULL,
-                                   16U) == -14,
-        "copy_from_user rejected buffer crossing into unmapped page with -EFAULT (-14)");
-    assert_test(
-        Kernel::MM::copy_from_user(proc->address_space, readback_msg, 0x0000000009000000ULL, 4U) ==
-            -14,
-        "copy_from_user rejected privileged UART MMIO address with -EFAULT (-14)");
-    assert_test(
-        Kernel::MM::copy_from_user(proc->address_space, readback_msg, 0x0000000040080000ULL, 4U) ==
-            -14,
-        "copy_from_user rejected kernel address >= 0x40000000 with -EFAULT (-14)");
+    assert_test(Kernel::MM::copy_from_user(proc->address_space, readback_msg, 0x0000000000501FF8ULL,
+                                           16U) == -14,
+                "copy_from_user rejected buffer crossing into unmapped page with -EFAULT (-14)");
+    assert_test(Kernel::MM::copy_from_user(proc->address_space, readback_msg, 0x0000000009000000ULL,
+                                           4U) == -14,
+                "copy_from_user rejected privileged UART MMIO address with -EFAULT (-14)");
+    assert_test(Kernel::MM::copy_from_user(proc->address_space, readback_msg, 0x0000000040080000ULL,
+                                           4U) == -14,
+                "copy_from_user rejected kernel address >= 0x40000000 with -EFAULT (-14)");
 
     // 2. Build EL0 payload testing SYS_WRITE (valid, -EFAULT, -EBADF), -ENOSYS, and SYS_EXIT
     constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;

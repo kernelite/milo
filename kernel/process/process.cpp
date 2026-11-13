@@ -41,6 +41,8 @@ void init_standard_fds(Kernel::Process::Process& proc) noexcept {
 namespace Kernel::Process {
 
 Process* allocate_process(uint32_t ppid) noexcept {
+    const auto platform = HAL::get_platform_info();
+
     for (size_t idx = 0U; idx < MAX_PROCESSES; ++idx) {
         auto& slot = g_process_table[idx];
         if (slot.state == ProcessState::Unused) {
@@ -63,9 +65,9 @@ Process* allocate_process(uint32_t ppid) noexcept {
             slot.context = HAL::CpuContext{};
             slot.user_stack = UserStack{};
             slot.entry_point = 0U;
-            slot.brk_start = DEFAULT_USER_BRK_BASE;
-            slot.brk_current = DEFAULT_USER_BRK_BASE;
-            slot.mmap_next_vaddr = DEFAULT_USER_MMAP_BASE;
+            slot.brk_start = platform.user_brk_base;
+            slot.brk_current = platform.user_brk_base;
+            slot.mmap_next_vaddr = platform.user_mmap_base;
             init_standard_fds(slot);
             return &slot;
         }
@@ -101,8 +103,7 @@ Process* find_process_by_pid(uint32_t pid) noexcept {
         return nullptr;
     }
     for (size_t idx = 0U; idx < MAX_PROCESSES; ++idx) {
-        if (g_process_table[idx].state != ProcessState::Unused &&
-            g_process_table[idx].pid == pid) {
+        if (g_process_table[idx].state != ProcessState::Unused && g_process_table[idx].pid == pid) {
             return &g_process_table[idx];
         }
     }
@@ -129,16 +130,7 @@ void set_current_process(Process* proc) noexcept {
 
 void init_user_cpu_context(HAL::CpuContext& ctx, uintptr_t entry_point, uintptr_t sp_el0,
                            uint64_t argc, uintptr_t argv_vaddr) noexcept {
-    // Zero out all general purpose registers (x0-x30) to prevent state leaks
-    for (size_t idx = 0U; idx < 31U; ++idx) {
-        ctx.x[idx] = 0ULL;
-    }
-
-    ctx.x[0] = argc;           // x0 = argc
-    ctx.x[1] = argv_vaddr;     // x1 = Address of argv array
-    ctx.sp_el0 = sp_el0;       // 16-byte aligned user stack pointer
-    ctx.elr_el1 = entry_point; // Entry point (e_entry from ELF header)
-    ctx.spsr_el1 = 0x00ULL;    // EL0t mode with DAIF exceptions unmasked
+    HAL::get_cpu().init_user_context(ctx, entry_point, sp_el0, argc, argv_vaddr);
 }
 
 int64_t execute_process(Process& proc) noexcept {
@@ -153,7 +145,7 @@ int64_t execute_process(Process& proc) noexcept {
     g_current_process = &proc;
     proc.address_space.activate();
 
-    const int64_t exit_code = enter_user_context(&proc.context);
+    const int64_t exit_code = HAL::get_cpu().enter_user_context(proc.context);
 
     MM::AddressSpace::activate_root(orig_root);
     g_current_process = prev_proc;

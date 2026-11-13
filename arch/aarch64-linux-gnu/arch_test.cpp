@@ -72,4 +72,97 @@ void trigger_user_syscall_test() noexcept {
     asm volatile("" ::: "memory"); // Prevent tail-call optimization
 }
 
+// Add to arch/aarch64-linux-gnu/arch_test.cpp inside namespace HAL::Test:
+
+uintptr_t get_privileged_mmio_probe_address() noexcept {
+    return 0x0000000009000000ULL; // QEMU virt PL011 UART MMIO (AP[1] == 0)
+}
+
+uintptr_t get_kernel_code_probe_address() noexcept {
+    return 0x0000000040080000ULL; // Kernel .text base (>= user_va_limit)
+}
+
+size_t write_user_exit_program(void* dst_kva, int64_t exit_code) noexcept {
+    auto* const out = static_cast<uint32_t*>(dst_kva);
+    const auto imm16 = static_cast<uint32_t>(static_cast<uint64_t>(exit_code) & 0xFFFFU);
+    out[0] = 0xD2800BA8U;                 // mov x8, #93 (SYS_EXIT)
+    out[1] = 0xD2800000U | (imm16 << 5U); // mov x0, #exit_code
+    out[2] = 0xD4000001U;                 // svc #0
+    out[3] = 0xD65F03C0U;                 // ret
+    return 4U * sizeof(uint32_t);
+}
+
+size_t write_user_syscall_suite_program(void* dst_kva, uintptr_t valid_buf_vaddr,
+                                        size_t valid_buf_len, uintptr_t crossing_buf_vaddr,
+                                        size_t crossing_buf_len,
+                                        uintptr_t kernel_buf_vaddr) noexcept {
+    auto* const out = static_cast<uint32_t*>(dst_kva);
+    size_t idx = 0U;
+
+    auto emit_mov_imm64 = [&](uint32_t reg, uint64_t val) {
+        out[idx++] = 0xD2800000U | (static_cast<uint32_t>(val & 0xFFFFU) << 5U) | reg;
+        out[idx++] = 0xF2A00000U | (static_cast<uint32_t>((val >> 16U) & 0xFFFFU) << 5U) | reg;
+        out[idx++] = 0xF2C00000U | (static_cast<uint32_t>((val >> 32U) & 0xFFFFU) << 5U) | reg;
+        out[idx++] = 0xF2E00000U | (static_cast<uint32_t>((val >> 48U) & 0xFFFFU) << 5U) | reg;
+    };
+
+    // x19 = failure accumulator
+    out[idx++] = 0xD2800013U; // mov x19, #0
+
+    // 1) Valid SYS_WRITE(fd=1, valid_buf_vaddr, valid_buf_len) -> expect valid_buf_len
+    emit_mov_imm64(8U, 64ULL);
+    emit_mov_imm64(0U, 1ULL);
+    emit_mov_imm64(1U, valid_buf_vaddr);
+    emit_mov_imm64(2U, valid_buf_len);
+    out[idx++] = 0xD4000001U; // svc #0
+    emit_mov_imm64(3U, valid_buf_len);
+    out[idx++] = 0xEB03001FU; // cmp x0, x3
+    out[idx++] = 0x54000040U; // b.eq +8
+    out[idx++] = 0x91000673U; // add x19, x19, #1
+
+    // 2) Kernel pointer SYS_WRITE(fd=1, kernel_buf_vaddr, 4) -> expect -14 (-EFAULT)
+    emit_mov_imm64(8U, 64ULL);
+    emit_mov_imm64(0U, 1ULL);
+    emit_mov_imm64(1U, kernel_buf_vaddr);
+    emit_mov_imm64(2U, 4ULL);
+    out[idx++] = 0xD4000001U; // svc #0
+    out[idx++] = 0xB100381FU; // cmn x0, #14
+    out[idx++] = 0x54000040U; // b.eq +8
+    out[idx++] = 0x91000673U; // add x19, x19, #1
+
+    // 3) Unmapped-crossing buffer SYS_WRITE(fd=1, crossing_buf_vaddr, crossing_buf_len) -> -14
+    emit_mov_imm64(8U, 64ULL);
+    emit_mov_imm64(0U, 1ULL);
+    emit_mov_imm64(1U, crossing_buf_vaddr);
+    emit_mov_imm64(2U, crossing_buf_len);
+    out[idx++] = 0xD4000001U; // svc #0
+    out[idx++] = 0xB100381FU; // cmn x0, #14
+    out[idx++] = 0x54000040U; // b.eq +8
+    out[idx++] = 0x91000673U; // add x19, x19, #1
+
+    // 4) Invalid/closed FD SYS_WRITE(fd=9, valid_buf_vaddr, 4) -> expect -9 (-EBADF)
+    emit_mov_imm64(8U, 64ULL);
+    emit_mov_imm64(0U, 9ULL);
+    emit_mov_imm64(1U, valid_buf_vaddr);
+    emit_mov_imm64(2U, 4ULL);
+    out[idx++] = 0xD4000001U; // svc #0
+    out[idx++] = 0xB100241FU; // cmn x0, #9
+    out[idx++] = 0x54000040U; // b.eq +8
+    out[idx++] = 0x91000673U; // add x19, x19, #1
+
+    // 5) Unimplemented syscall (999) -> expect -38 (-ENOSYS)
+    emit_mov_imm64(8U, 999ULL);
+    out[idx++] = 0xD4000001U; // svc #0
+    out[idx++] = 0xB100981FU; // cmn x0, #38
+    out[idx++] = 0x54000040U; // b.eq +8
+    out[idx++] = 0x91000673U; // add x19, x19, #1
+
+    // 6) SYS_EXIT(x19)
+    emit_mov_imm64(8U, 93ULL);
+    out[idx++] = 0xAA1303E0U; // mov x0, x19
+    out[idx++] = 0xD4000001U; // svc #0
+
+    return idx * sizeof(uint32_t);
+}
+
 } // namespace HAL::Test

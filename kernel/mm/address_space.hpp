@@ -1,5 +1,6 @@
 #pragma once
 
+#include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
 #include "loader/elf64.hpp"
 
@@ -8,15 +9,16 @@
 
 namespace Kernel::MM {
 
-constexpr uintptr_t HIGHER_HALF_OFFSET = 0xFFFF800000000000ULL;
-constexpr uintptr_t USER_ADDR_SPACE_LIMIT = 0x0000000040000000ULL;
-
-constexpr uintptr_t phys_to_virt(uintptr_t paddr) noexcept {
-    return paddr + HIGHER_HALF_OFFSET;
+inline uintptr_t phys_to_virt(uintptr_t paddr) noexcept {
+    return paddr + HAL::get_platform_info().higher_half_offset;
 }
 
-constexpr uintptr_t virt_to_phys(uintptr_t vaddr) noexcept {
-    return vaddr - HIGHER_HALF_OFFSET;
+inline uintptr_t virt_to_phys(uintptr_t vaddr) noexcept {
+    return vaddr - HAL::get_platform_info().higher_half_offset;
+}
+
+inline uintptr_t user_addr_space_limit() noexcept {
+    return HAL::get_platform_info().user_va_limit;
 }
 
 enum class AddressSpaceError {

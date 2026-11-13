@@ -1,4 +1,5 @@
 #include "hal/console.hpp"
+#include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
 #include "hal/trap.hpp"
 #include "mm/address_space.hpp"
@@ -7,11 +8,9 @@
 #include <cstddef>
 #include <cstdint>
 
-extern "C" [[noreturn]] void return_to_kernel(int64_t exit_code) noexcept;
-
 namespace {
 
-// AArch64 Linux ABI Syscall Numbers
+// POSIX / Linux Generic Syscall Numbers
 constexpr uint64_t SYS_WRITE = 64U;
 constexpr uint64_t SYS_EXIT = 93U;
 constexpr uint64_t SYS_EXIT_GROUP = 94U;
@@ -21,29 +20,29 @@ constexpr uint64_t SYS_GETPPID = 173U;
 // Negated POSIX Error Codes
 constexpr int64_t ERR_EBADF = -9;
 constexpr int64_t ERR_EFAULT = -14;
-constexpr int64_t ERR_EINVAL = -22;
+[[maybe_unused]] constexpr int64_t ERR_EINVAL = -22;
 constexpr int64_t ERR_ENOSYS = -38;
 
 constexpr size_t WRITE_CHUNK_SIZE = 256U;
-constexpr uintptr_t USER_PAGE_MASK = 0xFFFULL;
-constexpr uintptr_t USER_PAGE_STEP = 0x1000ULL;
 
 bool validate_user_read_range(uintptr_t root_paddr, uintptr_t user_buf, size_t count) noexcept {
-    if (user_buf >= Kernel::MM::USER_ADDR_SPACE_LIMIT) {
+    const uintptr_t va_limit = Kernel::MM::user_addr_space_limit();
+    if (user_buf >= va_limit) {
         return false;
     }
     if (count == 0U) {
         return true;
     }
-    if (root_paddr == 0U || count > (Kernel::MM::USER_ADDR_SPACE_LIMIT - user_buf)) {
+    if (root_paddr == 0U || count > (va_limit - user_buf)) {
         return false;
     }
 
-    const uintptr_t first_page = user_buf & ~USER_PAGE_MASK;
-    const uintptr_t last_page = (user_buf + count - 1U) & ~USER_PAGE_MASK;
+    const size_t page_size = HAL::get_platform_info().page_size;
+    const uintptr_t page_mask = page_size - 1U;
+    const uintptr_t first_page = user_buf & ~page_mask;
+    const uintptr_t last_page = (user_buf + count - 1U) & ~page_mask;
 
-    for (uintptr_t page_vaddr = first_page; page_vaddr <= last_page;
-         page_vaddr += USER_PAGE_STEP) {
+    for (uintptr_t page_vaddr = first_page; page_vaddr <= last_page; page_vaddr += page_size) {
         uintptr_t paddr = 0U;
         HAL::PageFlags flags = HAL::PageFlags::None;
         if (!Kernel::MM::AddressSpace::query_user_page(root_paddr, page_vaddr, paddr, flags)) {
@@ -84,12 +83,11 @@ int64_t sys_write(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexc
         root_paddr = Kernel::MM::AddressSpace::current_root_paddr();
     }
 
-    if (raw_count > Kernel::MM::USER_ADDR_SPACE_LIMIT) {
+    if (raw_count > Kernel::MM::user_addr_space_limit()) {
         return ERR_EFAULT;
     }
     const auto count = static_cast<size_t>(raw_count);
 
-    // Pre-validate all pages in [user_buf, user_buf + count) before writing to console
     if (!validate_user_read_range(root_paddr, user_buf, count)) {
         return ERR_EFAULT;
     }
@@ -123,7 +121,7 @@ int64_t sys_write(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexc
         proc->exit_status = status;
         proc->state = Kernel::Process::ProcessState::Zombie;
     }
-    return_to_kernel(status);
+    HAL::get_cpu().return_to_kernel(status);
 }
 
 int64_t sys_getpid() noexcept {
@@ -149,18 +147,21 @@ class SyscallDispatcher : public HAL::TrapHandler {
             return;
         }
 
-        auto* const ctx = frame.context;
-        const uint64_t syscall_num = ctx->x[8];
+        auto& cpu = HAL::get_cpu();
+        auto& ctx = *frame.context;
+        const uint64_t syscall_num = cpu.get_syscall_number(ctx);
         int64_t ret_val = ERR_ENOSYS;
 
         switch (syscall_num) {
         case SYS_WRITE:
-            ret_val = sys_write(ctx->x[0], static_cast<uintptr_t>(ctx->x[1]), ctx->x[2]);
+            ret_val = sys_write(cpu.get_syscall_arg(ctx, 0U),
+                                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
+                                cpu.get_syscall_arg(ctx, 2U));
             break;
 
         case SYS_EXIT:
         case SYS_EXIT_GROUP:
-            sys_exit(static_cast<int64_t>(ctx->x[0]));
+            sys_exit(static_cast<int64_t>(cpu.get_syscall_arg(ctx, 0U)));
 
         case SYS_GETPID:
             ret_val = sys_getpid();
@@ -171,12 +172,11 @@ class SyscallDispatcher : public HAL::TrapHandler {
             break;
 
         default:
-            (void)ERR_EINVAL;
             ret_val = ERR_ENOSYS;
             break;
         }
 
-        ctx->x[0] = static_cast<uint64_t>(ret_val);
+        cpu.set_syscall_return(ctx, ret_val);
     }
 };
 
