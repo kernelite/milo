@@ -109,5 +109,8 @@ lint-report: compile_commands.json
 
 quality: format-check lint-report
 
+commit: quality
+	git commit
+
 ai-dump:
 	./concat_files.sh dump-for-ai.txt arch/ build/ kernel/ Makefile compile_commands.json

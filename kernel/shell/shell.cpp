@@ -1,4 +1,3 @@
-#include "../arch/memory_config.hpp"
 #include "boot/fdt.hpp"
 #include "fs/cpio.hpp"
 #include "hal/console.hpp"
@@ -138,8 +137,9 @@ void cmd_test_vmm() noexcept {
                                                     HAL::PageFlags::Execute);
         assert_test(map_ok, "Mapped RX page in AddressSpace with L1/L2/L3 table creation");
 
-        // Attempt mapping out-of-bounds higher-half address in user table
-        const bool bad_map = adrsp.map_user_page(0xFFFF800000400000ULL, test_paddr,
+        const uintptr_t higher_half_test_vaddr =
+            HAL::get_platform_info().higher_half_offset + test_vaddr;
+        const bool bad_map = adrsp.map_user_page(higher_half_test_vaddr, test_paddr,
                                                  HAL::PageFlags::User | HAL::PageFlags::Read);
         assert_test(!bad_map,
                     "Rejected higher-half virtual address in user space translation table");
@@ -166,7 +166,8 @@ void cmd_test_loader_pipeline() noexcept {
     ehdr->e_ident[EI_DATA] = ELFDATA2LSB;
     ehdr->e_ident[EI_VERSION] = EV_CURRENT;
     ehdr->e_type = ET_EXEC;
-    ehdr->e_machine = EM_AARCH64;
+    ehdr->e_machine = HAL::get_platform_info().elf_machine;
+    ;
     ehdr->e_version = EV_CURRENT;
     ehdr->e_entry = 0x00400180ULL;
     ehdr->e_phoff = 64;
@@ -241,7 +242,7 @@ void cmd_test_user_isolation() noexcept {
     ehdr->e_ident[EI_VERSION] = EV_CURRENT;
     ehdr->e_ident[EI_OSABI] = ELFOSABI_SYSV;
     ehdr->e_type = ET_EXEC;
-    ehdr->e_machine = EM_AARCH64;
+    ehdr->e_machine = HAL::get_platform_info().elf_machine;
     ehdr->e_version = EV_CURRENT;
     ehdr->e_entry = 0x00400100ULL; // Congruent with p_offset 0x100 modulo 0x1000
     ehdr->e_phoff = 64;
@@ -249,14 +250,16 @@ void cmd_test_user_isolation() noexcept {
     ehdr->e_phentsize = sizeof(Elf64_Phdr);
     ehdr->e_phnum = 1;
 
+    const size_t code_bytes = HAL::Test::write_user_exit_program(synth_bin + 0x100, 42);
+
     auto* phdr = reinterpret_cast<Elf64_Phdr*>(synth_bin + 64);
     phdr->p_type = PT_LOAD;
     phdr->p_flags = PF_R | PF_X;
     phdr->p_offset = 0x100;
     phdr->p_vaddr = 0x00400100ULL;
     phdr->p_paddr = 0x00400100ULL;
-    phdr->p_filesz = 16;
-    phdr->p_memsz = 16;
+    phdr->p_filesz = code_bytes;
+    phdr->p_memsz = code_bytes;
     phdr->p_align = 0x1000;
 
     // AArch64 code:
@@ -726,11 +729,12 @@ void cmd_test_data_abort() {
 
 void cmd_test_pfa() {
     print_str("[TEST] Running Physical Frame Allocator verification suite...\r\n");
+    const size_t page_size = HAL::get_platform_info().page_size;
 
     if (g_initrd_loc.valid) {
         bool all_pages_reserved = true;
         for (uintptr_t addr = g_initrd_loc.start_paddr; addr < g_initrd_loc.end_paddr;
-             addr += Arch::PAGE_SIZE) {
+             addr += page_size) {
             if (!pfa_is_page_allocated(addr)) {
                 all_pages_reserved = false;
                 break;
@@ -767,14 +771,13 @@ void cmd_test_pfa() {
 
     uintptr_t page1 = alloc_frame();
     assert_test(page1 != 0, "Allocated single page frame");
-    assert_test((page1 % Arch::PAGE_SIZE) == 0, "Allocated frame is 4KB page-aligned");
+    assert_test((page1 % page_size) == 0, "Allocated frame is page-aligned");
 
     free_frame(page1);
     uintptr_t page_recycled = alloc_frame();
     assert_test(page_recycled == page1, "Freed frame was recycled cleanly");
     free_frame(page_recycled);
 }
-
 void cmd_test_ro() noexcept {
     print_str("\r\n[TEST] Running Read-Only (.rodata) Protection Test...\r\n");
     print_str("  Target Address: ");
@@ -968,6 +971,125 @@ void cmd_test_uxn_fault() noexcept {
     address_space.destroy();
 }
 
+void cmd_test_syscall() noexcept {
+    print_str("\r\n[TEST] Running PCB, User-Pointer Validation & Syscall ABI Suite...\r\n");
+
+    const size_t pages_before = pfa_allocated_pages_count();
+    const size_t procs_before = Kernel::Process::active_process_count();
+
+    auto* const proc = Kernel::Process::allocate_process(0U);
+    assert_test(proc != nullptr, "Allocated PCB slot from static process table");
+    if (proc == nullptr) {
+        return;
+    }
+    assert_test(proc->pid > 0U && proc->state == Kernel::Process::ProcessState::Ready,
+                "PCB initialized with valid PID and Ready state");
+
+    auto as_res = Kernel::MM::AddressSpace::create();
+    assert_test(as_res.is_ok(), "Created isolated AddressSpace for PCB");
+    if (!as_res.is_ok()) {
+        Kernel::Process::release_process(*proc);
+        return;
+    }
+    proc->address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
+
+    // Map a 2-page user data buffer at 0x00500000..0x00501FFF (leaving 0x00502000 unmapped)[cite:
+    // 2]
+    constexpr uintptr_t DATA_PAGE0_VADDR = 0x0000000000500000ULL;
+    constexpr uintptr_t DATA_PAGE1_VADDR = 0x0000000000501000ULL;
+    constexpr uintptr_t RO_PAGE_VADDR = 0x0000000000510000ULL;
+
+    const uintptr_t data_paddr0 = alloc_frame();
+    const uintptr_t data_paddr1 = alloc_frame();
+    const uintptr_t ro_paddr = alloc_frame();
+
+    const HAL::PageFlags user_rw =
+        HAL::PageFlags::User | HAL::PageFlags::Read | HAL::PageFlags::Write;
+    const HAL::PageFlags user_ro = HAL::PageFlags::User | HAL::PageFlags::Read;
+
+    proc->address_space.map_user_page(DATA_PAGE0_VADDR, data_paddr0, user_rw);
+    proc->address_space.map_user_page(DATA_PAGE1_VADDR, data_paddr1, user_rw);
+    proc->address_space.map_user_page(RO_PAGE_VADDR, ro_paddr, user_ro);
+
+    // 1. Direct copy_to_user / copy_from_user boundary checks (straddling 0x500FF8..0x501007)[cite:
+    // 2]
+    constexpr uintptr_t STRADDLE_VADDR = DATA_PAGE1_VADDR - 8U;
+    constexpr uintptr_t CROSSING_VADDR = DATA_PAGE1_VADDR + 0xFF8ULL;
+    constexpr size_t CROSSING_LEN = 16U;
+
+    const uintptr_t mmio_probe_vaddr = HAL::Test::get_privileged_mmio_probe_address();
+    const uintptr_t kernel_probe_vaddr = HAL::Test::get_kernel_code_probe_address();
+
+    const char test_msg[16] = {'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
+                               '1', '2', '3', '4', '5', '6', '7', '\0'};
+    char readback_msg[16]{};
+
+    assert_test(Kernel::MM::copy_to_user(proc->address_space, STRADDLE_VADDR, test_msg, 16U) == 0,
+                "copy_to_user succeeded across page boundary");
+    assert_test(
+        Kernel::MM::copy_from_user(proc->address_space, readback_msg, STRADDLE_VADDR, 16U) == 0 &&
+            streq(readback_msg, test_msg),
+        "copy_from_user reconstructed page-straddling buffer accurately");
+    assert_test(Kernel::MM::copy_to_user(proc->address_space, RO_PAGE_VADDR, test_msg, 4U) == -14,
+                "copy_to_user rejected write to read-only user page with -EFAULT (-14)");
+    assert_test(Kernel::MM::copy_from_user(proc->address_space, readback_msg, CROSSING_VADDR,
+                                           CROSSING_LEN) == -14,
+                "copy_from_user rejected buffer crossing into unmapped page with -EFAULT (-14)");
+    assert_test(
+        Kernel::MM::copy_from_user(proc->address_space, readback_msg, mmio_probe_vaddr, 4U) == -14,
+        "copy_from_user rejected privileged MMIO address with -EFAULT (-14)");
+    assert_test(Kernel::MM::copy_from_user(proc->address_space, readback_msg, kernel_probe_vaddr,
+                                           4U) == -14,
+                "copy_from_user rejected kernel address >= user_va_limit with -EFAULT (-14)");
+
+    // 2. Build EL0 payload via HAL::Test testing SYS_WRITE, -EFAULT, -EBADF, -ENOSYS, and
+    // SYS_EXIT[cite: 2]
+    constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
+    const uintptr_t code_paddr = alloc_frame();
+    proc->address_space.map_user_page(CODE_VADDR, code_paddr,
+                                      HAL::PageFlags::User | HAL::PageFlags::Read |
+                                          HAL::PageFlags::Execute);
+
+    const char uart_msg[] = "  [EL0] Valid SYS_WRITE payload!\r\n";
+    constexpr size_t UART_MSG_LEN = sizeof(uart_msg) - 1U;
+    Kernel::MM::copy_to_user(proc->address_space, DATA_PAGE0_VADDR, uart_msg, UART_MSG_LEN);
+
+    auto* const k_code = reinterpret_cast<void*>(Kernel::MM::phys_to_virt(code_paddr));
+    const size_t code_bytes = HAL::Test::write_user_syscall_suite_program(
+        k_code, DATA_PAGE0_VADDR, UART_MSG_LEN, CROSSING_VADDR, CROSSING_LEN, kernel_probe_vaddr);
+    HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(k_code), code_bytes);
+    HAL::get_cpu().invalidate_icache();
+
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space);
+    assert_test(stack_res.is_ok(), "Allocated and mapped user stack for PCB");
+    proc->user_stack = stack_res.value();
+
+    const char* const argv[] = {"syscall_test"};
+    Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack, 1, argv);
+
+    proc->entry_point = CODE_VADDR;
+    Kernel::Process::init_user_cpu_context(proc->context, CODE_VADDR, proc->user_stack.final_sp_el0,
+                                           proc->user_stack.argc, proc->user_stack.argv_vaddr);
+
+    const int64_t exit_status = Kernel::Process::execute_process(*proc);
+
+    assert_test(exit_status == 0,
+                "EL0 syscalls verified (-EFAULT, -EBADF, -ENOSYS, valid SYS_WRITE & SYS_EXIT)");
+    assert_test(proc->state == Kernel::Process::ProcessState::Zombie &&
+                    proc->exit_status == exit_status,
+                "PCB transitioned to Zombie state and recorded exit_status");
+
+    free_frame(code_paddr);
+    free_frame(data_paddr0);
+    free_frame(data_paddr1);
+    free_frame(ro_paddr);
+    Kernel::Process::release_process(*proc);
+
+    assert_test(Kernel::Process::active_process_count() == procs_before,
+                "PCB slot released cleanly back to static process table");
+    assert_test(pfa_allocated_pages_count() == pages_before,
+                "All process page tables, stack, and data frames freed cleanly");
+}
 void print_help() noexcept {
     print_str("\r\nAvailable Commands:\r\n");
     print_str("  help            - Display this menu\r\n");
@@ -995,6 +1117,7 @@ void print_help() noexcept {
     print_str("  test stack_abi  - Run user atack allocation & System V ABI construction tests");
     print_str("  test user_echo  - Run EL0 user space echo test (x0=argc, x1=argv)");
     print_str("  test uxn_fault  - Run user stack execute-never (UXN) fault test");
+    print_str("  test syscall    - Test PCB lifecycle, user copy validation & syscall ABI\r\n");
     print_str("  halt            - Put CPU into low-power WFI state\r\n");
 }
 
@@ -1047,6 +1170,8 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_stack_and_abi();
     } else if (streq(buf, "test uxn_fault")) {
         cmd_test_uxn_fault();
+    } else if (streq(buf, "test syscall")) {
+        cmd_test_syscall();
     } else if (streq(buf, "halt")) {
         print_str("[INFO] Halting CPU. Use QEMU 'Ctrl-A X' to exit.\r\n");
         HAL::get_cpu().halt();
@@ -1072,6 +1197,7 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_user_isolation();
         cmd_test_user_echo();
         cmd_test_uxn_fault();
+        cmd_test_syscall();
     } else if (buf[0] != '\0') {
         print_str("Unknown command: '");
         print_str(buf);

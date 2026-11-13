@@ -1,3 +1,4 @@
+#include "cpu_context.hpp"
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
 #include "hal/trap.hpp"
@@ -33,8 +34,13 @@ void print_hex64(uint64_t val) noexcept {
     print_str(buf);
 }
 
-void dump_registers(const HAL::CpuContext* ctx) noexcept {
+void dump_registers(const AArch64CpuContext* arch_ctx) noexcept {
     if constexpr (!ENABLE_REGISTER_DUMP) {
+        (void)arch_ctx;
+        return;
+    }
+
+    if (arch_ctx == nullptr) {
         return;
     }
 
@@ -46,7 +52,7 @@ void dump_registers(const HAL::CpuContext* ctx) noexcept {
         }
         HAL::get_console().putc(static_cast<char>('0' + (i % 10)));
         print_str(": ");
-        print_hex64(ctx->x[i]);
+        print_hex64(arch_ctx->x[i]);
         print_str("   ");
 
         if (i + 1 < 31) {
@@ -56,16 +62,16 @@ void dump_registers(const HAL::CpuContext* ctx) noexcept {
             }
             HAL::get_console().putc(static_cast<char>('0' + ((i + 1) % 10)));
             print_str(": ");
-            print_hex64(ctx->x[i + 1]);
+            print_hex64(arch_ctx->x[i + 1]);
         }
         print_str("\r\n");
     }
     print_str("  SP_EL0  : ");
-    print_hex64(ctx->sp_el0);
+    print_hex64(arch_ctx->sp_el0);
     print_str("\r\n  ELR_EL1 : ");
-    print_hex64(ctx->elr_el1);
+    print_hex64(arch_ctx->elr_el1);
     print_str("\r\n  SPSR_EL1: ");
-    print_hex64(ctx->spsr_el1);
+    print_hex64(arch_ctx->spsr_el1);
     print_str("\r\n===================================================\r\n");
 }
 
@@ -84,6 +90,7 @@ extern "C" {
 
 void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t far) noexcept {
     const uint32_t eclass = static_cast<uint32_t>((esr >> 26U) & 0x3FU); // Exception Class (EC)
+    auto* const arch_ctx = reinterpret_cast<AArch64CpuContext*>(ctx);
 
     switch (eclass) {
     case 0x15U: { // SVC in AArch64
@@ -104,21 +111,25 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
         print_hex64(esr);
         print_str("\r\n");
 
-        dump_registers(ctx);
+        dump_registers(arch_ctx);
 
-        if ((ctx->spsr_el1 & 0x0FU) == 0U) {
+        if (arch_ctx != nullptr && (arch_ctx->spsr_el1 & 0x0FU) == 0U) {
             print_str("[TRAP] Terminating faulting EL0 process.\r\n");
             return_to_kernel(-1);
         }
 
-        if (eclass == 0x21U) {
-            print_str("[TRAP] EL1 Instruction Fault detected! Returning to caller via LR...\r\n");
-            ctx->elr_el1 = ctx->x[30];
-            return;
-        }
+        if (arch_ctx != nullptr) {
+            if (eclass == 0x21U) {
+                print_str(
+                    "[TRAP] EL1 Instruction Fault detected! Returning to caller via LR...\r\n");
+                arch_ctx->elr_el1 = arch_ctx->x[30];
+                return;
+            }
 
-        print_str("[TRAP] EL1 Fault detected! Advancing ELR_EL1 past faulting instruction...\r\n");
-        ctx->elr_el1 += 4U;
+            print_str(
+                "[TRAP] EL1 Fault detected! Advancing ELR_EL1 past faulting instruction...\r\n");
+            arch_ctx->elr_el1 += 4U;
+        }
         return;
     }
 
@@ -131,9 +142,9 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
         print_hex64(far);
         print_str("\r\n");
 
-        dump_registers(ctx);
+        dump_registers(arch_ctx);
 
-        if ((ctx->spsr_el1 & 0x0FU) == 0U) {
+        if (arch_ctx != nullptr && (arch_ctx->spsr_el1 & 0x0FU) == 0U) {
             print_str("[TRAP] Terminating faulting EL0 process.\r\n");
             return_to_kernel(-1);
         }
@@ -163,6 +174,8 @@ void aarch64_handle_invalid_exception(HAL::CpuContext* ctx, uint64_t type) noexc
                                           "Lower EL AArch32 FIQ",
                                           "Lower EL AArch32 SError"};
 
+    const auto* const arch_ctx = reinterpret_cast<const AArch64CpuContext*>(ctx);
+
     print_str("\r\n[PANIC] Invalid/Async Trap Captured: ");
     if (type < 16U) {
         print_str(type_names[type]);
@@ -171,9 +184,9 @@ void aarch64_handle_invalid_exception(HAL::CpuContext* ctx, uint64_t type) noexc
     }
     print_str("\r\n");
 
-    dump_registers(ctx);
+    dump_registers(arch_ctx);
 
-    if ((ctx->spsr_el1 & 0x0FU) == 0U) {
+    if (arch_ctx != nullptr && (arch_ctx->spsr_el1 & 0x0FU) == 0U) {
         print_str("[TRAP] Terminating faulting EL0 process.\r\n");
         return_to_kernel(-3);
     }
