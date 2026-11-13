@@ -1216,7 +1216,8 @@ void print_help() noexcept {
     print_str("  test loader     - Test ELF segment loading and OOM rollback\r\n");
     print_str("  test user       - Instantiate EL0 process and verify syscall exit\r\n");
     print_str("  test all        - Run entire verification test suite\r\n");
-    print_str("  test stack_abi  - Run user stack allocation & System V ABI construction tests\r\n");
+    print_str(
+        "  test stack_abi  - Run user stack allocation & System V ABI construction tests\r\n");
     print_str("  test user_echo  - Run EL0 user space echo test (x0=argc, x1=argv)\r\n");
     print_str("  test uxn_fault  - Run user stack execute-never (UXN) fault test\r\n");
     print_str("  test syscall    - Test PCB lifecycle, user copy validation & syscall ABI\r\n");
