@@ -14,7 +14,6 @@
 #include <cstdint>
 
 extern "C" void cmd_test_uxn_fault();
-extern "C" void cmd_test_user_echo();
 // Access global initrd metadata from main.cpp
 extern FDT::InitrdLocation g_initrd_loc;
 
@@ -167,7 +166,6 @@ void cmd_test_loader_pipeline() noexcept {
     ehdr->e_ident[EI_VERSION] = EV_CURRENT;
     ehdr->e_type = ET_EXEC;
     ehdr->e_machine = HAL::get_platform_info().elf_machine;
-    ;
     ehdr->e_version = EV_CURRENT;
     ehdr->e_entry = 0x00400180ULL;
     ehdr->e_phoff = 64;
@@ -261,20 +259,6 @@ void cmd_test_user_isolation() noexcept {
     phdr->p_filesz = code_bytes;
     phdr->p_memsz = code_bytes;
     phdr->p_align = 0x1000;
-
-    // AArch64 code:
-    // mov x8, #93 (SYS_EXIT)
-    // mov x0, #42
-    // svc #0
-    const uint32_t code[] = {
-        0xD2800BA8U, // mov x8, #93
-        0xD2800540U, // mov x0, #42
-        0xD4000001U, // svc #0
-        0xD65F03C0U  // ret
-    };
-    for (size_t i = 0; i < 4; ++i) {
-        *reinterpret_cast<uint32_t*>(synth_bin + 0x100 + i * 4) = code[i];
-    }
 
     auto load_res = Kernel::Loader::load_elf(synth_bin, sizeof(synth_bin));
     assert_test(load_res.is_ok(), "Loaded user-space test payload");
@@ -778,6 +762,7 @@ void cmd_test_pfa() {
     assert_test(page_recycled == page1, "Freed frame was recycled cleanly");
     free_frame(page_recycled);
 }
+
 void cmd_test_ro() noexcept {
     print_str("\r\n[TEST] Running Read-Only (.rodata) Protection Test...\r\n");
     print_str("  Target Address: ");
@@ -875,7 +860,7 @@ void cmd_test_user_echo() noexcept {
     }
     auto address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
 
-    // Map executable page for user_space_echo_test entry
+    // Map executable page for EL0 argc/argv echo binary
     const uintptr_t code_frame = alloc_frame();
     const uintptr_t entry_vaddr = 0x0000000000400000ULL;
 
@@ -883,16 +868,16 @@ void cmd_test_user_echo() noexcept {
                                 HAL::PageFlags::User | HAL::PageFlags::Read |
                                     HAL::PageFlags::Execute);
 
-    // Copy user_space_echo_test routine into code frame
-    auto* const k_code = reinterpret_cast<uint8_t*>(Kernel::MM::phys_to_virt(code_frame));
-    const auto* const src_code = reinterpret_cast<const uint8_t*>(cmd_test_user_echo);
-    for (size_t i = 0U; i < 256U; ++i) {
-        k_code[i] = src_code[i];
-    }
+    auto* const k_code = reinterpret_cast<void*>(Kernel::MM::phys_to_virt(code_frame));
+    const size_t code_bytes = HAL::Test::write_user_echo_program(k_code);
+    HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(k_code), code_bytes);
+    HAL::get_cpu().invalidate_icache();
 
     // Allocate stack and build System V ABI layout
     auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(address_space);
     if (!stack_res) {
+        free_frame(code_frame);
+        address_space.destroy();
         print_str("[FAIL] Stack creation failed\r\n");
         return;
     }
@@ -903,7 +888,7 @@ void cmd_test_user_echo() noexcept {
 
     assert_test(abi_res.is_ok(), "ABI stack layout populated");
 
-    // Initialize CpuContext
+    // Initialize CpuContext (x0 = argc, x1 = argv)
     HAL::CpuContext ctx{};
     Kernel::Process::init_user_cpu_context(ctx, entry_vaddr, user_stack.final_sp_el0,
                                            user_stack.argc, user_stack.argv_vaddr);
@@ -993,8 +978,7 @@ void cmd_test_syscall() noexcept {
     }
     proc->address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
 
-    // Map a 2-page user data buffer at 0x00500000..0x00501FFF (leaving 0x00502000 unmapped)[cite:
-    // 2]
+    // Map a 2-page user data buffer at 0x00500000..0x00501FFF (leaving 0x00502000 unmapped)
     constexpr uintptr_t DATA_PAGE0_VADDR = 0x0000000000500000ULL;
     constexpr uintptr_t DATA_PAGE1_VADDR = 0x0000000000501000ULL;
     constexpr uintptr_t RO_PAGE_VADDR = 0x0000000000510000ULL;
@@ -1011,8 +995,7 @@ void cmd_test_syscall() noexcept {
     proc->address_space.map_user_page(DATA_PAGE1_VADDR, data_paddr1, user_rw);
     proc->address_space.map_user_page(RO_PAGE_VADDR, ro_paddr, user_ro);
 
-    // 1. Direct copy_to_user / copy_from_user boundary checks (straddling 0x500FF8..0x501007)[cite:
-    // 2]
+    // 1. Direct copy_to_user / copy_from_user boundary checks (straddling 0x500FF8..0x501007)
     constexpr uintptr_t STRADDLE_VADDR = DATA_PAGE1_VADDR - 8U;
     constexpr uintptr_t CROSSING_VADDR = DATA_PAGE1_VADDR + 0xFF8ULL;
     constexpr size_t CROSSING_LEN = 16U;
@@ -1042,8 +1025,7 @@ void cmd_test_syscall() noexcept {
                                            4U) == -14,
                 "copy_from_user rejected kernel address >= user_va_limit with -EFAULT (-14)");
 
-    // 2. Build EL0 payload via HAL::Test testing SYS_WRITE, -EFAULT, -EBADF, -ENOSYS, and
-    // SYS_EXIT[cite: 2]
+    // 2. Build EL0 payload via HAL::Test testing SYS_WRITE, -EFAULT, -EBADF, -ENOSYS, and SYS_EXIT
     constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
     const uintptr_t code_paddr = alloc_frame();
     proc->address_space.map_user_page(CODE_VADDR, code_paddr,
@@ -1079,6 +1061,43 @@ void cmd_test_syscall() noexcept {
                     proc->exit_status == exit_status,
                 "PCB transitioned to Zombie state and recorded exit_status");
 
+    assert_test(proc->fd_table[0].is_tty() && proc->fd_table[1].is_tty() &&
+                    proc->fd_table[2].is_tty(),
+                "PCB initialized FDs 0, 1, and 2 as ConsoleTty descriptors");
+
+    // 3. Execute EL0 TTY ioctl & non-blocking sys_read verification suite
+    constexpr uint64_t NON_TTY_FD = 3ULL;
+    proc->fd_table[NON_TTY_FD] = Kernel::Process::FileDescriptor{
+        .type = Kernel::Process::FdType::InitrdFile,
+        .flags = Kernel::Process::FD_FLAG_READ,
+        .offset = 0U,
+        .in_use = true,
+    };
+
+    constexpr uintptr_t IOCTL_ARGS_VADDR = DATA_PAGE0_VADDR + 0x100ULL;
+    const HAL::Test::TtyIoctlSuiteArgs ioctl_args{
+        .rw_buf_vaddr = DATA_PAGE0_VADDR,
+        .ro_buf_vaddr = RO_PAGE_VADDR,
+        .crossing_buf_vaddr = CROSSING_VADDR,
+        .crossing_buf_len = CROSSING_LEN,
+        .non_tty_fd = NON_TTY_FD,
+    };
+    Kernel::MM::copy_to_user(proc->address_space, IOCTL_ARGS_VADDR, &ioctl_args,
+                             sizeof(ioctl_args));
+
+    const size_t tty_code_bytes = HAL::Test::write_user_tty_ioctl_suite_program(k_code);
+    HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(k_code), tty_code_bytes);
+    HAL::get_cpu().invalidate_icache();
+
+    proc->state = Kernel::Process::ProcessState::Ready;
+    Kernel::Process::init_user_cpu_context(proc->context, CODE_VADDR, proc->user_stack.final_sp_el0,
+                                           IOCTL_ARGS_VADDR, 0ULL);
+
+    const int64_t tty_exit_status = Kernel::Process::execute_process(*proc);
+    assert_test(tty_exit_status == 0,
+                "EL0 TTY ioctl (TCGETS/TCSETS/TIOCGWINSZ/-ENOTTY/-EINVAL/-EBADF) & sys_read "
+                "validation verified");
+
     free_frame(code_paddr);
     free_frame(data_paddr0);
     free_frame(data_paddr1);
@@ -1090,6 +1109,89 @@ void cmd_test_syscall() noexcept {
     assert_test(pfa_allocated_pages_count() == pages_before,
                 "All process page tables, stack, and data frames freed cleanly");
 }
+
+void cmd_test_tty_echo() noexcept {
+    print_str("\r\n[TEST] Launching Interactive EL0 TTY Echo Process...\r\n");
+
+    auto* const proc = Kernel::Process::allocate_process(0U);
+    if (proc == nullptr) {
+        print_str("[FAIL] Failed to allocate PCB\r\n");
+        return;
+    }
+
+    auto as_res = Kernel::MM::AddressSpace::create();
+    if (!as_res.is_ok()) {
+        Kernel::Process::release_process(*proc);
+        print_str("[FAIL] Failed to create AddressSpace\r\n");
+        return;
+    }
+    proc->address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
+
+    constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
+    constexpr uintptr_t DATA_VADDR = 0x0000000000500000ULL;
+    const uintptr_t code_paddr = alloc_frame();
+    const uintptr_t data_paddr = alloc_frame();
+
+    proc->address_space.map_user_page(CODE_VADDR, code_paddr,
+                                      HAL::PageFlags::User | HAL::PageFlags::Read |
+                                          HAL::PageFlags::Execute);
+    proc->address_space.map_user_page(DATA_VADDR, data_paddr,
+                                      HAL::PageFlags::User | HAL::PageFlags::Read |
+                                          HAL::PageFlags::Write);
+
+    const char prompt[] = "  [EL0 TTY] Type a line and press Enter: ";
+    const char prefix[] = "  [EL0 TTY] Echoed line: ";
+    constexpr size_t PROMPT_LEN = sizeof(prompt) - 1U;
+    constexpr size_t PREFIX_LEN = sizeof(prefix) - 1U;
+    constexpr uintptr_t PROMPT_VADDR = DATA_VADDR;
+    constexpr uintptr_t PREFIX_VADDR = DATA_VADDR + 0x080ULL;
+    constexpr uintptr_t ARGS_VADDR = DATA_VADDR + 0x100ULL;
+    constexpr uintptr_t LINE_BUF_VADDR = DATA_VADDR + 0x200ULL;
+    constexpr size_t LINE_BUF_CAP = 128U;
+
+    const HAL::Test::TtyEchoArgs echo_args{
+        .prompt_vaddr = PROMPT_VADDR,
+        .prompt_len = PROMPT_LEN,
+        .prefix_vaddr = PREFIX_VADDR,
+        .prefix_len = PREFIX_LEN,
+        .line_buf_vaddr = LINE_BUF_VADDR,
+        .line_buf_cap = LINE_BUF_CAP,
+    };
+
+    Kernel::MM::copy_to_user(proc->address_space, PROMPT_VADDR, prompt, PROMPT_LEN);
+    Kernel::MM::copy_to_user(proc->address_space, PREFIX_VADDR, prefix, PREFIX_LEN);
+    Kernel::MM::copy_to_user(proc->address_space, ARGS_VADDR, &echo_args, sizeof(echo_args));
+
+    auto* const k_code = reinterpret_cast<void*>(Kernel::MM::phys_to_virt(code_paddr));
+    const size_t code_bytes = HAL::Test::write_user_tty_echo_program(k_code);
+    HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(k_code), code_bytes);
+    HAL::get_cpu().invalidate_icache();
+
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space);
+    if (!stack_res.is_ok()) {
+        free_frame(code_paddr);
+        free_frame(data_paddr);
+        Kernel::Process::release_process(*proc);
+        print_str("[FAIL] Failed to allocate user stack\r\n");
+        return;
+    }
+    proc->user_stack = stack_res.value();
+
+    const char* const argv[] = {"tty_echo"};
+    Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack, 1, argv);
+
+    proc->entry_point = CODE_VADDR;
+    Kernel::Process::init_user_cpu_context(proc->context, CODE_VADDR, proc->user_stack.final_sp_el0,
+                                           ARGS_VADDR, 0ULL);
+
+    const int64_t exit_status = Kernel::Process::execute_process(*proc);
+    assert_test(exit_status == 0, "EL0 interactive TTY read/write echo completed cleanly");
+
+    free_frame(code_paddr);
+    free_frame(data_paddr);
+    Kernel::Process::release_process(*proc);
+}
+
 void print_help() noexcept {
     print_str("\r\nAvailable Commands:\r\n");
     print_str("  help            - Display this menu\r\n");
@@ -1114,10 +1216,12 @@ void print_help() noexcept {
     print_str("  test loader     - Test ELF segment loading and OOM rollback\r\n");
     print_str("  test user       - Instantiate EL0 process and verify syscall exit\r\n");
     print_str("  test all        - Run entire verification test suite\r\n");
-    print_str("  test stack_abi  - Run user atack allocation & System V ABI construction tests");
-    print_str("  test user_echo  - Run EL0 user space echo test (x0=argc, x1=argv)");
-    print_str("  test uxn_fault  - Run user stack execute-never (UXN) fault test");
+    print_str(
+        "  test stack_abi  - Run user stack allocation & System V ABI construction tests\r\n");
+    print_str("  test user_echo  - Run EL0 user space echo test (x0=argc, x1=argv)\r\n");
+    print_str("  test uxn_fault  - Run user stack execute-never (UXN) fault test\r\n");
     print_str("  test syscall    - Test PCB lifecycle, user copy validation & syscall ABI\r\n");
+    print_str("  test tty_echo   - Run interactive EL0 TTY read/write echo test\r\n");
     print_str("  halt            - Put CPU into low-power WFI state\r\n");
 }
 
@@ -1172,6 +1276,8 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_uxn_fault();
     } else if (streq(buf, "test syscall")) {
         cmd_test_syscall();
+    } else if (streq(buf, "test tty_echo")) {
+        cmd_test_tty_echo();
     } else if (streq(buf, "halt")) {
         print_str("[INFO] Halting CPU. Use QEMU 'Ctrl-A X' to exit.\r\n");
         HAL::get_cpu().halt();

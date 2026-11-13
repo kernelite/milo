@@ -17,7 +17,7 @@ constexpr uint32_t FD_FLAG_WRITE = 1U << 1U;
 
 enum class ProcessState : uint8_t { Unused = 0, Ready, Running, Blocked, Zombie };
 
-enum class FdType : uint8_t { None = 0, ConsoleIn, ConsoleOut, ConsoleErr, InitrdFile };
+enum class FdType : uint8_t { None = 0, ConsoleTty, InitrdFile };
 
 struct FileDescriptor {
     FdType type{FdType::None};
@@ -31,6 +31,10 @@ struct FileDescriptor {
 
     [[nodiscard]] constexpr bool is_writable() const noexcept {
         return in_use && ((flags & FD_FLAG_WRITE) != 0U);
+    }
+
+    [[nodiscard]] constexpr bool is_tty() const noexcept {
+        return in_use && (type == FdType::ConsoleTty);
     }
 };
 

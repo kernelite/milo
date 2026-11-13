@@ -17,19 +17,19 @@ void reset_fd_table(Kernel::Process::Process& proc) noexcept {
 void init_standard_fds(Kernel::Process::Process& proc) noexcept {
     reset_fd_table(proc);
     proc.fd_table[0] = Kernel::Process::FileDescriptor{
-        .type = Kernel::Process::FdType::ConsoleIn,
+        .type = Kernel::Process::FdType::ConsoleTty,
         .flags = Kernel::Process::FD_FLAG_READ,
         .offset = 0U,
         .in_use = true,
     };
     proc.fd_table[1] = Kernel::Process::FileDescriptor{
-        .type = Kernel::Process::FdType::ConsoleOut,
+        .type = Kernel::Process::FdType::ConsoleTty,
         .flags = Kernel::Process::FD_FLAG_WRITE,
         .offset = 0U,
         .in_use = true,
     };
     proc.fd_table[2] = Kernel::Process::FileDescriptor{
-        .type = Kernel::Process::FdType::ConsoleErr,
+        .type = Kernel::Process::FdType::ConsoleTty,
         .flags = Kernel::Process::FD_FLAG_WRITE,
         .offset = 0U,
         .in_use = true,
