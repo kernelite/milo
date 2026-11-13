@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hal/cpu.hpp"
+#include "loader/elf_loader.hpp"
 #include "mm/address_space.hpp"
 #include "process/stack_builder.hpp"
 
@@ -80,5 +81,7 @@ inline int64_t enter_user_context(const HAL::CpuContext* ctx) noexcept {
 
 // Activates the process's AddressSpace, enters user mode via HAL, and restores state on return
 int64_t execute_process(Process& proc) noexcept;
+
+void attach_loaded_elf(Process& proc, Loader::LoadedElf&& loaded) noexcept;
 
 } // namespace Kernel::Process

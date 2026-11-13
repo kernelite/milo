@@ -15,6 +15,8 @@ extern const uint8_t el0_tty_echo_start[];
 extern const uint8_t el0_tty_echo_end[];
 extern const uint8_t el0_user_echo_start[];
 extern const uint8_t el0_user_echo_end[];
+extern const uint8_t el0_user_mm_suite_start[];
+extern const uint8_t el0_user_mm_suite_end[];
 
 void* memcpy(void* dest, const void* src, size_t count) noexcept;
 }
@@ -97,6 +99,12 @@ size_t write_user_exit_program(void* dst_kva, int64_t exit_code) noexcept {
     out[2] = 0xD4000001U;                 // svc #0
     out[3] = 0xD65F03C0U;                 // ret
     return 4U * sizeof(uint32_t);
+}
+
+size_t write_user_mm_suite_program(void* dst_kva) noexcept {
+    const auto size = static_cast<size_t>(el0_user_mm_suite_end - el0_user_mm_suite_start);
+    memcpy(dst_kva, el0_user_mm_suite_start, size);
+    return size;
 }
 
 size_t write_user_syscall_suite_program(void* dst_kva, uintptr_t valid_buf_vaddr,

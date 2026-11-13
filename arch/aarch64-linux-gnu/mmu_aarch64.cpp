@@ -472,11 +472,16 @@ bool AddressSpaceBackend::query_user_page(uintptr_t root_paddr, uintptr_t vaddr,
         return false;
     }
 
+    // Privileged-only or PROT_NONE mappings (AP[1] == 0) omit HAL::PageFlags::User so
+    // copy_from_user / copy_to_user reject them with -EFAULT while munmap can reclaim frames.
     out_paddr = (l3_desc & TABLE_ADDR_MASK) | (vaddr & PAGE_OFFSET_MASK);
 
-    HAL::PageFlags flags = HAL::PageFlags::User | HAL::PageFlags::Read;
-    if ((l3_desc & AP_RO_BIT) == 0ULL) {
-        flags |= HAL::PageFlags::Write;
+    HAL::PageFlags flags = HAL::PageFlags::None;
+    if ((l3_desc & AP_USER_BIT) != 0ULL) {
+        flags |= HAL::PageFlags::User | HAL::PageFlags::Read;
+        if ((l3_desc & AP_RO_BIT) == 0ULL) {
+            flags |= HAL::PageFlags::Write;
+        }
     }
     if ((l3_desc & UXN_BIT) == 0ULL) {
         flags |= HAL::PageFlags::Execute;

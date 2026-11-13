@@ -393,3 +393,185 @@ el0_user_echo_start:
     .ascii  "\r\n"
 .balign 4
 el0_user_echo_end:
+
+// ==========================================================================
+// EL0 User Heap (sys_brk) & Anonymous Virtual Memory (sys_mmap/sys_munmap) Test
+// Entry: x0 = pointer to HAL::Test::UserMmSuiteArgs in user memory
+//   [x0, #0] = expected_brk_start (page-aligned end of ELF .bss)
+// Exits via SYS_EXIT (#93) with failure count in x0 (0 == all passed)
+// ==========================================================================
+.global el0_user_mm_suite_start
+.global el0_user_mm_suite_end
+el0_user_mm_suite_start:
+    mov     x20, x0                 // Save args pointer
+    mov     x19, #0                 // Failure accumulator
+    ldr     x21, [x20, #0]          // x21 = expected_brk_start
+
+    // 1) brk(0) -> must return expected_brk_start
+    mov     x8, #214                // SYS_BRK
+    mov     x0, #0
+    svc     #0
+    cmp     x0, x21
+    b.eq    1f
+    add     x19, x19, #1
+1:
+
+    // 2) brk(brk_start - 0x1000) -> below brk_start must return unchanged brk_start
+    mov     x8, #214                // SYS_BRK
+    sub     x0, x21, #0x1000
+    svc     #0
+    cmp     x0, x21
+    b.eq    2f
+    add     x19, x19, #1
+2:
+
+    // 3) Expand brk by 3 pages (brk_start + 0x3000) -> returns new break
+    add     x22, x21, #0x3000       // x22 = target expanded break
+    mov     x8, #214                // SYS_BRK
+    mov     x0, x22
+    svc     #0
+    cmp     x0, x22
+    b.eq    3f
+    add     x19, x19, #1
+3:
+
+    // Verify new heap pages are zero-filled and read/write accessible across all 3 pages
+    ldr     x4, [x21, #0]
+    cbz     x4, 4f
+    add     x19, x19, #1
+4:
+    movz    x5, #0x7788
+    movk    x5, #0x5566, lsl #16
+    movk    x5, #0x3344, lsl #32
+    movk    x5, #0x1122, lsl #48
+    str     x5, [x21, #0]           // Page 0
+    str     x5, [x21, #0x1000]      // Page 1
+    mov     x6, #0x2FF8
+    add     x6, x21, x6             // End of Page 2
+    str     x5, [x6]
+
+    ldr     x4, [x21, #0x1000]
+    cmp     x4, x5
+    b.eq    5f
+    add     x19, x19, #1
+5:
+    ldr     x4, [x6]
+    cmp     x4, x5
+    b.eq    6f
+    add     x19, x19, #1
+6:
+
+    // 4) brk(0x3FFE0000) above heap ceiling -> must fail and return unchanged x22
+    mov     x8, #214                // SYS_BRK
+    mov     x0, #0x3FFE0000
+    svc     #0
+    cmp     x0, x22
+    b.eq    7f
+    add     x19, x19, #1
+7:
+
+    // 5) Shrink brk back to expected_brk_start -> returns x21
+    mov     x8, #214                // SYS_BRK
+    mov     x0, x21
+    svc     #0
+    cmp     x0, x21
+    b.eq    8f
+    add     x19, x19, #1
+8:
+
+    // 6) mmap(0, 2 * 4096, PROT_READ|PROT_WRITE (0x3), MAP_PRIVATE|MAP_ANONYMOUS (0x22), -1, 0)
+    mov     x8, #222                // SYS_MMAP
+    mov     x0, #0
+    mov     x1, #0x2000             // 2 pages (8192 bytes)
+    mov     x2, #0x3                // PROT_READ | PROT_WRITE
+    mov     x3, #0x22               // MAP_PRIVATE | MAP_ANONYMOUS
+    mov     x4, #-1                 // fd = -1
+    mov     x5, #0                  // offset = 0
+    svc     #0
+    mov     x23, x0                 // Save mapped address
+
+    // Verify mapped address is in [0x30000000, 0x3FFE0000) and 4 KiB aligned
+    mov     x3, #0x30000000
+    cmp     x23, x3
+    b.hs    9f
+    add     x19, x19, #1
+9:
+    mov     x3, #0x3FFE0000
+    cmp     x23, x3
+    b.lo    10f
+    add     x19, x19, #1
+10:
+    tst     x23, #0xFFF
+    b.eq    11f
+    add     x19, x19, #1
+11:
+
+    // Verify anonymous mmap pages are zero-filled and read/write accessible
+    ldr     x4, [x23, #0]
+    cbz     x4, 12f
+    add     x19, x19, #1
+12:
+    movz    x5, #0x5678
+    movk    x5, #0x1234, lsl #16
+    movk    x5, #0xBABE, lsl #32
+    movk    x5, #0xCAFE, lsl #48
+    str     x5, [x23, #0]
+    str     x5, [x23, #0x1FF8]
+    ldr     x4, [x23, #0x1FF8]
+    cmp     x4, x5
+    b.eq    13f
+    add     x19, x19, #1
+13:
+
+    // 7) mmap with unaligned length (1234) -> -22 (-EINVAL)
+    mov     x8, #222                // SYS_MMAP
+    mov     x0, #0
+    mov     x1, #1234
+    mov     x2, #0x3
+    mov     x3, #0x22
+    mov     x4, #-1
+    mov     x5, #0
+    svc     #0
+    cmn     x0, #22
+    b.eq    14f
+    add     x19, x19, #1
+14:
+
+    // 8) mmap without MAP_ANONYMOUS (flags = MAP_PRIVATE = 0x2) -> -22 (-EINVAL)
+    mov     x8, #222                // SYS_MMAP
+    mov     x0, #0
+    mov     x1, #0x1000
+    mov     x2, #0x3
+    mov     x3, #0x2
+    mov     x4, #-1
+    mov     x5, #0
+    svc     #0
+    cmn     x0, #22
+    b.eq    15f
+    add     x19, x19, #1
+15:
+
+    // 9) munmap with unaligned address -> -22 (-EINVAL)
+    mov     x8, #215                // SYS_MUNMAP
+    add     x0, x23, #16
+    mov     x1, #0x1000
+    svc     #0
+    cmn     x0, #22
+    b.eq    16f
+    add     x19, x19, #1
+16:
+
+    // 10) munmap valid mapped region -> 0
+    mov     x8, #215                // SYS_MUNMAP
+    mov     x0, x23
+    mov     x1, #0x2000
+    svc     #0
+    cbz     x0, 17f
+    add     x19, x19, #1
+17:
+
+    // Exit with failure count
+    mov     x8, #93                 // SYS_EXIT
+    mov     x0, x19
+    svc     #0
+el0_user_mm_suite_end:
