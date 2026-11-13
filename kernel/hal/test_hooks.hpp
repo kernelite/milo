@@ -22,6 +22,10 @@ struct TtyEchoArgs {
     uint64_t line_buf_cap;
 };
 
+struct UserMmSuiteArgs {
+    uint64_t expected_brk_start;
+};
+
 // Read-Only (.rodata) fault test hooks
 uintptr_t get_ro_target_address() noexcept;
 void trigger_ro_fault() noexcept;
@@ -46,5 +50,6 @@ size_t write_user_syscall_suite_program(void* dst_kva, uintptr_t valid_buf_vaddr
 size_t write_user_tty_ioctl_suite_program(void* dst_kva) noexcept;
 size_t write_user_tty_echo_program(void* dst_kva) noexcept;
 size_t write_user_echo_program(void* dst_kva) noexcept;
+size_t write_user_mm_suite_program(void* dst_kva) noexcept;
 
 } // namespace HAL::Test

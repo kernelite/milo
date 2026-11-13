@@ -3,6 +3,7 @@
 #include "hal/mmu.hpp"
 #include "hal/trap.hpp"
 #include "mm/address_space.hpp"
+#include "mm/pfa.hpp"
 #include "process/process.hpp"
 
 #include <cstddef>
@@ -18,13 +19,31 @@ constexpr uint64_t SYS_EXIT = 93U;
 constexpr uint64_t SYS_EXIT_GROUP = 94U;
 constexpr uint64_t SYS_GETPID = 172U;
 constexpr uint64_t SYS_GETPPID = 173U;
+constexpr uint64_t SYS_BRK = 214U;
+constexpr uint64_t SYS_MUNMAP = 215U;
+constexpr uint64_t SYS_MMAP = 222U;
 
 // Negated POSIX Error Codes
 constexpr int64_t ERR_EBADF = -9;
+constexpr int64_t ERR_ENOMEM = -12;
 constexpr int64_t ERR_EFAULT = -14;
 constexpr int64_t ERR_EINVAL = -22;
 constexpr int64_t ERR_ENOTTY = -25;
 constexpr int64_t ERR_ENOSYS = -38;
+
+// Linux asm-generic mmap Protection & Mapping Flags
+constexpr uint64_t PROT_NONE = 0x0U;
+constexpr uint64_t PROT_READ = 0x1U;
+constexpr uint64_t PROT_WRITE = 0x2U;
+constexpr uint64_t PROT_EXEC = 0x4U;
+
+constexpr uint64_t MAP_SHARED = 0x01U;
+constexpr uint64_t MAP_PRIVATE = 0x02U;
+constexpr uint64_t MAP_FIXED = 0x10U;
+constexpr uint64_t MAP_ANONYMOUS = 0x20U;
+
+// Downward-growing anonymous mmap arena floor (ceiling is below 64 KiB stack at 0x3FFE0000)
+constexpr uintptr_t MMAP_ARENA_FLOOR = 0x0000000030000000ULL;
 
 // Linux asm-generic Terminal ioctl Request Codes
 constexpr uint64_t IOCTL_TCGETS = 0x5401U;
@@ -80,6 +99,19 @@ ktermios g_console_termios{
     .c_cc = {0x03U, 0x1CU, 0x7FU, 0x15U, 0x04U, 0x00U, 0x01U, 0x00U, 0x11U, 0x13U, 0x1AU, 0x00U,
              0x12U, 0x0FU, 0x17U, 0x16U, 0x00U, 0x00U, 0x00U},
 };
+
+void unmap_and_free_range(Kernel::MM::AddressSpace& adrsp, uintptr_t start_vaddr,
+                          uintptr_t end_vaddr, size_t page_size) noexcept {
+    const uintptr_t page_mask = page_size - 1U;
+    for (uintptr_t page_vaddr = start_vaddr; page_vaddr < end_vaddr; page_vaddr += page_size) {
+        uintptr_t out_paddr = 0U;
+        HAL::PageFlags out_flags = HAL::PageFlags::None;
+        if (adrsp.query_user_page(page_vaddr, out_paddr, out_flags)) {
+            adrsp.unmap_user_page(page_vaddr);
+            free_frame(out_paddr & ~page_mask);
+        }
+    }
+}
 
 bool validate_user_range(uintptr_t root_paddr, uintptr_t user_buf, size_t count,
                          HAL::PageFlags required_perm) noexcept {
@@ -361,6 +393,178 @@ int64_t sys_getppid() noexcept {
     return (proc != nullptr) ? static_cast<int64_t>(proc->ppid) : 0;
 }
 
+int64_t sys_brk(uintptr_t addr) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return 0;
+    }
+
+    if (addr == 0U || addr < proc->brk_start) {
+        return static_cast<int64_t>(proc->brk_current);
+    }
+
+    const auto platform = HAL::get_platform_info();
+    const uintptr_t stack_floor =
+        platform.user_stack_top - Kernel::Process::DEFAULT_USER_STACK_SIZE;
+    uintptr_t brk_ceiling = (MMAP_ARENA_FLOOR < stack_floor) ? MMAP_ARENA_FLOOR : stack_floor;
+    if (proc->mmap_next_vaddr < brk_ceiling) {
+        brk_ceiling = proc->mmap_next_vaddr;
+    }
+
+    if (addr > brk_ceiling) {
+        return static_cast<int64_t>(proc->brk_current);
+    }
+
+    const size_t page_size = platform.page_size;
+    const uintptr_t page_mask = page_size - 1U;
+    const uintptr_t old_page_end = (proc->brk_current + page_mask) & ~page_mask;
+    const uintptr_t new_page_end = (addr + page_mask) & ~page_mask;
+
+    if (new_page_end > old_page_end) {
+        const HAL::PageFlags heap_flags =
+            HAL::PageFlags::User | HAL::PageFlags::Read | HAL::PageFlags::Write;
+
+        for (uintptr_t page_vaddr = old_page_end; page_vaddr < new_page_end;
+             page_vaddr += page_size) {
+            const uintptr_t paddr = alloc_frame();
+            if (paddr == 0U) {
+                unmap_and_free_range(proc->address_space, old_page_end, page_vaddr, page_size);
+                return static_cast<int64_t>(proc->brk_current);
+            }
+
+            auto* const kva = reinterpret_cast<uint8_t*>(Kernel::MM::phys_to_virt(paddr));
+            for (size_t i = 0U; i < page_size; ++i) {
+                kva[i] = 0U;
+            }
+            HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(kva), page_size);
+
+            if (!proc->address_space.map_user_page(page_vaddr, paddr, heap_flags)) {
+                free_frame(paddr);
+                unmap_and_free_range(proc->address_space, old_page_end, page_vaddr, page_size);
+                return static_cast<int64_t>(proc->brk_current);
+            }
+        }
+    } else if (new_page_end < old_page_end) {
+        unmap_and_free_range(proc->address_space, new_page_end, old_page_end, page_size);
+    }
+
+    proc->brk_current = addr;
+    return static_cast<int64_t>(proc->brk_current);
+}
+
+int64_t sys_mmap(uintptr_t addr, uint64_t length, uint64_t prot, uint64_t flags, uint64_t raw_fd,
+                 uint64_t offset) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+
+    const size_t page_size = HAL::get_platform_info().page_size;
+    const uintptr_t page_mask = page_size - 1U;
+
+    if (length == 0U || (length & page_mask) != 0U) {
+        return ERR_EINVAL;
+    }
+    if ((prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) != 0U) {
+        return ERR_EINVAL;
+    }
+    if ((flags & MAP_ANONYMOUS) == 0U || (flags & MAP_PRIVATE) == 0U) {
+        return ERR_EINVAL;
+    }
+    if ((flags & (MAP_SHARED | MAP_FIXED)) != 0U) {
+        return ERR_EINVAL;
+    }
+    if (static_cast<int64_t>(raw_fd) != -1 || offset != 0U) {
+        return ERR_EINVAL;
+    }
+    (void)addr;
+
+    const uintptr_t arena_top = proc->mmap_next_vaddr;
+    if (length > arena_top || (arena_top - static_cast<uintptr_t>(length)) < MMAP_ARENA_FLOOR) {
+        return ERR_ENOMEM;
+    }
+
+    const uintptr_t map_start = arena_top - static_cast<uintptr_t>(length);
+    if (map_start <= proc->brk_current) {
+        return ERR_ENOMEM;
+    }
+
+    HAL::PageFlags page_flags = HAL::PageFlags::None;
+    if (prot != PROT_NONE) {
+        page_flags = HAL::PageFlags::User;
+        if ((prot & PROT_READ) != 0U) {
+            page_flags |= HAL::PageFlags::Read;
+        }
+        if ((prot & PROT_WRITE) != 0U) {
+            page_flags |= HAL::PageFlags::Write;
+        }
+        if ((prot & PROT_EXEC) != 0U) {
+            page_flags |= HAL::PageFlags::Execute;
+        }
+    }
+
+    for (uintptr_t page_vaddr = map_start; page_vaddr < arena_top; page_vaddr += page_size) {
+        const uintptr_t paddr = alloc_frame();
+        if (paddr == 0U) {
+            unmap_and_free_range(proc->address_space, map_start, page_vaddr, page_size);
+            return ERR_ENOMEM;
+        }
+
+        auto* const kva = reinterpret_cast<uint8_t*>(Kernel::MM::phys_to_virt(paddr));
+        for (size_t i = 0U; i < page_size; ++i) {
+            kva[i] = 0U;
+        }
+        HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(kva), page_size);
+
+        if (!proc->address_space.map_user_page(page_vaddr, paddr, page_flags)) {
+            free_frame(paddr);
+            unmap_and_free_range(proc->address_space, map_start, page_vaddr, page_size);
+            return ERR_ENOMEM;
+        }
+    }
+
+    if ((prot & PROT_EXEC) != 0U) {
+        HAL::get_cpu().invalidate_icache();
+    }
+
+    proc->mmap_next_vaddr = map_start;
+    return static_cast<int64_t>(map_start);
+}
+
+int64_t sys_munmap(uintptr_t addr, uint64_t length) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+
+    const auto platform = HAL::get_platform_info();
+    const size_t page_size = platform.page_size;
+    const uintptr_t page_mask = page_size - 1U;
+    const uintptr_t va_limit = Kernel::MM::user_addr_space_limit();
+    const uintptr_t stack_floor =
+        platform.user_stack_top - Kernel::Process::DEFAULT_USER_STACK_SIZE;
+
+    if ((addr & page_mask) != 0U || length == 0U || (length & page_mask) != 0U) {
+        return ERR_EINVAL;
+    }
+    if (addr >= va_limit || length > (va_limit - addr)) {
+        return ERR_EINVAL;
+    }
+
+    const uintptr_t end_addr = addr + static_cast<uintptr_t>(length);
+    if (addr < MMAP_ARENA_FLOOR || end_addr > stack_floor) {
+        return ERR_EINVAL;
+    }
+
+    unmap_and_free_range(proc->address_space, addr, end_addr, page_size);
+
+    if (addr == proc->mmap_next_vaddr) {
+        proc->mmap_next_vaddr = end_addr;
+    }
+
+    return 0;
+}
+
 } // namespace
 
 namespace Kernel {
@@ -407,6 +611,22 @@ class SyscallDispatcher : public HAL::TrapHandler {
 
         case SYS_GETPPID:
             ret_val = sys_getppid();
+            break;
+
+        case SYS_BRK:
+            ret_val = sys_brk(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)));
+            break;
+
+        case SYS_MUNMAP:
+            ret_val = sys_munmap(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)),
+                                 cpu.get_syscall_arg(ctx, 1U));
+            break;
+
+        case SYS_MMAP:
+            ret_val = sys_mmap(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)),
+                               cpu.get_syscall_arg(ctx, 1U), cpu.get_syscall_arg(ctx, 2U),
+                               cpu.get_syscall_arg(ctx, 3U), cpu.get_syscall_arg(ctx, 4U),
+                               cpu.get_syscall_arg(ctx, 5U));
             break;
 
         default:

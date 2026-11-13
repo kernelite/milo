@@ -71,6 +71,7 @@ Result<LoadedElf, ElfLoaderError> load_elf(const uint8_t* elf_data, size_t elf_s
     const size_t page_size = HAL::get_platform_info().page_size;
     SegmentAllocationRecord tracked_allocations[MAX_TRACKED_SEGMENTS];
     size_t tracked_count = 0U;
+    uintptr_t max_vaddr = 0U;
 
     auto rollback_and_abort = [&](ElfLoaderError err) -> Result<LoadedElf, ElfLoaderError> {
         for (size_t i = 0U; i < tracked_count; ++i) {
@@ -98,6 +99,10 @@ Result<LoadedElf, ElfLoaderError> load_elf(const uint8_t* elf_data, size_t elf_s
         const uint64_t start_page = seg.vaddr & ~page_mask;
         const uint64_t end_page = (seg.vaddr + seg.memsz + page_mask) & ~page_mask;
         const size_t num_pages = static_cast<size_t>((end_page - start_page) / page_size);
+
+        if (end_page > max_vaddr) {
+            max_vaddr = static_cast<uintptr_t>(end_page);
+        }
 
         if (tracked_count >= MAX_TRACKED_SEGMENTS) {
             pipeline_failed = true;
@@ -169,6 +174,7 @@ Result<LoadedElf, ElfLoaderError> load_elf(const uint8_t* elf_data, size_t elf_s
     return LoadedElf{
         .address_space = static_cast<MM::AddressSpace&&>(address_space),
         .entry_point = elf.entry_point(),
+        .max_vaddr = max_vaddr,
         .loaded_segment_count = tracked_count,
     };
 }

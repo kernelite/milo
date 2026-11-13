@@ -1192,6 +1192,114 @@ void cmd_test_tty_echo() noexcept {
     Kernel::Process::release_process(*proc);
 }
 
+void cmd_test_user_mm() noexcept {
+    print_str("\r\n[TEST] Running User Heap (sys_brk) & Anonymous Virtual Memory "
+              "(sys_mmap/sys_munmap) Suite...\r\n");
+
+    const size_t pages_before = pfa_allocated_pages_count();
+    const size_t procs_before = Kernel::Process::active_process_count();
+
+    // Synthesize a 2-segment ELF (Code RX at 0x400100, Data RW + BSS at 0x401540..0x4016C0)
+    alignas(16) static uint8_t synth_elf[2048]{};
+    for (size_t i = 0U; i < sizeof(synth_elf); ++i) {
+        synth_elf[i] = 0U;
+    }
+
+    auto* const ehdr = reinterpret_cast<Elf64_Ehdr*>(synth_elf);
+    ehdr->e_ident[EI_MAG0] = ELFMAG0;
+    ehdr->e_ident[EI_MAG1] = ELFMAG1;
+    ehdr->e_ident[EI_MAG2] = ELFMAG2;
+    ehdr->e_ident[EI_MAG3] = ELFMAG3;
+    ehdr->e_ident[EI_CLASS] = ELFCLASS64;
+    ehdr->e_ident[EI_DATA] = ELFDATA2LSB;
+    ehdr->e_ident[EI_VERSION] = EV_CURRENT;
+    ehdr->e_ident[EI_OSABI] = ELFOSABI_SYSV;
+    ehdr->e_type = ET_EXEC;
+    ehdr->e_machine = HAL::get_platform_info().elf_machine;
+    ehdr->e_version = EV_CURRENT;
+    ehdr->e_entry = 0x0000000000400100ULL;
+    ehdr->e_phoff = 64U;
+    ehdr->e_ehsize = sizeof(Elf64_Ehdr);
+    ehdr->e_phentsize = sizeof(Elf64_Phdr);
+    ehdr->e_phnum = 2U;
+
+    auto* const phdrs = reinterpret_cast<Elf64_Phdr*>(synth_elf + 64U);
+
+    // Segment 0: Code RX (p_offset = 0x100, p_vaddr = 0x400100)
+    const size_t code_bytes = HAL::Test::write_user_mm_suite_program(synth_elf + 0x100U);
+    phdrs[0].p_type = PT_LOAD;
+    phdrs[0].p_flags = PF_R | PF_X;
+    phdrs[0].p_offset = 0x100U;
+    phdrs[0].p_vaddr = 0x0000000000400100ULL;
+    phdrs[0].p_paddr = 0x0000000000400100ULL;
+    phdrs[0].p_filesz = code_bytes;
+    phdrs[0].p_memsz = code_bytes;
+    phdrs[0].p_align = 0x1000U;
+
+    // Segment 1: Data RW + .bss (p_offset = 0x540, p_vaddr = 0x401540, p_memsz = 0x180 ->
+    // page-aligned ceiling is 0x402000)
+    phdrs[1].p_type = PT_LOAD;
+    phdrs[1].p_flags = PF_R | PF_W;
+    phdrs[1].p_offset = 0x540U;
+    phdrs[1].p_vaddr = 0x0000000000401540ULL;
+    phdrs[1].p_paddr = 0x0000000000401540ULL;
+    phdrs[1].p_filesz = 0x40U;
+    phdrs[1].p_memsz = 0x180U;
+    phdrs[1].p_align = 0x1000U;
+
+    auto load_res = Kernel::Loader::load_elf(synth_elf, sizeof(synth_elf));
+    assert_test(load_res.is_ok(), "Loaded multi-segment ELF with .bss segment");
+    if (!load_res.is_ok()) {
+        return;
+    }
+
+    constexpr uintptr_t EXPECTED_BRK_START = 0x0000000000402000ULL;
+    assert_test(load_res->max_vaddr == EXPECTED_BRK_START,
+                "LoadedElf::max_vaddr equals page-aligned end of .bss (0x402000)");
+
+    auto* const proc = Kernel::Process::allocate_process(0U);
+    assert_test(proc != nullptr, "Allocated PCB for user_mm test");
+    if (proc == nullptr) {
+        load_res->address_space.destroy();
+        return;
+    }
+
+    Kernel::Process::attach_loaded_elf(*proc, static_cast<Kernel::Loader::LoadedElf&&>(*load_res));
+    assert_test(proc->brk_start == EXPECTED_BRK_START && proc->brk_current == EXPECTED_BRK_START,
+                "PCB brk_start and brk_current initialized to LoadedElf::max_vaddr");
+
+    constexpr uintptr_t ARGS_VADDR = 0x0000000000401540ULL;
+    const HAL::Test::UserMmSuiteArgs mm_args{.expected_brk_start = EXPECTED_BRK_START};
+    Kernel::MM::copy_to_user(proc->address_space, ARGS_VADDR, &mm_args, sizeof(mm_args));
+
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space);
+    assert_test(stack_res.is_ok(), "Allocated and mapped user stack");
+    if (!stack_res.is_ok()) {
+        Kernel::Process::release_process(*proc);
+        return;
+    }
+    proc->user_stack = stack_res.value();
+
+    const char* const argv[] = {"user_mm_test"};
+    Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack, 1, argv);
+
+    Kernel::Process::init_user_cpu_context(proc->context, proc->entry_point,
+                                           proc->user_stack.final_sp_el0, ARGS_VADDR, 0ULL);
+
+    const int64_t exit_status = Kernel::Process::execute_process(*proc);
+    assert_test(exit_status == 0,
+                "EL0 sys_brk (expand/shrink/ceiling) & sys_mmap/sys_munmap verified");
+    assert_test(proc->brk_current == EXPECTED_BRK_START,
+                "Shrinking brk restored brk_current to brk_start");
+
+    Kernel::Process::release_process(*proc);
+
+    assert_test(Kernel::Process::active_process_count() == procs_before,
+                "PCB slot released cleanly back to static process table");
+    assert_test(pfa_allocated_pages_count() == pages_before,
+                "All ELF, heap, mmap, stack, and page-table frames freed cleanly");
+}
+
 void print_help() noexcept {
     print_str("\r\nAvailable Commands:\r\n");
     print_str("  help            - Display this menu\r\n");
@@ -1222,6 +1330,7 @@ void print_help() noexcept {
     print_str("  test uxn_fault  - Run user stack execute-never (UXN) fault test\r\n");
     print_str("  test syscall    - Test PCB lifecycle, user copy validation & syscall ABI\r\n");
     print_str("  test tty_echo   - Run interactive EL0 TTY read/write echo test\r\n");
+    print_str("  test user_mm    - Test user heap (sys_brk) & anonymous sys_mmap/sys_munmap\r\n");
     print_str("  halt            - Put CPU into low-power WFI state\r\n");
 }
 
@@ -1278,6 +1387,8 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_syscall();
     } else if (streq(buf, "test tty_echo")) {
         cmd_test_tty_echo();
+    } else if (streq(buf, "test user_mm")) {
+        cmd_test_user_mm();
     } else if (streq(buf, "halt")) {
         print_str("[INFO] Halting CPU. Use QEMU 'Ctrl-A X' to exit.\r\n");
         HAL::get_cpu().halt();
@@ -1304,6 +1415,7 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_user_echo();
         cmd_test_uxn_fault();
         cmd_test_syscall();
+        cmd_test_user_mm();
     } else if (buf[0] != '\0') {
         print_str("Unknown command: '");
         print_str(buf);

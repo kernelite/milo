@@ -152,4 +152,13 @@ int64_t execute_process(Process& proc) noexcept {
     return exit_code;
 }
 
+void attach_loaded_elf(Process& proc, Loader::LoadedElf&& loaded) noexcept {
+    proc.address_space = static_cast<MM::AddressSpace&&>(loaded.address_space);
+    proc.entry_point = loaded.entry_point;
+    if (loaded.max_vaddr != 0U) {
+        proc.brk_start = loaded.max_vaddr;
+        proc.brk_current = loaded.max_vaddr;
+    }
+}
+
 } // namespace Kernel::Process

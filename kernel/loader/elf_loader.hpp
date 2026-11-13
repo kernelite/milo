@@ -31,6 +31,7 @@ enum class ElfLoaderError {
 struct LoadedElf {
     Kernel::MM::AddressSpace address_space;
     uintptr_t entry_point{0U};
+    uintptr_t max_vaddr{0U};
     size_t loaded_segment_count{0U};
 };
 
