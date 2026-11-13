@@ -64,6 +64,7 @@ struct ProcessContext {
 Process* allocate_process(uint32_t ppid = 0U) noexcept;
 void release_process(Process& proc) noexcept;
 Process* find_process_by_pid(uint32_t pid) noexcept;
+Process* process_at(size_t index) noexcept;
 size_t active_process_count() noexcept;
 
 Process* current_process() noexcept;

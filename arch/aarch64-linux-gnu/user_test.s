@@ -627,3 +627,162 @@ el0_proc_lifecycle_suite_start:
     mov     x0, #3
     svc     #0
 el0_proc_lifecycle_suite_end:
+
+// ==========================================================================
+// EL0 Fork (SYS_CLONE) + Execve (SYS_EXECVE) + Wait4 (SYS_WAIT4) Suite
+// Entry: x0 = pointer to HAL::Test::ForkExecSuiteArgs in user memory
+//   [x0, #0]  = exec_path_vaddr ("/bin/hello")
+//   [x0, #8]  = bad_path_vaddr  ("/nonexistent")
+//   [x0, #16] = argv_vaddr
+//   [x0, #24] = envp_vaddr
+//   [x0, #32] = wstatus_vaddr
+//   [x0, #40] = canary_vaddr
+// ==========================================================================
+.global el0_fork_exec_suite_start
+.global el0_fork_exec_suite_end
+el0_fork_exec_suite_start:
+    mov     x20, x0                 // x20 = ForkExecSuiteArgs*
+    mov     x19, #0                 // x19 = failure count
+
+    // 1) wait4(-1, wstatus, 0, NULL) with no children -> -10 (-ECHILD)
+    mov     x8, #260                // SYS_WAIT4
+    mov     x0, #-1
+    ldr     x1, [x20, #32]
+    mov     x2, #0
+    mov     x3, #0
+    svc     #0
+    cmn     x0, #10
+    b.eq    1f
+    add     x19, x19, #1
+1:
+    // Set canary value in parent memory and a sentinel in callee-saved x21
+    ldr     x4, [x20, #40]          // canary_vaddr
+    movz    x5, #0x7788
+    movk    x5, #0x5566, lsl #16
+    movk    x5, #0x3344, lsl #32
+    movk    x5, #0x1122, lsl #48
+    str     x5, [x4]
+
+    movz    x21, #0x5678
+    movk    x21, #0x1234, lsl #16
+    movk    x21, #0xBABE, lsl #32
+    movk    x21, #0xCAFE, lsl #48
+
+    // 2) clone(SIGCHLD=17, stack=0, NULL, 0, NULL)
+    mov     x8, #220                // SYS_CLONE
+    mov     x0, #17                 // SIGCHLD
+    mov     x1, #0                  // inherit sp_el0
+    mov     x2, #0
+    mov     x3, #0
+    mov     x4, #0
+    svc     #0
+
+    cmp     x0, #0
+    b.lt    .Lfork_fail
+    cbz     x0, .Lfork_child
+
+    // --- Parent branch (x0 == child_pid) ---
+    mov     x22, x0                 // x22 = child_pid
+
+    // 3) wait4(-1, wstatus_vaddr, 0, NULL) -> must return child_pid and wstatus == (77 << 8)
+    mov     x8, #260                // SYS_WAIT4
+    mov     x0, #-1
+    ldr     x1, [x20, #32]
+    mov     x2, #0
+    mov     x3, #0
+    svc     #0
+    cmp     x0, x22
+    b.eq    2f
+    add     x19, x19, #1
+2:
+    ldr     x1, [x20, #32]
+    ldr     w4, [x1]
+    mov     w5, #(77 << 8)
+    cmp     w4, w5
+    b.eq    3f
+    add     x19, x19, #1
+3:
+    // 4) Verify parent canary was not modified by child's write (address space isolation)
+    ldr     x4, [x20, #40]
+    ldr     x6, [x4]
+    movz    x5, #0x7788
+    movk    x5, #0x5566, lsl #16
+    movk    x5, #0x3344, lsl #32
+    movk    x5, #0x1122, lsl #48
+    cmp     x6, x5
+    b.eq    4f
+    add     x19, x19, #1
+4:
+    // 5) Subsequent wait4(-1, ...) must return -10 (-ECHILD)
+    mov     x8, #260                // SYS_WAIT4
+    mov     x0, #-1
+    ldr     x1, [x20, #32]
+    mov     x2, #0
+    mov     x3, #0
+    svc     #0
+    cmn     x0, #10
+    b.eq    5f
+    add     x19, x19, #1
+5:
+    mov     x8, #93                 // SYS_EXIT
+    mov     x0, x19
+    svc     #0
+
+.Lfork_fail:
+    mov     x8, #93                 // SYS_EXIT
+    mov     x0, #99
+    svc     #0
+
+    // --- Child branch (x0 == 0) ---
+.Lfork_child:
+    // Verify callee-saved x21 survived clone intact
+    movz    x5, #0x5678
+    movk    x5, #0x1234, lsl #16
+    movk    x5, #0xBABE, lsl #32
+    movk    x5, #0xCAFE, lsl #48
+    cmp     x21, x5
+    b.ne    .Lchild_fail
+
+    // Verify cloned canary matches parent's value, then overwrite in child's isolated page
+    ldr     x4, [x20, #40]
+    ldr     x6, [x4]
+    movz    x5, #0x7788
+    movk    x5, #0x5566, lsl #16
+    movk    x5, #0x3344, lsl #32
+    movk    x5, #0x1122, lsl #48
+    cmp     x6, x5
+    b.ne    .Lchild_fail
+
+    movz    x7, #0xDEAD
+    movk    x7, #0xDEAD, lsl #16
+    movk    x7, #0xDEAD, lsl #32
+    movk    x7, #0xDEAD, lsl #48
+    str     x7, [x4]
+
+    // Failed execve("/nonexistent", argv, envp) -> must return -2 (-ENOENT) and preserve memory
+    mov     x8, #221                // SYS_EXECVE
+    ldr     x0, [x20, #8]           // bad_path_vaddr
+    ldr     x1, [x20, #16]          // argv_vaddr
+    ldr     x2, [x20, #24]          // envp_vaddr
+    svc     #0
+    cmn     x0, #2
+    b.ne    .Lchild_fail
+
+    // Verify child's address space is still intact after failed execve
+    ldr     x4, [x20, #40]
+    ldr     x6, [x4]
+    cmp     x6, x7
+    b.ne    .Lchild_fail
+
+    // Valid execve("/bin/hello", argv, envp) -> replaces image and exits with status 77
+    mov     x8, #221                // SYS_EXECVE
+    ldr     x0, [x20, #0]           // exec_path_vaddr
+    ldr     x1, [x20, #16]          // argv_vaddr
+    ldr     x2, [x20, #24]          // envp_vaddr
+    svc     #0
+
+.Lchild_fail:
+    mov     x8, #93                 // SYS_EXIT
+    mov     x0, #88
+    svc     #0
+el0_fork_exec_suite_end:

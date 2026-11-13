@@ -4,6 +4,8 @@
 
 namespace {
 
+extern "C" uint64_t kernel_ctx[13];
+
 Kernel::Process::Process g_process_table[Kernel::Process::MAX_PROCESSES]{};
 Kernel::Process::Process* g_current_process = nullptr;
 uint32_t g_next_pid = 1U;
@@ -140,6 +142,10 @@ int64_t execute_process(Process& proc) noexcept {
 
     const uintptr_t orig_root = MM::AddressSpace::current_root_paddr();
     Process* const prev_proc = g_current_process;
+    uint64_t saved_kernel_ctx[13]{};
+    for (size_t idx = 0U; idx < 13U; ++idx) {
+        saved_kernel_ctx[idx] = kernel_ctx[idx];
+    }
 
     proc.state = ProcessState::Running;
     g_current_process = &proc;
@@ -147,6 +153,9 @@ int64_t execute_process(Process& proc) noexcept {
 
     const int64_t exit_code = HAL::get_cpu().enter_user_context(proc.context);
 
+    for (size_t idx = 0U; idx < 13U; ++idx) {
+        kernel_ctx[idx] = saved_kernel_ctx[idx];
+    }
     MM::AddressSpace::activate_root(orig_root);
     g_current_process = prev_proc;
     return exit_code;
@@ -159,6 +168,13 @@ void attach_loaded_elf(Process& proc, Loader::LoadedElf&& loaded) noexcept {
         proc.brk_start = loaded.max_vaddr;
         proc.brk_current = loaded.max_vaddr;
     }
+}
+
+Process* process_at(size_t index) noexcept {
+    if (index >= MAX_PROCESSES) {
+        return nullptr;
+    }
+    return &g_process_table[index];
 }
 
 } // namespace Kernel::Process

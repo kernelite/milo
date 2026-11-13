@@ -56,8 +56,14 @@ $(BUILD_DIR)/%.o: %.s
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) $< -o $@
 
+# Standalone EL0 ELF payload embedded into initrd at /bin/hello
+$(ROOTFS_DIR)/bin/hello: user/hello.s
+	@mkdir -p $(dir $@) $(BUILD_DIR)/user
+	$(AS) $(ASFLAGS) $< -o $(BUILD_DIR)/user/hello.o
+	$(LD) -nostdlib -z max-page-size=0x1000 -e _start -Ttext=0x00400000 -o $@ $(BUILD_DIR)/user/hello.o
+
 # CPIO Archive Generation (Minimal RAMDisk Payload)
-$(ROOTFS_CPIO):
+$(ROOTFS_CPIO): $(ROOTFS_DIR)/bin/hello
 	@mkdir -p $(ROOTFS_DIR)
 	@echo "milo-initrd-v1" > $(ROOTFS_DIR)/init.txt
 	@cd $(ROOTFS_DIR) && find . | cpio -o -H newc > ../rootfs.cpio 2>/dev/null

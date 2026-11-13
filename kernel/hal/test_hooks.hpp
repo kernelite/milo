@@ -26,6 +26,15 @@ struct UserMmSuiteArgs {
     uint64_t expected_brk_start;
 };
 
+struct ForkExecSuiteArgs {
+    uint64_t exec_path_vaddr;
+    uint64_t bad_path_vaddr;
+    uint64_t argv_vaddr;
+    uint64_t envp_vaddr;
+    uint64_t wstatus_vaddr;
+    uint64_t canary_vaddr;
+};
+
 // Read-Only (.rodata) fault test hooks
 uintptr_t get_ro_target_address() noexcept;
 void trigger_ro_fault() noexcept;
@@ -52,5 +61,6 @@ size_t write_user_tty_echo_program(void* dst_kva) noexcept;
 size_t write_user_echo_program(void* dst_kva) noexcept;
 size_t write_user_mm_suite_program(void* dst_kva) noexcept;
 size_t write_user_proc_lifecycle_program(void* dst_kva) noexcept;
+size_t write_user_fork_exec_program(void* dst_kva) noexcept;
 
 } // namespace HAL::Test
