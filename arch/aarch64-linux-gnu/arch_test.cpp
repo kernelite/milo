@@ -8,6 +8,13 @@ void user_space_code();
 int64_t enter_user_mode(uintptr_t entry_point, uintptr_t user_sp);
 void trigger_svc_test();
 void el0_sysreg_test_entry() noexcept;
+
+extern const uint8_t el0_tty_ioctl_suite_start[];
+extern const uint8_t el0_tty_ioctl_suite_end[];
+extern const uint8_t el0_tty_echo_start[];
+extern const uint8_t el0_tty_echo_end[];
+
+void* memcpy(void* dest, const void* src, size_t count) noexcept;
 }
 
 namespace {
@@ -71,8 +78,6 @@ void trigger_user_syscall_test() noexcept {
     enter_user_mode(reinterpret_cast<uint64_t>(trigger_svc_test), user_sp);
     asm volatile("" ::: "memory"); // Prevent tail-call optimization
 }
-
-// Add to arch/aarch64-linux-gnu/arch_test.cpp inside namespace HAL::Test:
 
 uintptr_t get_privileged_mmio_probe_address() noexcept {
     return 0x0000000009000000ULL; // QEMU virt PL011 UART MMIO (AP[1] == 0)
@@ -163,6 +168,18 @@ size_t write_user_syscall_suite_program(void* dst_kva, uintptr_t valid_buf_vaddr
     out[idx++] = 0xD4000001U; // svc #0
 
     return idx * sizeof(uint32_t);
+}
+
+size_t write_user_tty_ioctl_suite_program(void* dst_kva) noexcept {
+    const auto size = static_cast<size_t>(el0_tty_ioctl_suite_end - el0_tty_ioctl_suite_start);
+    memcpy(dst_kva, el0_tty_ioctl_suite_start, size);
+    return size;
+}
+
+size_t write_user_tty_echo_program(void* dst_kva) noexcept {
+    const auto size = static_cast<size_t>(el0_tty_echo_end - el0_tty_echo_start);
+    memcpy(dst_kva, el0_tty_echo_start, size);
+    return size;
 }
 
 } // namespace HAL::Test
