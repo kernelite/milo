@@ -241,52 +241,34 @@ enter_user_context:
     mov     x3, sp
     str     x3,       [x2, #96]
 
-    ldr     x1, [x0, #248]
+    mov     x9, x0
+
+    ldr     x1, [x9, #248]
     msr     sp_el0, x1
-    ldr     x1, [x0, #256]
+    ldr     x1, [x9, #256]
     msr     elr_el1, x1
-    ldr     x1, [x0, #264]
+    ldr     x1, [x9, #264]
     msr     spsr_el1, x1
 
-    ldr     x2, [x0, #0]         // x0 (argc)
-    ldr     x3, [x0, #8]         // x1 (argv)
-
-    mov     x4, #0
-    mov     x5, #0
-    mov     x6, #0
-    mov     x7, #0
-    mov     x8, #0
-    mov     x9, #0
-    mov     x10, #0
-    mov     x11, #0
-    mov     x12, #0
-    mov     x13, #0
-    mov     x14, #0
-    mov     x15, #0
-    mov     x16, #0
-    mov     x17, #0
-    mov     x18, #0
-    mov     x19, #0
-    mov     x20, #0
-    mov     x21, #0
-    mov     x22, #0
-    mov     x23, #0
-    mov     x24, #0
-    mov     x25, #0
-    mov     x26, #0
-    mov     x27, #0
-    mov     x28, #0
-    mov     x29, #0
-    mov     x30, #0
-
-    mov     x0, x2
-    mov     x1, x3
-    mov     x2, #0
-    mov     x3, #0
+    ldp     x0,  x1,  [x9, #0]
+    ldp     x2,  x3,  [x9, #16]
+    ldp     x4,  x5,  [x9, #32]
+    ldp     x6,  x7,  [x9, #48]
+    ldp     x10, x11, [x9, #80]
+    ldp     x12, x13, [x9, #96]
+    ldp     x14, x15, [x9, #112]
+    ldp     x16, x17, [x9, #128]
+    ldp     x18, x19, [x9, #144]
+    ldp     x20, x21, [x9, #160]
+    ldp     x22, x23, [x9, #176]
+    ldp     x24, x25, [x9, #192]
+    ldp     x26, x27, [x9, #208]
+    ldp     x28, x29, [x9, #224]
+    ldr     x30,      [x9, #240]
+    ldp     x8,  x9,  [x9, #64]
 
     isb
     eret
-
 .global return_to_kernel
 return_to_kernel:
     adrp    x2, kernel_ctx

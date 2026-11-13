@@ -556,4 +556,98 @@ void AddressSpaceBackend::destroy_root(uintptr_t root_paddr) noexcept {
 
     free_frame(root_paddr);
 }
+
+bool AddressSpaceBackend::clone_user_space(uintptr_t src_root, uintptr_t dst_root) noexcept {
+    if (src_root == 0U || dst_root == 0U) {
+        return false;
+    }
+
+    const auto* const src_l0 =
+        reinterpret_cast<const uint64_t*>(Kernel::MM::phys_to_virt(src_root));
+    if ((src_l0[0] & 1U) == 0U) {
+        return true;
+    }
+
+    const auto* const src_l1 =
+        reinterpret_cast<const uint64_t*>(Kernel::MM::phys_to_virt(src_l0[0] & TABLE_ADDR_MASK));
+    if ((src_l1[0] & 1U) == 0U) {
+        return true;
+    }
+
+    const auto* const src_l2 =
+        reinterpret_cast<const uint64_t*>(Kernel::MM::phys_to_virt(src_l1[0] & TABLE_ADDR_MASK));
+
+    auto* const dst_l0 = reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(dst_root));
+    if ((dst_l0[0] & 1U) == 0U) {
+        return false;
+    }
+    auto* const dst_l1 =
+        reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(dst_l0[0] & TABLE_ADDR_MASK));
+    if ((dst_l1[0] & 1U) == 0U) {
+        return false;
+    }
+    auto* const dst_l2 =
+        reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(dst_l1[0] & TABLE_ADDR_MASK));
+
+    constexpr size_t UART_L2_IDX = (0x09000000ULL >> 21U) & 0x1FFU;
+
+    for (size_t i2 = 0U; i2 < PAGE_ENTRY_COUNT; ++i2) {
+        if (i2 == UART_L2_IDX || (src_l2[i2] & 1U) == 0U) {
+            continue;
+        }
+
+        const auto* const src_l3 = reinterpret_cast<const uint64_t*>(
+            Kernel::MM::phys_to_virt(src_l2[i2] & TABLE_ADDR_MASK));
+
+        uintptr_t dst_l3_paddr = 0U;
+        if ((dst_l2[i2] & 1U) == 0U) {
+            dst_l3_paddr = allocate_zeroed_table();
+            if (dst_l3_paddr == 0U) {
+                return false;
+            }
+            dst_l2[i2] = (dst_l3_paddr & TABLE_ADDR_MASK) | DESC_TYPE_TABLE;
+            flush_dcache_range(reinterpret_cast<uintptr_t>(&dst_l2[i2]), sizeof(uint64_t));
+        } else {
+            dst_l3_paddr = dst_l2[i2] & TABLE_ADDR_MASK;
+        }
+
+        auto* const dst_l3 = reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(dst_l3_paddr));
+
+        for (size_t i3 = 0U; i3 < PAGE_ENTRY_COUNT; ++i3) {
+            const uint64_t src_desc = src_l3[i3];
+            if ((src_desc & 1U) == 0U) {
+                continue;
+            }
+
+            const uintptr_t src_page_paddr = src_desc & TABLE_ADDR_MASK;
+            const uint64_t desc_attrs = src_desc & ~TABLE_ADDR_MASK;
+
+            const uintptr_t dst_page_paddr = alloc_frame();
+            if (dst_page_paddr == 0U) {
+                return false;
+            }
+
+            const auto* const src_kva =
+                reinterpret_cast<const uint8_t*>(Kernel::MM::phys_to_virt(src_page_paddr));
+            auto* const dst_kva =
+                reinterpret_cast<uint8_t*>(Kernel::MM::phys_to_virt(dst_page_paddr));
+
+            for (size_t byte_idx = 0U; byte_idx < Arch::PAGE_SIZE; ++byte_idx) {
+                dst_kva[byte_idx] = src_kva[byte_idx];
+            }
+            flush_dcache_range(reinterpret_cast<uintptr_t>(dst_kva), Arch::PAGE_SIZE);
+
+            dst_l3[i3] = (dst_page_paddr & TABLE_ADDR_MASK) | desc_attrs;
+        }
+
+        flush_dcache_range(reinterpret_cast<uintptr_t>(dst_l3), Arch::PAGE_SIZE);
+    }
+
+    asm volatile("dsb ish\n\t"
+                 "ic ialluis\n\t"
+                 "dsb ish\n\t"
+                 "isb" ::
+                     : "memory");
+    return true;
+}
 } // namespace HAL

@@ -62,6 +62,8 @@ class AddressSpace {
 
     [[nodiscard]] uintptr_t root_paddr() const noexcept { return m_root_paddr; }
 
+    [[nodiscard]] Result<AddressSpace, AddressSpaceError> clone() const noexcept;
+
     bool map_user_page(uintptr_t vaddr, uintptr_t paddr, HAL::PageFlags flags) const noexcept;
 
     bool unmap_user_page(uintptr_t vaddr) const noexcept;

@@ -1442,6 +1442,108 @@ void cmd_test_proc_exit() noexcept {
                 "Reaping PCB 2 reclaimed all ELF, stack, and page-table frames");
 }
 
+void cmd_test_fork_exec() noexcept {
+    print_str("\r\n[TEST] Running EL0 Process Fork (clone), Execve & Wait4 Suite...\r\n");
+
+    const size_t pages_before = pfa_allocated_pages_count();
+    const size_t procs_before = Kernel::Process::active_process_count();
+
+    auto* const parent = Kernel::Process::allocate_process(0U);
+    assert_test(parent != nullptr, "Allocated parent PCB for fork/execve/wait4 test");
+    if (parent == nullptr) {
+        return;
+    }
+
+    auto as_res = Kernel::MM::AddressSpace::create();
+    if (!as_res.is_ok()) {
+        Kernel::Process::release_process(*parent);
+        print_str("[FAIL] Failed to create parent AddressSpace\r\n");
+        return;
+    }
+    parent->address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
+
+    constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
+    constexpr uintptr_t DATA_VADDR = 0x0000000000500000ULL;
+    const uintptr_t code_paddr = alloc_frame();
+    const uintptr_t data_paddr = alloc_frame();
+
+    parent->address_space.map_user_page(CODE_VADDR, code_paddr,
+                                        HAL::PageFlags::User | HAL::PageFlags::Read |
+                                            HAL::PageFlags::Execute);
+    parent->address_space.map_user_page(DATA_VADDR, data_paddr,
+                                        HAL::PageFlags::User | HAL::PageFlags::Read |
+                                            HAL::PageFlags::Write);
+
+    auto* const k_code = reinterpret_cast<void*>(Kernel::MM::phys_to_virt(code_paddr));
+    const size_t code_bytes = HAL::Test::write_user_fork_exec_program(k_code);
+    HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(k_code), code_bytes);
+    HAL::get_cpu().invalidate_icache();
+
+    const char exec_path[] = "/bin/hello";
+    const char bad_path[] = "/nonexistent";
+    const char arg1[] = "hello_arg1";
+    const char env0[] = "PATH=/bin";
+
+    constexpr uintptr_t EXEC_PATH_VADDR = DATA_VADDR + 0x000ULL;
+    constexpr uintptr_t BAD_PATH_VADDR = DATA_VADDR + 0x040ULL;
+    constexpr uintptr_t ARG1_VADDR = DATA_VADDR + 0x080ULL;
+    constexpr uintptr_t ENV0_VADDR = DATA_VADDR + 0x0C0ULL;
+    constexpr uintptr_t ARGV_VADDR = DATA_VADDR + 0x100ULL;
+    constexpr uintptr_t ENVP_VADDR = DATA_VADDR + 0x140ULL;
+    constexpr uintptr_t WSTATUS_VADDR = DATA_VADDR + 0x180ULL;
+    constexpr uintptr_t CANARY_VADDR = DATA_VADDR + 0x188ULL;
+    constexpr uintptr_t ARGS_VADDR = DATA_VADDR + 0x200ULL;
+
+    const uint64_t user_argv[3] = {EXEC_PATH_VADDR, ARG1_VADDR, 0ULL};
+    const uint64_t user_envp[2] = {ENV0_VADDR, 0ULL};
+    const HAL::Test::ForkExecSuiteArgs suite_args{
+        .exec_path_vaddr = EXEC_PATH_VADDR,
+        .bad_path_vaddr = BAD_PATH_VADDR,
+        .argv_vaddr = ARGV_VADDR,
+        .envp_vaddr = ENVP_VADDR,
+        .wstatus_vaddr = WSTATUS_VADDR,
+        .canary_vaddr = CANARY_VADDR,
+    };
+
+    Kernel::MM::copy_to_user(parent->address_space, EXEC_PATH_VADDR, exec_path, sizeof(exec_path));
+    Kernel::MM::copy_to_user(parent->address_space, BAD_PATH_VADDR, bad_path, sizeof(bad_path));
+    Kernel::MM::copy_to_user(parent->address_space, ARG1_VADDR, arg1, sizeof(arg1));
+    Kernel::MM::copy_to_user(parent->address_space, ENV0_VADDR, env0, sizeof(env0));
+    Kernel::MM::copy_to_user(parent->address_space, ARGV_VADDR, user_argv, sizeof(user_argv));
+    Kernel::MM::copy_to_user(parent->address_space, ENVP_VADDR, user_envp, sizeof(user_envp));
+    Kernel::MM::copy_to_user(parent->address_space, ARGS_VADDR, &suite_args, sizeof(suite_args));
+
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(parent->address_space);
+    if (!stack_res.is_ok()) {
+        free_frame(code_paddr);
+        free_frame(data_paddr);
+        Kernel::Process::release_process(*parent);
+        print_str("[FAIL] Failed to allocate user stack\r\n");
+        return;
+    }
+    parent->user_stack = stack_res.value();
+
+    const char* const init_argv[] = {"fork_exec_parent"};
+    Kernel::Process::UserStackBuilder::build_abi_layout(parent->user_stack, 1, init_argv);
+
+    parent->entry_point = CODE_VADDR;
+    Kernel::Process::init_user_cpu_context(parent->context, CODE_VADDR,
+                                           parent->user_stack.final_sp_el0, ARGS_VADDR, 0ULL);
+
+    const int64_t exit_status = Kernel::Process::execute_process(*parent);
+    assert_test(exit_status == 0,
+                "EL0 clone(), failed execve(-ENOENT), execve(/bin/hello), and wait4() verified");
+
+    free_frame(code_paddr);
+    free_frame(data_paddr);
+    Kernel::Process::release_process(*parent);
+
+    assert_test(Kernel::Process::active_process_count() == procs_before,
+                "All parent and child PCB slots released back to baseline");
+    assert_test(pfa_allocated_pages_count() == pages_before,
+                "All cloned, execve, stack, and page-table frames freed cleanly");
+}
+
 void print_help() noexcept {
     print_str("\r\nAvailable Commands:\r\n");
     print_str("  help            - Display this menu\r\n");
@@ -1465,6 +1567,7 @@ void print_help() noexcept {
     print_str("  test vmm        - Test AddressSpace lifecycle and page mappings\r\n");
     print_str("  test loader     - Test ELF segment loading and OOM rollback\r\n");
     print_str("  test user       - Instantiate EL0 process and verify syscall exit\r\n");
+    print_str("  test fork_exec  - Test fork, execve and wait4");
     print_str("  test all        - Run entire verification test suite\r\n");
     print_str(
         "  test stack_abi  - Run user stack allocation & System V ABI construction tests\r\n");
@@ -1534,6 +1637,8 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_user_mm();
     } else if (streq(buf, "test proc_exit")) {
         cmd_test_proc_exit();
+    } else if (streq(buf, "test fork_exec")) {
+        cmd_test_fork_exec();
     } else if (streq(buf, "halt")) {
         print_str("[INFO] Halting CPU. Use QEMU 'Ctrl-A X' to exit.\r\n");
         HAL::get_cpu().halt();
@@ -1562,6 +1667,7 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_syscall();
         cmd_test_user_mm();
         cmd_test_proc_exit();
+        cmd_test_fork_exec();
     } else if (buf[0] != '\0') {
         print_str("Unknown command: '");
         print_str(buf);

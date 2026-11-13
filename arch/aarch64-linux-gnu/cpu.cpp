@@ -104,6 +104,11 @@ class AArch64CpuControl : public HAL::CpuControl {
         auto* const arch_ctx = reinterpret_cast<AArch64CpuContext*>(&ctx);
         arch_ctx->x[0] = static_cast<uint64_t>(value);
     }
+
+    void set_user_stack_pointer(HAL::CpuContext& ctx, uintptr_t user_sp) const noexcept override {
+        auto* const arch_ctx = reinterpret_cast<AArch64CpuContext*>(&ctx);
+        arch_ctx->sp_el0 = user_sp;
+    }
 };
 
 constinit AArch64CpuControl aarch64_cpu{};

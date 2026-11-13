@@ -52,6 +52,7 @@ class CpuControl {
     virtual uint64_t get_syscall_number(const CpuContext& ctx) const noexcept = 0;
     virtual uint64_t get_syscall_arg(const CpuContext& ctx, size_t index) const noexcept = 0;
     virtual void set_syscall_return(CpuContext& ctx, int64_t value) const noexcept = 0;
+    virtual void set_user_stack_pointer(CpuContext& ctx, uintptr_t user_sp) const noexcept = 0;
 };
 
 CpuControl& get_cpu() noexcept;

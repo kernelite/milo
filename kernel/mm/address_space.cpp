@@ -149,4 +149,22 @@ int64_t copy_to_user(uintptr_t root_paddr, uintptr_t user_dst, const void* src,
     return 0;
 }
 
+Result<AddressSpace, AddressSpaceError> AddressSpace::clone() const noexcept {
+    if (m_root_paddr == 0U) {
+        return AddressSpaceError::NotMapped;
+    }
+
+    auto dst_res = create();
+    if (!dst_res.is_ok()) {
+        return dst_res.error();
+    }
+
+    AddressSpace dst_space = static_cast<AddressSpace&&>(dst_res.value());
+    if (!HAL::AddressSpaceBackend::clone_user_space(m_root_paddr, dst_space.root_paddr())) {
+        return AddressSpaceError::OutOfMemory;
+    }
+
+    return dst_space;
+}
+
 } // namespace Kernel::MM

@@ -67,6 +67,7 @@ MemoryControl& get_mmu() noexcept;
 
 struct AddressSpaceBackend {
     static uintptr_t create_root() noexcept;
+    static bool clone_user_space(uintptr_t src_root, uintptr_t dst_root) noexcept;
     static bool map_user_page(uintptr_t root_paddr, uintptr_t vaddr, uintptr_t paddr,
                               PageFlags flags) noexcept;
     static bool unmap_user_page(uintptr_t root_paddr, uintptr_t vaddr) noexcept;

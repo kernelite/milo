@@ -1,13 +1,19 @@
+#include "boot/fdt.hpp"
+#include "fs/cpio.hpp"
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
 #include "hal/trap.hpp"
+#include "loader/elf_loader.hpp"
 #include "mm/address_space.hpp"
 #include "mm/pfa.hpp"
 #include "process/process.hpp"
+#include "process/stack_builder.hpp"
 
 #include <cstddef>
 #include <cstdint>
+
+extern FDT::InitrdLocation g_initrd_loc;
 
 namespace {
 
@@ -21,15 +27,47 @@ constexpr uint64_t SYS_GETPID = 172U;
 constexpr uint64_t SYS_GETPPID = 173U;
 constexpr uint64_t SYS_BRK = 214U;
 constexpr uint64_t SYS_MUNMAP = 215U;
+constexpr uint64_t SYS_CLONE = 220U;
+constexpr uint64_t SYS_EXECVE = 221U;
 constexpr uint64_t SYS_MMAP = 222U;
+constexpr uint64_t SYS_WAIT4 = 260U;
 
 // Negated POSIX Error Codes
+constexpr int64_t ERR_ENOENT = -2;
+constexpr int64_t ERR_E2BIG = -7;
+constexpr int64_t ERR_ENOEXEC = -8;
 constexpr int64_t ERR_EBADF = -9;
+constexpr int64_t ERR_ECHILD = -10;
+constexpr int64_t ERR_EAGAIN = -11;
 constexpr int64_t ERR_ENOMEM = -12;
 constexpr int64_t ERR_EFAULT = -14;
 constexpr int64_t ERR_EINVAL = -22;
 constexpr int64_t ERR_ENOTTY = -25;
 constexpr int64_t ERR_ENOSYS = -38;
+
+// Linux clone() Flags
+constexpr uint64_t CLONE_VM = 0x00000100ULL;
+constexpr uint64_t CLONE_FS = 0x00000200ULL;
+constexpr uint64_t CLONE_FILES = 0x00000400ULL;
+constexpr uint64_t CLONE_SIGHAND = 0x00000800ULL;
+constexpr uint64_t CLONE_VFORK = 0x00004000ULL;
+constexpr uint64_t CLONE_THREAD = 0x00010000ULL;
+constexpr uint64_t CLONE_PARENT_SETTID = 0x00100000ULL;
+constexpr uint64_t CLONE_CHILD_CLEARTID = 0x00200000ULL;
+constexpr uint64_t CLONE_CHILD_SETTID = 0x01000000ULL;
+constexpr uint64_t CSIGNAL_MASK = 0x000000FFULL;
+constexpr uint64_t SIGCHLD_NUM = 17ULL;
+
+// Linux wait4() Options
+constexpr uint64_t WAIT_WNOHANG = 0x00000001ULL;
+constexpr uint64_t WAIT_WUNTRACED = 0x00000002ULL;
+constexpr uint64_t WAIT_WCONTINUED = 0x00000008ULL;
+constexpr size_t LINUX_RUSAGE_SIZE = 144U;
+
+// Bounded kernel staging limits for sys_execve (backed by a single 4 KiB frame)
+constexpr size_t EXEC_MAX_PATH_LEN = 256U;
+constexpr size_t EXEC_MAX_ARGS = 32U;
+constexpr size_t EXEC_MAX_ENVS = 32U;
 
 // Linux asm-generic mmap Protection & Mapping Flags
 constexpr uint64_t PROT_NONE = 0x0U;
@@ -151,6 +189,71 @@ bool validate_user_read_range(uintptr_t root_paddr, uintptr_t user_buf, size_t c
 
 bool validate_user_write_range(uintptr_t root_paddr, uintptr_t user_buf, size_t count) noexcept {
     return validate_user_range(root_paddr, user_buf, count, HAL::PageFlags::Write);
+}
+
+int64_t copy_user_cstring(uintptr_t root_paddr, uintptr_t user_str, char* dst, size_t max_len,
+                          size_t& out_len) noexcept {
+    if (user_str == 0U || dst == nullptr || max_len == 0U) {
+        return ERR_EFAULT;
+    }
+
+    for (size_t idx = 0U; idx < max_len; ++idx) {
+        char chr = '\0';
+        const int64_t res = Kernel::MM::copy_from_user(root_paddr, &chr, user_str + idx, 1U);
+        if (res < 0) {
+            return ERR_EFAULT;
+        }
+        dst[idx] = chr;
+        if (chr == '\0') {
+            out_len = idx;
+            return 0;
+        }
+    }
+
+    return ERR_E2BIG;
+}
+
+int64_t stage_user_string_array(uintptr_t root_paddr, uintptr_t user_array, const char** out_ptrs,
+                                size_t max_entries, char* pool, size_t pool_cap,
+                                size_t& pool_offset, int& out_count) noexcept {
+    out_count = 0;
+    out_ptrs[0] = nullptr;
+    if (user_array == 0U) {
+        return 0;
+    }
+
+    for (size_t idx = 0U; idx <= max_entries; ++idx) {
+        uint64_t user_str_ptr = 0ULL;
+        const uintptr_t elem_vaddr = user_array + (idx * sizeof(uint64_t));
+        const int64_t ptr_res =
+            Kernel::MM::copy_from_user(root_paddr, &user_str_ptr, elem_vaddr, sizeof(uint64_t));
+        if (ptr_res < 0) {
+            return ERR_EFAULT;
+        }
+
+        if (user_str_ptr == 0ULL) {
+            out_ptrs[idx] = nullptr;
+            out_count = static_cast<int>(idx);
+            return 0;
+        }
+
+        if (idx == max_entries || pool_offset >= pool_cap) {
+            return ERR_E2BIG;
+        }
+
+        size_t str_len = 0U;
+        const int64_t str_res =
+            copy_user_cstring(root_paddr, static_cast<uintptr_t>(user_str_ptr), pool + pool_offset,
+                              pool_cap - pool_offset, str_len);
+        if (str_res < 0) {
+            return str_res;
+        }
+
+        out_ptrs[idx] = pool + pool_offset;
+        pool_offset += str_len + 1U;
+    }
+
+    return ERR_E2BIG;
 }
 
 int64_t sys_ioctl(uint64_t raw_fd, uint64_t request, uintptr_t arg) noexcept {
@@ -383,6 +486,9 @@ int64_t sys_write(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexc
         proc->state = Kernel::Process::ProcessState::Zombie;
     }
     HAL::get_cpu().return_to_kernel(exit_code);
+    while (true) {
+        HAL::get_cpu().halt();
+    }
 }
 
 int64_t sys_getpid() noexcept {
@@ -567,6 +673,285 @@ int64_t sys_munmap(uintptr_t addr, uint64_t length) noexcept {
     return 0;
 }
 
+int64_t sys_clone(HAL::CpuContext& parent_ctx, uint64_t flags, uintptr_t child_stack,
+                  uintptr_t parent_tid, uint64_t tls, uintptr_t child_tid) noexcept {
+    (void)tls;
+
+    auto* const parent = Kernel::Process::current_process();
+    if (parent == nullptr) {
+        return ERR_EINVAL;
+    }
+
+    constexpr uint64_t UNSUPPORTED_CLONE_FLAGS =
+        CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_VFORK | CLONE_THREAD;
+    constexpr uint64_t ALLOWED_CLONE_FLAGS =
+        CSIGNAL_MASK | CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID;
+
+    if ((flags & UNSUPPORTED_CLONE_FLAGS) != 0ULL || (flags & ~ALLOWED_CLONE_FLAGS) != 0ULL) {
+        return ERR_EINVAL;
+    }
+
+    const uint64_t exit_sig = flags & CSIGNAL_MASK;
+    if (exit_sig != 0ULL && exit_sig != SIGCHLD_NUM) {
+        return ERR_EINVAL;
+    }
+
+    if (child_stack != 0U && child_stack >= Kernel::MM::user_addr_space_limit()) {
+        return ERR_EINVAL;
+    }
+
+    auto* const child = Kernel::Process::allocate_process(parent->pid);
+    if (child == nullptr) {
+        return ERR_EAGAIN;
+    }
+
+    auto clone_as_res = parent->address_space.clone();
+    if (!clone_as_res.is_ok()) {
+        Kernel::Process::release_process(*child);
+        return ERR_ENOMEM;
+    }
+
+    child->address_space = static_cast<Kernel::MM::AddressSpace&&>(clone_as_res.value());
+    child->entry_point = parent->entry_point;
+    child->brk_start = parent->brk_start;
+    child->brk_current = parent->brk_current;
+    child->mmap_next_vaddr = parent->mmap_next_vaddr;
+    child->user_stack = Kernel::Process::UserStack{};
+
+    for (size_t idx = 0U; idx < Kernel::Process::MAX_FDS_PER_PROCESS; ++idx) {
+        child->fd_table[idx] = parent->fd_table[idx];
+    }
+
+    const auto child_pid_s32 = static_cast<int32_t>(child->pid);
+    if ((flags & CLONE_PARENT_SETTID) != 0ULL && parent_tid != 0U) {
+        const int64_t tid_res = Kernel::MM::copy_to_user(parent->address_space, parent_tid,
+                                                         &child_pid_s32, sizeof(child_pid_s32));
+        if (tid_res < 0) {
+            Kernel::Process::release_process(*child);
+            return ERR_EFAULT;
+        }
+    }
+
+    if ((flags & CLONE_CHILD_SETTID) != 0ULL && child_tid != 0U) {
+        const int64_t tid_res = Kernel::MM::copy_to_user(child->address_space, child_tid,
+                                                         &child_pid_s32, sizeof(child_pid_s32));
+        if (tid_res < 0) {
+            Kernel::Process::release_process(*child);
+            return ERR_EFAULT;
+        }
+    }
+
+    auto& cpu = HAL::get_cpu();
+    child->context = parent_ctx;
+    if (child_stack != 0U) {
+        cpu.set_user_stack_pointer(child->context, child_stack);
+    }
+    cpu.set_syscall_return(child->context, 0);
+    child->state = Kernel::Process::ProcessState::Ready;
+
+    return static_cast<int64_t>(child->pid);
+}
+
+int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user_argv,
+                   uintptr_t user_envp) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+
+    const size_t page_size = HAL::get_platform_info().page_size;
+    const uintptr_t scratch_paddr = alloc_frame();
+    if (scratch_paddr == 0U) {
+        return ERR_ENOMEM;
+    }
+
+    auto* const scratch_kva = reinterpret_cast<char*>(Kernel::MM::phys_to_virt(scratch_paddr));
+    char* const path_buf = scratch_kva;
+    char* const string_pool = scratch_kva + EXEC_MAX_PATH_LEN;
+    const size_t string_pool_cap = page_size - EXEC_MAX_PATH_LEN;
+
+    const char* argv_kptrs[EXEC_MAX_ARGS + 1U]{};
+    const char* envp_kptrs[EXEC_MAX_ENVS + 1U]{};
+
+    const uintptr_t caller_root = proc->address_space.root_paddr();
+    size_t path_len = 0U;
+    const int64_t path_res =
+        copy_user_cstring(caller_root, user_pathname, path_buf, EXEC_MAX_PATH_LEN, path_len);
+    if (path_res < 0) {
+        free_frame(scratch_paddr);
+        return path_res;
+    }
+
+    size_t pool_offset = 0U;
+    int argc = 0;
+    const int64_t argv_res =
+        stage_user_string_array(caller_root, user_argv, argv_kptrs, EXEC_MAX_ARGS, string_pool,
+                                string_pool_cap, pool_offset, argc);
+    if (argv_res < 0) {
+        free_frame(scratch_paddr);
+        return argv_res;
+    }
+
+    int envc = 0;
+    const int64_t envp_res =
+        stage_user_string_array(caller_root, user_envp, envp_kptrs, EXEC_MAX_ENVS, string_pool,
+                                string_pool_cap, pool_offset, envc);
+    if (envp_res < 0) {
+        free_frame(scratch_paddr);
+        return envp_res;
+    }
+    (void)envc;
+
+    if (!g_initrd_loc.valid || g_initrd_loc.start_paddr == 0U || g_initrd_loc.size == 0U) {
+        free_frame(scratch_paddr);
+        return ERR_ENOENT;
+    }
+
+    CpioEntry entry{};
+    const auto* const initrd_kva =
+        reinterpret_cast<const void*>(Kernel::MM::phys_to_virt(g_initrd_loc.start_paddr));
+    const CpioStatus cpio_st = cpio_lookup(initrd_kva, g_initrd_loc.size, path_buf, entry);
+    if (cpio_st != CpioStatus::Success) {
+        free_frame(scratch_paddr);
+        return ERR_ENOENT;
+    }
+    if (!entry.is_regular_file || entry.data == nullptr || entry.size == 0U) {
+        free_frame(scratch_paddr);
+        return ERR_ENOEXEC;
+    }
+
+    auto load_res = Kernel::Loader::load_elf(entry.data, entry.size);
+    if (!load_res.is_ok()) {
+        free_frame(scratch_paddr);
+        return (load_res.error() == Kernel::Loader::ElfLoaderError::OutOfMemory) ? ERR_ENOMEM
+                                                                                 : ERR_ENOEXEC;
+    }
+
+    auto loaded = static_cast<Kernel::Loader::LoadedElf&&>(load_res.value());
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(loaded.address_space);
+    if (!stack_res.is_ok()) {
+        loaded.address_space.destroy();
+        free_frame(scratch_paddr);
+        return ERR_ENOMEM;
+    }
+
+    auto new_stack = stack_res.value();
+    auto abi_res = Kernel::Process::UserStackBuilder::build_abi_layout(new_stack, argc, argv_kptrs,
+                                                                       envp_kptrs);
+    if (!abi_res.is_ok()) {
+        free_frames(new_stack.phys_base, new_stack.num_pages);
+        loaded.address_space.destroy();
+        free_frame(scratch_paddr);
+        return ERR_E2BIG;
+    }
+
+    // Switch TTBR0_EL1 to the new AddressSpace before tearing down the old one
+    loaded.address_space.activate();
+
+    if (proc->user_stack.phys_base != 0U && proc->user_stack.num_pages > 0U) {
+        free_frames(proc->user_stack.phys_base, proc->user_stack.num_pages);
+    }
+    proc->address_space = static_cast<Kernel::MM::AddressSpace&&>(loaded.address_space);
+
+    const auto platform = HAL::get_platform_info();
+    proc->entry_point = loaded.entry_point;
+    proc->user_stack = new_stack;
+    const uintptr_t new_brk = (loaded.max_vaddr != 0U) ? loaded.max_vaddr : platform.user_brk_base;
+    proc->brk_start = new_brk;
+    proc->brk_current = new_brk;
+    proc->mmap_next_vaddr = platform.user_mmap_base;
+
+    Kernel::Process::init_user_cpu_context(ctx, proc->entry_point, proc->user_stack.final_sp_el0,
+                                           proc->user_stack.argc, proc->user_stack.argv_vaddr);
+
+    free_frame(scratch_paddr);
+    return 0;
+}
+
+int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
+                  uintptr_t user_rusage) noexcept {
+    auto* const parent = Kernel::Process::current_process();
+    if (parent == nullptr) {
+        return ERR_EINVAL;
+    }
+
+    constexpr uint64_t ALLOWED_WAIT_OPTIONS = WAIT_WNOHANG | WAIT_WUNTRACED | WAIT_WCONTINUED;
+    if ((options & ~ALLOWED_WAIT_OPTIONS) != 0ULL) {
+        return ERR_EINVAL;
+    }
+
+    if (target_pid == 0 || target_pid < -1) {
+        return ERR_ECHILD;
+    }
+
+    Kernel::Process::Process* zombie_child = nullptr;
+    Kernel::Process::Process* ready_child = nullptr;
+
+    for (size_t idx = 0U; idx < Kernel::Process::MAX_PROCESSES; ++idx) {
+        auto* const candidate = Kernel::Process::process_at(idx);
+        if (candidate == nullptr || candidate->state == Kernel::Process::ProcessState::Unused) {
+            continue;
+        }
+        if (candidate->ppid != parent->pid) {
+            continue;
+        }
+        if (target_pid > 0 && candidate->pid != static_cast<uint32_t>(target_pid)) {
+            continue;
+        }
+
+        if (candidate->state == Kernel::Process::ProcessState::Zombie) {
+            zombie_child = candidate;
+            break;
+        }
+        if (candidate->state == Kernel::Process::ProcessState::Ready && ready_child == nullptr) {
+            ready_child = candidate;
+        }
+    }
+
+    Kernel::Process::Process* target_child = zombie_child;
+    if (target_child == nullptr) {
+        if (ready_child == nullptr) {
+            return ERR_ECHILD;
+        }
+        if ((options & WAIT_WNOHANG) != 0ULL) {
+            return 0;
+        }
+
+        parent->state = Kernel::Process::ProcessState::Blocked;
+        const int64_t child_ret = Kernel::Process::execute_process(*ready_child);
+        parent->state = Kernel::Process::ProcessState::Running;
+
+        if (ready_child->state != Kernel::Process::ProcessState::Zombie) {
+            ready_child->exit_status = child_ret;
+            ready_child->state = Kernel::Process::ProcessState::Zombie;
+        }
+        target_child = ready_child;
+    }
+
+    if (user_wstatus != 0U) {
+        const auto encoded_wstatus =
+            static_cast<int32_t>((static_cast<uint32_t>(target_child->exit_status) & 0xFFU) << 8U);
+        const int64_t status_res = Kernel::MM::copy_to_user(
+            parent->address_space, user_wstatus, &encoded_wstatus, sizeof(encoded_wstatus));
+        if (status_res < 0) {
+            return ERR_EFAULT;
+        }
+    }
+
+    if (user_rusage != 0U) {
+        uint8_t zero_rusage[LINUX_RUSAGE_SIZE]{};
+        const int64_t rusage_res = Kernel::MM::copy_to_user(parent->address_space, user_rusage,
+                                                            zero_rusage, sizeof(zero_rusage));
+        if (rusage_res < 0) {
+            return ERR_EFAULT;
+        }
+    }
+
+    const uint32_t reaped_pid = target_child->pid;
+    Kernel::Process::release_process(*target_child);
+    return static_cast<int64_t>(reaped_pid);
+}
+
 } // namespace
 
 namespace Kernel {
@@ -605,7 +990,7 @@ class SyscallDispatcher : public HAL::TrapHandler {
 
         case SYS_EXIT:
         case SYS_EXIT_GROUP:
-            sys_exit(static_cast<int64_t>(cpu.get_syscall_arg(ctx, 0U)));
+            sys_exit(cpu.get_syscall_arg(ctx, 0U));
 
         case SYS_GETPID:
             ret_val = sys_getpid();
@@ -629,6 +1014,30 @@ class SyscallDispatcher : public HAL::TrapHandler {
                                cpu.get_syscall_arg(ctx, 1U), cpu.get_syscall_arg(ctx, 2U),
                                cpu.get_syscall_arg(ctx, 3U), cpu.get_syscall_arg(ctx, 4U),
                                cpu.get_syscall_arg(ctx, 5U));
+            break;
+
+        case SYS_CLONE:
+            ret_val = sys_clone(ctx, cpu.get_syscall_arg(ctx, 0U),
+                                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
+                                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 2U)),
+                                cpu.get_syscall_arg(ctx, 3U),
+                                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 4U)));
+            break;
+
+        case SYS_EXECVE:
+            ret_val = sys_execve(ctx, static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)),
+                                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
+                                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 2U)));
+            if (ret_val == 0) {
+                return; // Preserve argc in ctx.x[0] initialized for the new binary
+            }
+            break;
+
+        case SYS_WAIT4:
+            ret_val = sys_wait4(
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)), cpu.get_syscall_arg(ctx, 2U),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 3U)));
             break;
 
         default:
