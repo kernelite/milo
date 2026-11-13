@@ -13,6 +13,8 @@ extern const uint8_t el0_tty_ioctl_suite_start[];
 extern const uint8_t el0_tty_ioctl_suite_end[];
 extern const uint8_t el0_tty_echo_start[];
 extern const uint8_t el0_tty_echo_end[];
+extern const uint8_t el0_user_echo_start[];
+extern const uint8_t el0_user_echo_end[];
 
 void* memcpy(void* dest, const void* src, size_t count) noexcept;
 }
@@ -179,6 +181,12 @@ size_t write_user_tty_ioctl_suite_program(void* dst_kva) noexcept {
 size_t write_user_tty_echo_program(void* dst_kva) noexcept {
     const auto size = static_cast<size_t>(el0_tty_echo_end - el0_tty_echo_start);
     memcpy(dst_kva, el0_tty_echo_start, size);
+    return size;
+}
+
+size_t write_user_echo_program(void* dst_kva) noexcept {
+    const auto size = static_cast<size_t>(el0_user_echo_end - el0_user_echo_start);
+    memcpy(dst_kva, el0_user_echo_start, size);
     return size;
 }
 

@@ -45,5 +45,6 @@ size_t write_user_syscall_suite_program(void* dst_kva, uintptr_t valid_buf_vaddr
                                         uintptr_t kernel_buf_vaddr) noexcept;
 size_t write_user_tty_ioctl_suite_program(void* dst_kva) noexcept;
 size_t write_user_tty_echo_program(void* dst_kva) noexcept;
+size_t write_user_echo_program(void* dst_kva) noexcept;
 
 } // namespace HAL::Test

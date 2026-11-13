@@ -14,7 +14,6 @@
 #include <cstdint>
 
 extern "C" void cmd_test_uxn_fault();
-extern "C" void cmd_test_user_echo();
 // Access global initrd metadata from main.cpp
 extern FDT::InitrdLocation g_initrd_loc;
 
@@ -861,7 +860,7 @@ void cmd_test_user_echo() noexcept {
     }
     auto address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
 
-    // Map executable page for user_space_echo_test entry
+    // Map executable page for EL0 argc/argv echo binary
     const uintptr_t code_frame = alloc_frame();
     const uintptr_t entry_vaddr = 0x0000000000400000ULL;
 
@@ -869,16 +868,16 @@ void cmd_test_user_echo() noexcept {
                                 HAL::PageFlags::User | HAL::PageFlags::Read |
                                     HAL::PageFlags::Execute);
 
-    // Copy user_space_echo_test routine into code frame
-    auto* const k_code = reinterpret_cast<uint8_t*>(Kernel::MM::phys_to_virt(code_frame));
-    const auto* const src_code = reinterpret_cast<const uint8_t*>(cmd_test_user_echo);
-    for (size_t i = 0U; i < 256U; ++i) {
-        k_code[i] = src_code[i];
-    }
+    auto* const k_code = reinterpret_cast<void*>(Kernel::MM::phys_to_virt(code_frame));
+    const size_t code_bytes = HAL::Test::write_user_echo_program(k_code);
+    HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(k_code), code_bytes);
+    HAL::get_cpu().invalidate_icache();
 
     // Allocate stack and build System V ABI layout
     auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(address_space);
     if (!stack_res) {
+        free_frame(code_frame);
+        address_space.destroy();
         print_str("[FAIL] Stack creation failed\r\n");
         return;
     }
@@ -889,7 +888,7 @@ void cmd_test_user_echo() noexcept {
 
     assert_test(abi_res.is_ok(), "ABI stack layout populated");
 
-    // Initialize CpuContext
+    // Initialize CpuContext (x0 = argc, x1 = argv)
     HAL::CpuContext ctx{};
     Kernel::Process::init_user_cpu_context(ctx, entry_vaddr, user_stack.final_sp_el0,
                                            user_stack.argc, user_stack.argv_vaddr);

@@ -289,3 +289,107 @@ el0_tty_echo_start:
     mov     x0, x19
     svc     #0
 el0_tty_echo_end:
+
+// ==========================================================================
+// EL0 System V ABI argc/argv Echo Test
+// Entry: x0 = argc, x1 = argv (NULL-terminated array of char* pointers)
+// Prints all argv[0..argc-1] arguments to STDOUT (fd=1), verifies
+// argv[argc] == NULL, and exits via SYS_EXIT (#93) with 0 on success.
+// ==========================================================================
+.global el0_user_echo_start
+.global el0_user_echo_end
+el0_user_echo_start:
+    mov     x19, x0                 // x19 = argc
+    mov     x20, x1                 // x20 = argv
+    mov     x21, #0                 // x21 = i = 0
+    mov     x22, #0                 // x22 = failure count = 0
+
+    // Verify argc > 0 and argv != NULL
+    cmp     x19, #0
+    b.le    .Lecho_fail_exit
+    cbz     x20, .Lecho_fail_exit
+
+    // Print header "  [EL0 argv] "
+    mov     x8, #64                 // SYS_WRITE
+    mov     x0, #1                  // STDOUT
+    adr     x1, .Lecho_hdr
+    mov     x2, #13
+    svc     #0
+    cmp     x0, #13
+    b.eq    .Lecho_loop
+    add     x22, x22, #1
+
+.Lecho_loop:
+    cmp     x21, x19
+    b.ge    .Lecho_loop_done
+
+    // Load argv[i]
+    ldr     x23, [x20, x21, lsl #3]
+    cbz     x23, .Lecho_null_arg
+
+    // Compute strlen(argv[i]) in x24
+    mov     x24, #0
+.Lecho_strlen:
+    ldrb    w25, [x23, x24]
+    cbz     w25, .Lecho_strlen_done
+    add     x24, x24, #1
+    b       .Lecho_strlen
+
+.Lecho_strlen_done:
+    // write(1, argv[i], len)
+    mov     x8, #64                 // SYS_WRITE
+    mov     x0, #1
+    mov     x1, x23
+    mov     x2, x24
+    svc     #0
+    cmp     x0, x24
+    b.eq    1f
+    add     x22, x22, #1
+1:
+    // Print space separator if (i + 1) < argc
+    add     x25, x21, #1
+    cmp     x25, x19
+    b.ge    2f
+    mov     x8, #64                 // SYS_WRITE
+    mov     x0, #1
+    adr     x1, .Lecho_space
+    mov     x2, #1
+    svc     #0
+2:
+    add     x21, x21, #1
+    b       .Lecho_loop
+
+.Lecho_null_arg:
+    add     x22, x22, #1
+
+.Lecho_loop_done:
+    // Verify System V ABI invariant: argv[argc] == NULL
+    ldr     x23, [x20, x19, lsl #3]
+    cbz     x23, 3f
+    add     x22, x22, #1
+3:
+    // Print "\r\n"
+    mov     x8, #64                 // SYS_WRITE
+    mov     x0, #1
+    adr     x1, .Lecho_crlf
+    mov     x2, #2
+    svc     #0
+
+    // exit(x22)
+    mov     x8, #93                 // SYS_EXIT
+    mov     x0, x22
+    svc     #0
+
+.Lecho_fail_exit:
+    mov     x8, #93                 // SYS_EXIT
+    mov     x0, #1
+    svc     #0
+
+.Lecho_hdr:
+    .ascii  "  [EL0 argv] "
+.Lecho_space:
+    .ascii  " "
+.Lecho_crlf:
+    .ascii  "\r\n"
+.balign 4
+el0_user_echo_end:
