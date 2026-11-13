@@ -575,3 +575,55 @@ el0_user_mm_suite_start:
     mov     x0, x19
     svc     #0
 el0_user_mm_suite_end:
+
+// ==========================================================================
+// EL0 Process Lifecycle Verification Suite (SYS_GETPID, SYS_EXIT, SYS_EXIT_GROUP)
+// Entry: x0 = expected_pid, x1 = use_exit_group (0 = SYS_EXIT, 1 = SYS_EXIT_GROUP)
+// ==========================================================================
+.global el0_proc_lifecycle_suite_start
+.global el0_proc_lifecycle_suite_end
+el0_proc_lifecycle_suite_start:
+    mov     x19, x0                 // x19 = expected_pid
+    mov     x20, x1                 // x20 = exit syscall selector
+
+    // 1) First SYS_GETPID (#172) call -> must be non-zero and match expected_pid
+    mov     x8, #172                // SYS_GETPID
+    svc     #0
+    cbz     x0, .Lproc_fail_1
+    cmp     x0, x19
+    b.ne    .Lproc_fail_2
+
+    // 2) Second SYS_GETPID (#172) call -> must remain consistent
+    mov     x8, #172                // SYS_GETPID
+    svc     #0
+    cmp     x0, x19
+    b.ne    .Lproc_fail_3
+
+    // 3) Exit with status 42 (with upper 32 bits set to verify int32_t narrowing)
+    movz    x0, #42
+    movk    x0, #0xBEEF, lsl #32
+    movk    x0, #0xDEAD, lsl #48
+    cbnz    x20, .Lproc_exit_group
+
+    mov     x8, #93                 // SYS_EXIT
+    svc     #0
+
+.Lproc_exit_group:
+    mov     x8, #94                 // SYS_EXIT_GROUP
+    svc     #0
+
+.Lproc_fail_1:
+    mov     x8, #93
+    mov     x0, #1
+    svc     #0
+
+.Lproc_fail_2:
+    mov     x8, #93
+    mov     x0, #2
+    svc     #0
+
+.Lproc_fail_3:
+    mov     x8, #93
+    mov     x0, #3
+    svc     #0
+el0_proc_lifecycle_suite_end:

@@ -8,6 +8,7 @@ void user_space_code();
 int64_t enter_user_mode(uintptr_t entry_point, uintptr_t user_sp);
 void trigger_svc_test();
 void el0_sysreg_test_entry() noexcept;
+void* memcpy(void* dest, const void* src, size_t count) noexcept;
 
 extern const uint8_t el0_tty_ioctl_suite_start[];
 extern const uint8_t el0_tty_ioctl_suite_end[];
@@ -17,8 +18,8 @@ extern const uint8_t el0_user_echo_start[];
 extern const uint8_t el0_user_echo_end[];
 extern const uint8_t el0_user_mm_suite_start[];
 extern const uint8_t el0_user_mm_suite_end[];
-
-void* memcpy(void* dest, const void* src, size_t count) noexcept;
+extern const uint8_t el0_proc_lifecycle_suite_start[];
+extern const uint8_t el0_proc_lifecycle_suite_end[];
 }
 
 namespace {
@@ -195,6 +196,14 @@ size_t write_user_tty_echo_program(void* dst_kva) noexcept {
 size_t write_user_echo_program(void* dst_kva) noexcept {
     const auto size = static_cast<size_t>(el0_user_echo_end - el0_user_echo_start);
     memcpy(dst_kva, el0_user_echo_start, size);
+    return size;
+}
+
+// Inside namespace HAL::Test in arch/aarch64-linux-gnu/arch_test.cpp:
+size_t write_user_proc_lifecycle_program(void* dst_kva) noexcept {
+    const auto size =
+        static_cast<size_t>(el0_proc_lifecycle_suite_end - el0_proc_lifecycle_suite_start);
+    memcpy(dst_kva, el0_proc_lifecycle_suite_start, size);
     return size;
 }
 
