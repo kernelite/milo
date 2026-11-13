@@ -374,13 +374,15 @@ int64_t sys_write(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexc
     return static_cast<int64_t>(total_written);
 }
 
-[[noreturn]] void sys_exit(int64_t status) noexcept {
+[[noreturn]] void sys_exit(uint64_t raw_status) noexcept {
+    const auto exit_code =
+        static_cast<int64_t>(static_cast<int32_t>(static_cast<uint32_t>(raw_status)));
     auto* const proc = Kernel::Process::current_process();
     if (proc != nullptr) {
-        proc->exit_status = status;
+        proc->exit_status = exit_code;
         proc->state = Kernel::Process::ProcessState::Zombie;
     }
-    HAL::get_cpu().return_to_kernel(status);
+    HAL::get_cpu().return_to_kernel(exit_code);
 }
 
 int64_t sys_getpid() noexcept {

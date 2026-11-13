@@ -1300,6 +1300,148 @@ void cmd_test_user_mm() noexcept {
                 "All ELF, heap, mmap, stack, and page-table frames freed cleanly");
 }
 
+void cmd_test_proc_exit() noexcept {
+    print_str(
+        "\r\n[TEST] Running Process PID & Exit Lifecycle Suite (getpid/_exit/exit_group)...\r\n");
+
+    const size_t pages_before = pfa_allocated_pages_count();
+    const size_t procs_before = Kernel::Process::active_process_count();
+    const uintptr_t kernel_root = Kernel::MM::AddressSpace::current_root_paddr();
+
+    // 1) Test SYS_GETPID (#172) + SYS_EXIT (#93)
+    auto* const proc1 = Kernel::Process::allocate_process(0U);
+    assert_test(proc1 != nullptr && proc1->pid > 0U, "Allocated PCB 1 with non-zero monotonic PID");
+    if (proc1 == nullptr) {
+        return;
+    }
+    const uint32_t pid1 = proc1->pid;
+
+    auto as1_res = Kernel::MM::AddressSpace::create();
+    if (!as1_res.is_ok()) {
+        Kernel::Process::release_process(*proc1);
+        print_str("[FAIL] Failed to create AddressSpace for PCB 1\r\n");
+        return;
+    }
+    proc1->address_space = static_cast<Kernel::MM::AddressSpace&&>(as1_res.value());
+
+    constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
+    const uintptr_t code1_paddr = alloc_frame();
+    proc1->address_space.map_user_page(CODE_VADDR, code1_paddr,
+                                       HAL::PageFlags::User | HAL::PageFlags::Read |
+                                           HAL::PageFlags::Execute);
+
+    auto* const k_code1 = reinterpret_cast<void*>(Kernel::MM::phys_to_virt(code1_paddr));
+    const size_t code1_bytes = HAL::Test::write_user_proc_lifecycle_program(k_code1);
+    HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(k_code1), code1_bytes);
+    HAL::get_cpu().invalidate_icache();
+
+    auto stack1_res = Kernel::Process::UserStackBuilder::create_and_map(proc1->address_space);
+    if (!stack1_res.is_ok()) {
+        free_frame(code1_paddr);
+        Kernel::Process::release_process(*proc1);
+        print_str("[FAIL] Failed to allocate user stack for PCB 1\r\n");
+        return;
+    }
+    proc1->user_stack = stack1_res.value();
+
+    const char* const argv1[] = {"proc_exit_test"};
+    Kernel::Process::UserStackBuilder::build_abi_layout(proc1->user_stack, 1, argv1);
+
+    proc1->entry_point = CODE_VADDR;
+    Kernel::Process::init_user_cpu_context(proc1->context, CODE_VADDR,
+                                           proc1->user_stack.final_sp_el0, pid1, 0ULL);
+
+    const int64_t status1 = Kernel::Process::execute_process(*proc1);
+    assert_test(status1 == 42 && proc1->state == Kernel::Process::ProcessState::Zombie &&
+                    proc1->exit_status == 42,
+                "SYS_GETPID & SYS_EXIT(42) transitioned PCB 1 to Zombie with status 42");
+    assert_test(Kernel::MM::AddressSpace::current_root_paddr() == kernel_root,
+                "TTBR0_EL1 restored to kernel root after SYS_EXIT");
+
+    free_frame(code1_paddr);
+    Kernel::Process::release_process(*proc1);
+    assert_test(proc1->state == Kernel::Process::ProcessState::Unused &&
+                    pfa_allocated_pages_count() == pages_before,
+                "Reaping PCB 1 freed all physical frames back to baseline");
+
+    // 2) Test monotonic PID + SYS_EXIT_GROUP (#94) with ELF-backed AddressSpace
+    alignas(16) static uint8_t synth_elf[512]{};
+    for (size_t i = 0U; i < sizeof(synth_elf); ++i) {
+        synth_elf[i] = 0U;
+    }
+
+    auto* const ehdr = reinterpret_cast<Elf64_Ehdr*>(synth_elf);
+    ehdr->e_ident[EI_MAG0] = ELFMAG0;
+    ehdr->e_ident[EI_MAG1] = ELFMAG1;
+    ehdr->e_ident[EI_MAG2] = ELFMAG2;
+    ehdr->e_ident[EI_MAG3] = ELFMAG3;
+    ehdr->e_ident[EI_CLASS] = ELFCLASS64;
+    ehdr->e_ident[EI_DATA] = ELFDATA2LSB;
+    ehdr->e_ident[EI_VERSION] = EV_CURRENT;
+    ehdr->e_ident[EI_OSABI] = ELFOSABI_SYSV;
+    ehdr->e_type = ET_EXEC;
+    ehdr->e_machine = HAL::get_platform_info().elf_machine;
+    ehdr->e_version = EV_CURRENT;
+    ehdr->e_entry = 0x0000000000400100ULL;
+    ehdr->e_phoff = 64U;
+    ehdr->e_ehsize = sizeof(Elf64_Ehdr);
+    ehdr->e_phentsize = sizeof(Elf64_Phdr);
+    ehdr->e_phnum = 1U;
+
+    const size_t elf_code_bytes = HAL::Test::write_user_proc_lifecycle_program(synth_elf + 0x100U);
+    auto* const phdr = reinterpret_cast<Elf64_Phdr*>(synth_elf + 64U);
+    phdr->p_type = PT_LOAD;
+    phdr->p_flags = PF_R | PF_X;
+    phdr->p_offset = 0x100U;
+    phdr->p_vaddr = 0x0000000000400100ULL;
+    phdr->p_paddr = 0x0000000000400100ULL;
+    phdr->p_filesz = elf_code_bytes;
+    phdr->p_memsz = elf_code_bytes;
+    phdr->p_align = 0x1000U;
+
+    auto load_res = Kernel::Loader::load_elf(synth_elf, sizeof(synth_elf));
+    assert_test(load_res.is_ok(), "Loaded ELF image for SYS_EXIT_GROUP test");
+    if (!load_res.is_ok()) {
+        return;
+    }
+
+    auto* const proc2 = Kernel::Process::allocate_process(0U);
+    assert_test(proc2 != nullptr && proc2->pid > pid1,
+                "Allocated PCB 2 with strictly monotonic PID");
+    if (proc2 == nullptr) {
+        load_res->address_space.destroy();
+        return;
+    }
+
+    Kernel::Process::attach_loaded_elf(*proc2, static_cast<Kernel::Loader::LoadedElf&&>(*load_res));
+
+    auto stack2_res = Kernel::Process::UserStackBuilder::create_and_map(proc2->address_space);
+    if (!stack2_res.is_ok()) {
+        Kernel::Process::release_process(*proc2);
+        print_str("[FAIL] Failed to allocate user stack for PCB 2\r\n");
+        return;
+    }
+    proc2->user_stack = stack2_res.value();
+
+    const char* const argv2[] = {"proc_exit_group_test"};
+    Kernel::Process::UserStackBuilder::build_abi_layout(proc2->user_stack, 1, argv2);
+
+    Kernel::Process::init_user_cpu_context(proc2->context, proc2->entry_point,
+                                           proc2->user_stack.final_sp_el0, proc2->pid, 1ULL);
+
+    const int64_t status2 = Kernel::Process::execute_process(*proc2);
+    assert_test(status2 == 42 && proc2->state == Kernel::Process::ProcessState::Zombie &&
+                    proc2->exit_status == 42,
+                "SYS_EXIT_GROUP(42) terminated EL0 process and delivered exit status 42");
+    assert_test(Kernel::MM::AddressSpace::current_root_paddr() == kernel_root,
+                "TTBR0_EL1 restored to kernel root after SYS_EXIT_GROUP");
+
+    Kernel::Process::release_process(*proc2);
+    assert_test(Kernel::Process::active_process_count() == procs_before &&
+                    pfa_allocated_pages_count() == pages_before,
+                "Reaping PCB 2 reclaimed all ELF, stack, and page-table frames");
+}
+
 void print_help() noexcept {
     print_str("\r\nAvailable Commands:\r\n");
     print_str("  help            - Display this menu\r\n");
@@ -1331,6 +1473,7 @@ void print_help() noexcept {
     print_str("  test syscall    - Test PCB lifecycle, user copy validation & syscall ABI\r\n");
     print_str("  test tty_echo   - Run interactive EL0 TTY read/write echo test\r\n");
     print_str("  test user_mm    - Test user heap (sys_brk) & anonymous sys_mmap/sys_munmap\r\n");
+    print_str("  test proc       - Test process spae and exit functions\r\n");
     print_str("  halt            - Put CPU into low-power WFI state\r\n");
 }
 
@@ -1389,6 +1532,8 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_tty_echo();
     } else if (streq(buf, "test user_mm")) {
         cmd_test_user_mm();
+    } else if (streq(buf, "test proc_exit")) {
+        cmd_test_proc_exit();
     } else if (streq(buf, "halt")) {
         print_str("[INFO] Halting CPU. Use QEMU 'Ctrl-A X' to exit.\r\n");
         HAL::get_cpu().halt();
@@ -1416,6 +1561,7 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_uxn_fault();
         cmd_test_syscall();
         cmd_test_user_mm();
+        cmd_test_proc_exit();
     } else if (buf[0] != '\0') {
         print_str("Unknown command: '");
         print_str(buf);

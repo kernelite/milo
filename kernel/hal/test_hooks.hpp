@@ -51,5 +51,6 @@ size_t write_user_tty_ioctl_suite_program(void* dst_kva) noexcept;
 size_t write_user_tty_echo_program(void* dst_kva) noexcept;
 size_t write_user_echo_program(void* dst_kva) noexcept;
 size_t write_user_mm_suite_program(void* dst_kva) noexcept;
+size_t write_user_proc_lifecycle_program(void* dst_kva) noexcept;
 
 } // namespace HAL::Test
