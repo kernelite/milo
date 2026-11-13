@@ -43,9 +43,9 @@ bool validate_user_read_range(uintptr_t root_paddr, uintptr_t user_buf, size_t c
     const uintptr_t last_page = (user_buf + count - 1U) & ~page_mask;
 
     for (uintptr_t page_vaddr = first_page; page_vaddr <= last_page; page_vaddr += page_size) {
-        uintptr_t paddr = 0U;
+        uintptr_t out_paddr = 0U;
         HAL::PageFlags flags = HAL::PageFlags::None;
-        if (!Kernel::MM::AddressSpace::query_user_page(root_paddr, page_vaddr, paddr, flags)) {
+        if (!Kernel::MM::AddressSpace::query_user_page(root_paddr, page_vaddr, out_paddr, flags)) {
             return false;
         }
         if (!HAL::has_flag(flags, HAL::PageFlags::User) ||

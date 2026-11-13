@@ -79,13 +79,13 @@ int64_t copy_from_user(uintptr_t root_paddr, void* dst, uintptr_t user_src, size
     size_t remaining = len;
 
     while (remaining > 0U) {
-        uintptr_t paddr = 0U;
-        HAL::PageFlags flags = HAL::PageFlags::None;
-        if (!AddressSpace::query_user_page(root_paddr, curr_vaddr, paddr, flags)) {
+        uintptr_t out_paddr = 0U;
+        HAL::PageFlags out_flags = HAL::PageFlags::None;
+        if (!AddressSpace::query_user_page(root_paddr, curr_vaddr, out_paddr, out_flags)) {
             return ERR_EFAULT;
         }
-        if (!HAL::has_flag(flags, HAL::PageFlags::User) ||
-            !HAL::has_flag(flags, HAL::PageFlags::Read)) {
+        if (!HAL::has_flag(out_flags, HAL::PageFlags::User) ||
+            !HAL::has_flag(out_flags, HAL::PageFlags::Read)) {
             return ERR_EFAULT;
         }
 
@@ -93,7 +93,7 @@ int64_t copy_from_user(uintptr_t root_paddr, void* dst, uintptr_t user_src, size
         const size_t bytes_in_page = page_size - page_offset;
         const size_t chunk = (remaining < bytes_in_page) ? remaining : bytes_in_page;
 
-        const auto* const src_kva = reinterpret_cast<const uint8_t*>(phys_to_virt(paddr));
+        const auto* const src_kva = reinterpret_cast<const uint8_t*>(phys_to_virt(out_paddr));
         memcpy(dst_bytes, src_kva, chunk);
 
         dst_bytes += chunk;
@@ -125,13 +125,13 @@ int64_t copy_to_user(uintptr_t root_paddr, uintptr_t user_dst, const void* src,
     size_t remaining = len;
 
     while (remaining > 0U) {
-        uintptr_t paddr = 0U;
-        HAL::PageFlags flags = HAL::PageFlags::None;
-        if (!AddressSpace::query_user_page(root_paddr, curr_vaddr, paddr, flags)) {
+        uintptr_t out_paddr = 0U;
+        HAL::PageFlags out_flags = HAL::PageFlags::None;
+        if (!AddressSpace::query_user_page(root_paddr, curr_vaddr, out_paddr, out_flags)) {
             return ERR_EFAULT;
         }
-        if (!HAL::has_flag(flags, HAL::PageFlags::User) ||
-            !HAL::has_flag(flags, HAL::PageFlags::Write)) {
+        if (!HAL::has_flag(out_flags, HAL::PageFlags::User) ||
+            !HAL::has_flag(out_flags, HAL::PageFlags::Write)) {
             return ERR_EFAULT;
         }
 
@@ -139,14 +139,13 @@ int64_t copy_to_user(uintptr_t root_paddr, uintptr_t user_dst, const void* src,
         const size_t bytes_in_page = page_size - page_offset;
         const size_t chunk = (remaining < bytes_in_page) ? remaining : bytes_in_page;
 
-        auto* const dst_kva = reinterpret_cast<uint8_t*>(phys_to_virt(paddr));
+        auto* const dst_kva = reinterpret_cast<uint8_t*>(phys_to_virt(out_paddr));
         memcpy(dst_kva, src_bytes, chunk);
 
         src_bytes += chunk;
         curr_vaddr += chunk;
         remaining -= chunk;
     }
-
     return 0;
 }
 

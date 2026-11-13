@@ -1,7 +1,7 @@
 #include "mm/pfa.hpp"
 
-#include "../arch/memory_config.hpp"
 #include "hal/console.hpp"
+#include "hal/cpu.hpp"
 
 namespace {
 
@@ -55,9 +55,9 @@ void pfa_reserve_range(uintptr_t start_paddr, uintptr_t end_paddr) noexcept {
         end_paddr = g_ram_end;
     }
 
-    // Page-aligned lower bound and page-aligned upper bound
-    const size_t start_idx = (start_paddr - Arch::RAM_BASE) >> Arch::PAGE_SHIFT;
-    const size_t end_idx = (end_paddr - Arch::RAM_BASE + Arch::PAGE_SIZE - 1U) >> Arch::PAGE_SHIFT;
+    const size_t page_size = HAL::get_platform_info().page_size;
+    const size_t start_idx = (start_paddr - g_ram_start) / page_size;
+    const size_t end_idx = (end_paddr - g_ram_start + page_size - 1U) / page_size;
 
     for (size_t i = start_idx; i < end_idx && i < g_total_pages; ++i) {
         set_bit(i);
@@ -68,31 +68,35 @@ bool pfa_is_page_allocated(uintptr_t paddr) noexcept {
     if (paddr < g_ram_start || paddr >= g_ram_end) {
         return true;
     }
-    const size_t page_idx = (paddr - Arch::RAM_BASE) >> Arch::PAGE_SHIFT;
+    const size_t page_size = HAL::get_platform_info().page_size;
+    const size_t page_idx = (paddr - g_ram_start) / page_size;
     return test_bit(page_idx);
 }
 
 void pfa_init(uintptr_t ram_start, size_t ram_size) noexcept {
+    const auto platform = HAL::get_platform_info();
+    const size_t page_size = platform.page_size;
+
     g_ram_start = ram_start;
     g_ram_end = ram_start + ram_size;
-    g_total_pages = ram_size >> Arch::PAGE_SHIFT;
+    g_total_pages = ram_size / page_size;
 
     for (size_t i = 0; i < BITMAP_SIZE_BYTES; ++i) {
         g_bitmap[i] = 0U;
     }
 
-    if (ram_size < Arch::MAX_RAM_SIZE) {
+    if (ram_size < platform.max_ram_size) {
         for (size_t i = g_total_pages; i < MAX_PAGES; ++i) {
             set_bit(i);
         }
     }
 
-    // Reserve entire loaded kernel image (_text_start through __bss_end)
+    // Reserve entire loaded kernel image (_text_start through __bss_end)[cite: 2]
     const auto kernel_start = reinterpret_cast<uintptr_t>(_text_start);
     const auto kernel_end = reinterpret_cast<uintptr_t>(__bss_end);
     pfa_reserve_range(kernel_start, kernel_end);
 
-    // Reserve PFA's own bitmap tracker array
+    // Reserve PFA's own bitmap tracker array[cite: 2]
     const auto bitmap_start = reinterpret_cast<uintptr_t>(&g_bitmap[0]);
     const auto bitmap_end = bitmap_start + sizeof(g_bitmap);
     pfa_reserve_range(bitmap_start, bitmap_end);
@@ -119,6 +123,7 @@ uintptr_t alloc_frames(size_t count) noexcept {
         return 0U;
     }
 
+    const size_t page_size = HAL::get_platform_info().page_size;
     size_t consecutive = 0U;
     size_t start_idx = 0U;
 
@@ -132,7 +137,7 @@ uintptr_t alloc_frames(size_t count) noexcept {
                 for (size_t j = start_idx; j < start_idx + count; ++j) {
                     set_bit(j);
                 }
-                return Arch::RAM_BASE + (start_idx << Arch::PAGE_SHIFT);
+                return g_ram_start + (start_idx * page_size);
             }
         } else {
             consecutive = 0U;
@@ -148,7 +153,8 @@ void free_frame(uintptr_t paddr) noexcept {
 }
 
 void free_frames(uintptr_t paddr, size_t count) noexcept {
-    if ((paddr & (Arch::PAGE_SIZE - 1U)) != 0U) {
+    const size_t page_size = HAL::get_platform_info().page_size;
+    if ((paddr & (page_size - 1U)) != 0U) {
         print_str("[PFA PANIC] Unaligned physical frame address passed to free_frame: ");
         print_hex64(paddr);
         print_str("\r\n");
@@ -162,13 +168,13 @@ void free_frames(uintptr_t paddr, size_t count) noexcept {
         return;
     }
 
-    const size_t start_idx = (paddr - Arch::RAM_BASE) >> Arch::PAGE_SHIFT;
+    const size_t start_idx = (paddr - g_ram_start) / page_size;
 
     for (size_t i = 0U; i < count; ++i) {
         const size_t page_idx = start_idx + i;
         if (!test_bit(page_idx)) {
             print_str("[PFA WARNING] Double-free detected at physical address: ");
-            print_hex64(Arch::RAM_BASE + (page_idx << Arch::PAGE_SHIFT));
+            print_hex64(g_ram_start + (page_idx * page_size));
             print_str("\r\n");
             continue;
         }
