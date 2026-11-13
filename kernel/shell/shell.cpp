@@ -968,6 +968,188 @@ void cmd_test_uxn_fault() noexcept {
     address_space.destroy();
 }
 
+void cmd_test_syscall() noexcept {
+    print_str("\r\n[TEST] Running PCB, User-Pointer Validation & Syscall ABI Suite...\r\n");
+
+    const size_t pages_before = pfa_allocated_pages_count();
+    const size_t procs_before = Kernel::Process::active_process_count();
+
+    auto* const proc = Kernel::Process::allocate_process(0U);
+    assert_test(proc != nullptr, "Allocated PCB slot from static process table");
+    if (proc == nullptr) {
+        return;
+    }
+    assert_test(proc->pid > 0U && proc->state == Kernel::Process::ProcessState::Ready,
+                "PCB initialized with valid PID and Ready state");
+
+    auto as_res = Kernel::MM::AddressSpace::create();
+    assert_test(as_res.is_ok(), "Created isolated AddressSpace for PCB");
+    if (!as_res.is_ok()) {
+        Kernel::Process::release_process(*proc);
+        return;
+    }
+    proc->address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
+
+    // Map a 2-page user data buffer at 0x00500000..0x00501FFF (leaving 0x00502000 unmapped)
+    constexpr uintptr_t DATA_PAGE0_VADDR = 0x0000000000500000ULL;
+    constexpr uintptr_t DATA_PAGE1_VADDR = 0x0000000000501000ULL;
+    constexpr uintptr_t RO_PAGE_VADDR = 0x0000000000510000ULL;
+
+    const uintptr_t data_paddr0 = alloc_frame();
+    const uintptr_t data_paddr1 = alloc_frame();
+    const uintptr_t ro_paddr = alloc_frame();
+
+    const HAL::PageFlags user_rw =
+        HAL::PageFlags::User | HAL::PageFlags::Read | HAL::PageFlags::Write;
+    const HAL::PageFlags user_ro = HAL::PageFlags::User | HAL::PageFlags::Read;
+
+    proc->address_space.map_user_page(DATA_PAGE0_VADDR, data_paddr0, user_rw);
+    proc->address_space.map_user_page(DATA_PAGE1_VADDR, data_paddr1, user_rw);
+    proc->address_space.map_user_page(RO_PAGE_VADDR, ro_paddr, user_ro);
+
+    // 1. Direct copy_to_user / copy_from_user boundary checks (straddling 0x500FF8..0x501007)
+    constexpr uintptr_t STRADDLE_VADDR = DATA_PAGE1_VADDR - 8U;
+    const char test_msg[16] = {'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
+                               '1', '2', '3', '4', '5', '6', '7', '\0'};
+    char readback_msg[16]{};
+
+    assert_test(Kernel::MM::copy_to_user(proc->address_space, STRADDLE_VADDR, test_msg, 16U) == 0,
+                "copy_to_user succeeded across 4KiB page boundary");
+    assert_test(
+        Kernel::MM::copy_from_user(proc->address_space, readback_msg, STRADDLE_VADDR, 16U) == 0 &&
+            streq(readback_msg, test_msg),
+        "copy_from_user reconstructed page-straddling buffer accurately");
+    assert_test(Kernel::MM::copy_to_user(proc->address_space, RO_PAGE_VADDR, test_msg, 4U) == -14,
+                "copy_to_user rejected write to read-only user page with -EFAULT (-14)");
+    assert_test(
+        Kernel::MM::copy_from_user(proc->address_space, readback_msg, 0x0000000000501FF8ULL,
+                                   16U) == -14,
+        "copy_from_user rejected buffer crossing into unmapped page with -EFAULT (-14)");
+    assert_test(
+        Kernel::MM::copy_from_user(proc->address_space, readback_msg, 0x0000000009000000ULL, 4U) ==
+            -14,
+        "copy_from_user rejected privileged UART MMIO address with -EFAULT (-14)");
+    assert_test(
+        Kernel::MM::copy_from_user(proc->address_space, readback_msg, 0x0000000040080000ULL, 4U) ==
+            -14,
+        "copy_from_user rejected kernel address >= 0x40000000 with -EFAULT (-14)");
+
+    // 2. Build EL0 payload testing SYS_WRITE (valid, -EFAULT, -EBADF), -ENOSYS, and SYS_EXIT
+    constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
+    const uintptr_t code_paddr = alloc_frame();
+    proc->address_space.map_user_page(CODE_VADDR, code_paddr,
+                                      HAL::PageFlags::User | HAL::PageFlags::Read |
+                                          HAL::PageFlags::Execute);
+
+    // Place valid message at DATA_PAGE0_VADDR
+    const char uart_msg[] = "  [EL0] Valid SYS_WRITE payload!\r\n";
+    Kernel::MM::copy_to_user(proc->address_space, DATA_PAGE0_VADDR, uart_msg,
+                             sizeof(uart_msg) - 1U);
+
+    // AArch64 machine code:
+    //   x19 accumulates failure count (0 = all syscall assertions passed)
+    //   1) SYS_WRITE(1, 0x500000, 34) -> expect 34
+    //   2) SYS_WRITE(1, 0x40080000, 4) -> expect -14 (-EFAULT)
+    //   3) SYS_WRITE(1, 0x501FF8, 16) -> expect -14 (-EFAULT, crosses into unmapped page)
+    //   4) SYS_WRITE(9, 0x500000, 4) -> expect -9 (-EBADF)
+    //   5) SYSCALL(999) -> expect -38 (-ENOSYS)
+    //   6) SYS_EXIT(x19)
+    const uint32_t el0_code[] = {
+        0xD2800013U, // mov x19, #0          (error counter)
+
+        // Test 1: Valid SYS_WRITE(fd=1, buf=0x500000, len=34)
+        0xD2800808U, // mov x8, #64          (SYS_WRITE)
+        0xD2800020U, // mov x0, #1           (stdout)
+        0xD2A00A01U, // movz x1, #0x50, lsl #16 (0x00500000)
+        0xD2800442U, // mov x2, #34
+        0xD4000001U, // svc #0
+        0xF100881FU, // cmp x0, #34
+        0x54000040U, // b.eq +8
+        0x91000673U, // add x19, x19, #1
+
+        // Test 2: Kernel pointer SYS_WRITE(fd=1, buf=0x40080000, len=4) -> -14
+        0xD2800808U, // mov x8, #64
+        0xD2800020U, // mov x0, #1
+        0xD2A80101U, // movz x1, #0x4008, lsl #16 (0x40080000)
+        0xD2800082U, // mov x2, #4
+        0xD4000001U, // svc #0
+        0xB100381FU, // cmn x0, #14          (x0 == -14)
+        0x54000040U, // b.eq +8
+        0x91000673U, // add x19, x19, #1
+
+        // Test 3: Page-crossing into unmapped page SYS_WRITE(1, 0x501FF8, 16) -> -14
+        0xD2800808U, // mov x8, #64
+        0xD2800020U, // mov x0, #1
+        0xD283FF01U, // movz x1, #0x1FF8
+        0xF2A00A01U, // movk x1, #0x50, lsl #16 (0x00501FF8)
+        0xD2800202U, // mov x2, #16
+        0xD4000001U, // svc #0
+        0xB100381FU, // cmn x0, #14
+        0x54000040U, // b.eq +8
+        0x91000673U, // add x19, x19, #1
+
+        // Test 4: Closed FD SYS_WRITE(fd=9, buf=0x500000, len=4) -> -9
+        0xD2800808U, // mov x8, #64
+        0xD2800120U, // mov x0, #9
+        0xD2A00A01U, // movz x1, #0x50, lsl #16
+        0xD2800082U, // mov x2, #4
+        0xD4000001U, // svc #0
+        0xB100241FU, // cmn x0, #9           (x0 == -9)
+        0x54000040U, // b.eq +8
+        0x91000673U, // add x19, x19, #1
+
+        // Test 5: Unimplemented syscall x8=999 -> -38 (-ENOSYS)
+        0xD2807CE8U, // mov x8, #999
+        0xD4000001U, // svc #0
+        0xB100981FU, // cmn x0, #38          (x0 == -38)
+        0x54000040U, // b.eq +8
+        0x91000673U, // add x19, x19, #1
+
+        // Test 6: SYS_EXIT(x19)
+        0xD2800BA8U, // mov x8, #93          (SYS_EXIT)
+        0xAA1303E0U, // mov x0, x19
+        0xD4000001U, // svc #0
+    };
+
+    auto* const k_code = reinterpret_cast<uint32_t*>(Kernel::MM::phys_to_virt(code_paddr));
+    constexpr size_t CODE_WORDS = sizeof(el0_code) / sizeof(el0_code[0]);
+    for (size_t idx = 0U; idx < CODE_WORDS; ++idx) {
+        k_code[idx] = el0_code[idx];
+    }
+    HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(k_code), sizeof(el0_code));
+    HAL::get_cpu().invalidate_icache();
+
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space);
+    assert_test(stack_res.is_ok(), "Allocated and mapped user stack for PCB");
+    proc->user_stack = stack_res.value();
+
+    const char* const argv[] = {"syscall_test"};
+    Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack, 1, argv);
+
+    proc->entry_point = CODE_VADDR;
+    Kernel::Process::init_user_cpu_context(proc->context, CODE_VADDR, proc->user_stack.final_sp_el0,
+                                           proc->user_stack.argc, proc->user_stack.argv_vaddr);
+
+    const int64_t exit_status = Kernel::Process::execute_process(*proc);
+
+    assert_test(exit_status == 0,
+                "EL0 syscalls verified (-EFAULT, -EBADF, -ENOSYS, valid SYS_WRITE & SYS_EXIT)");
+    assert_test(proc->state == Kernel::Process::ProcessState::Zombie &&
+                    proc->exit_status == exit_status,
+                "PCB transitioned to Zombie state and recorded exit_status");
+
+    free_frame(code_paddr);
+    free_frame(data_paddr0);
+    free_frame(data_paddr1);
+    free_frame(ro_paddr);
+    Kernel::Process::release_process(*proc);
+
+    assert_test(Kernel::Process::active_process_count() == procs_before,
+                "PCB slot released cleanly back to static process table");
+    assert_test(pfa_allocated_pages_count() == pages_before,
+                "All process page tables, stack, and data frames freed cleanly");
+}
+
 void print_help() noexcept {
     print_str("\r\nAvailable Commands:\r\n");
     print_str("  help            - Display this menu\r\n");
@@ -995,6 +1177,7 @@ void print_help() noexcept {
     print_str("  test stack_abi  - Run user atack allocation & System V ABI construction tests");
     print_str("  test user_echo  - Run EL0 user space echo test (x0=argc, x1=argv)");
     print_str("  test uxn_fault  - Run user stack execute-never (UXN) fault test");
+    print_str("  test syscall    - Test PCB lifecycle, user copy validation & syscall ABI\r\n");
     print_str("  halt            - Put CPU into low-power WFI state\r\n");
 }
 
@@ -1047,6 +1230,8 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_stack_and_abi();
     } else if (streq(buf, "test uxn_fault")) {
         cmd_test_uxn_fault();
+    } else if (streq(buf, "test syscall")) {
+        cmd_test_syscall();
     } else if (streq(buf, "halt")) {
         print_str("[INFO] Halting CPU. Use QEMU 'Ctrl-A X' to exit.\r\n");
         HAL::get_cpu().halt();
@@ -1072,6 +1257,7 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_user_isolation();
         cmd_test_user_echo();
         cmd_test_uxn_fault();
+        cmd_test_syscall();
     } else if (buf[0] != '\0') {
         print_str("Unknown command: '");
         print_str(buf);

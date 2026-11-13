@@ -1,12 +1,137 @@
 #include "process/process.hpp"
 
+#include "mm/pfa.hpp"
+
+namespace {
+
+Kernel::Process::Process g_process_table[Kernel::Process::MAX_PROCESSES]{};
+Kernel::Process::Process* g_current_process = nullptr;
+uint32_t g_next_pid = 1U;
+
+void reset_fd_table(Kernel::Process::Process& proc) noexcept {
+    for (size_t idx = 0U; idx < Kernel::Process::MAX_FDS_PER_PROCESS; ++idx) {
+        proc.fd_table[idx] = Kernel::Process::FileDescriptor{};
+    }
+}
+
+void init_standard_fds(Kernel::Process::Process& proc) noexcept {
+    reset_fd_table(proc);
+    proc.fd_table[0] = Kernel::Process::FileDescriptor{
+        .type = Kernel::Process::FdType::ConsoleIn,
+        .flags = Kernel::Process::FD_FLAG_READ,
+        .offset = 0U,
+        .in_use = true,
+    };
+    proc.fd_table[1] = Kernel::Process::FileDescriptor{
+        .type = Kernel::Process::FdType::ConsoleOut,
+        .flags = Kernel::Process::FD_FLAG_WRITE,
+        .offset = 0U,
+        .in_use = true,
+    };
+    proc.fd_table[2] = Kernel::Process::FileDescriptor{
+        .type = Kernel::Process::FdType::ConsoleErr,
+        .flags = Kernel::Process::FD_FLAG_WRITE,
+        .offset = 0U,
+        .in_use = true,
+    };
+}
+
+} // namespace
+
 namespace Kernel::Process {
+
+Process* allocate_process(uint32_t ppid) noexcept {
+    for (size_t idx = 0U; idx < MAX_PROCESSES; ++idx) {
+        auto& slot = g_process_table[idx];
+        if (slot.state == ProcessState::Unused) {
+            uint32_t candidate_pid = g_next_pid++;
+            if (candidate_pid == 0U) {
+                candidate_pid = g_next_pid++;
+            }
+            while (find_process_by_pid(candidate_pid) != nullptr) {
+                candidate_pid = g_next_pid++;
+                if (candidate_pid == 0U) {
+                    candidate_pid = g_next_pid++;
+                }
+            }
+
+            slot.pid = candidate_pid;
+            slot.ppid = ppid;
+            slot.state = ProcessState::Ready;
+            slot.exit_status = 0;
+            slot.address_space = MM::AddressSpace{};
+            slot.context = HAL::CpuContext{};
+            slot.user_stack = UserStack{};
+            slot.entry_point = 0U;
+            slot.brk_start = DEFAULT_USER_BRK_BASE;
+            slot.brk_current = DEFAULT_USER_BRK_BASE;
+            slot.mmap_next_vaddr = DEFAULT_USER_MMAP_BASE;
+            init_standard_fds(slot);
+            return &slot;
+        }
+    }
+    return nullptr;
+}
+
+void release_process(Process& proc) noexcept {
+    if (g_current_process == &proc) {
+        g_current_process = nullptr;
+    }
+
+    if (proc.user_stack.phys_base != 0U && proc.user_stack.num_pages > 0U) {
+        free_frames(proc.user_stack.phys_base, proc.user_stack.num_pages);
+    }
+
+    proc.address_space.destroy();
+    proc.pid = 0U;
+    proc.ppid = 0U;
+    proc.state = ProcessState::Unused;
+    proc.exit_status = 0;
+    proc.context = HAL::CpuContext{};
+    proc.user_stack = UserStack{};
+    proc.entry_point = 0U;
+    proc.brk_start = 0U;
+    proc.brk_current = 0U;
+    proc.mmap_next_vaddr = 0U;
+    reset_fd_table(proc);
+}
+
+Process* find_process_by_pid(uint32_t pid) noexcept {
+    if (pid == 0U) {
+        return nullptr;
+    }
+    for (size_t idx = 0U; idx < MAX_PROCESSES; ++idx) {
+        if (g_process_table[idx].state != ProcessState::Unused &&
+            g_process_table[idx].pid == pid) {
+            return &g_process_table[idx];
+        }
+    }
+    return nullptr;
+}
+
+size_t active_process_count() noexcept {
+    size_t count = 0U;
+    for (size_t idx = 0U; idx < MAX_PROCESSES; ++idx) {
+        if (g_process_table[idx].state != ProcessState::Unused) {
+            count++;
+        }
+    }
+    return count;
+}
+
+Process* current_process() noexcept {
+    return g_current_process;
+}
+
+void set_current_process(Process* proc) noexcept {
+    g_current_process = proc;
+}
 
 void init_user_cpu_context(HAL::CpuContext& ctx, uintptr_t entry_point, uintptr_t sp_el0,
                            uint64_t argc, uintptr_t argv_vaddr) noexcept {
     // Zero out all general purpose registers (x0-x30) to prevent state leaks
-    for (size_t i = 0U; i < 31U; ++i) {
-        ctx.x[i] = 0ULL;
+    for (size_t idx = 0U; idx < 31U; ++idx) {
+        ctx.x[idx] = 0ULL;
     }
 
     ctx.x[0] = argc;           // x0 = argc
@@ -14,6 +139,25 @@ void init_user_cpu_context(HAL::CpuContext& ctx, uintptr_t entry_point, uintptr_
     ctx.sp_el0 = sp_el0;       // 16-byte aligned user stack pointer
     ctx.elr_el1 = entry_point; // Entry point (e_entry from ELF header)
     ctx.spsr_el1 = 0x00ULL;    // EL0t mode with DAIF exceptions unmasked
+}
+
+int64_t execute_process(Process& proc) noexcept {
+    if (!proc.address_space.is_valid()) {
+        return -1;
+    }
+
+    const uintptr_t orig_root = MM::AddressSpace::current_root_paddr();
+    Process* const prev_proc = g_current_process;
+
+    proc.state = ProcessState::Running;
+    g_current_process = &proc;
+    proc.address_space.activate();
+
+    const int64_t exit_code = enter_user_context(&proc.context);
+
+    MM::AddressSpace::activate_root(orig_root);
+    g_current_process = prev_proc;
+    return exit_code;
 }
 
 } // namespace Kernel::Process
