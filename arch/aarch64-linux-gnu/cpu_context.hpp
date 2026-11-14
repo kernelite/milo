@@ -5,10 +5,12 @@
 #include <cstdint>
 
 struct alignas(16) AArch64CpuContext {
-    uint64_t x[31];    // General purpose registers x0-x30
-    uint64_t sp_el0;   // User stack pointer
-    uint64_t elr_el1;  // Exception Link Register (Return PC)
-    uint64_t spsr_el1; // Saved Program Status Register
+    uint64_t x[31];     // General purpose registers x0-x30
+    uint64_t sp_el0;    // User stack pointer
+    uint64_t elr_el1;   // Exception Link Register (Return PC)
+    uint64_t spsr_el1;  // Saved Program Status Register
+    uint64_t tpidr_el0; // EL0 Thread Pointer / TLS base (offset 272)
+    uint64_t _pad;      // 16-byte frame alignment padding (offset 280)
 };
 
 static_assert(sizeof(AArch64CpuContext) == sizeof(HAL::CpuContext),

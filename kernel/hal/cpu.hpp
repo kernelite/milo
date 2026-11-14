@@ -7,9 +7,9 @@ namespace HAL {
 // Opaque 272-byte architecture trap/execution register frame.
 // Concrete register layout is defined exclusively in arch/$(ARCH)/.
 struct alignas(16) CpuContext {
-    uint64_t opaque[34];
+    uint64_t opaque[36];
 };
-static_assert(sizeof(CpuContext) == 272U, "CpuContext must be 272 bytes");
+static_assert(sizeof(CpuContext) == 288U, "CpuContext must be 288 bytes");
 
 struct PlatformInfo {
     uintptr_t ram_base;
@@ -53,6 +53,8 @@ class CpuControl {
     virtual uint64_t get_syscall_arg(const CpuContext& ctx, size_t index) const noexcept = 0;
     virtual void set_syscall_return(CpuContext& ctx, int64_t value) const noexcept = 0;
     virtual void set_user_stack_pointer(CpuContext& ctx, uintptr_t user_sp) const noexcept = 0;
+    virtual void set_user_tls_pointer(CpuContext& ctx, uintptr_t tls) const noexcept = 0;
+    virtual uintptr_t get_user_tls_pointer(const CpuContext& ctx) const noexcept = 0;
 };
 
 CpuControl& get_cpu() noexcept;

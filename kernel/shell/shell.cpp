@@ -1544,6 +1544,75 @@ void cmd_test_fork_exec() noexcept {
                 "All cloned, execve, stack, and page-table frames freed cleanly");
 }
 
+void cmd_test_musl() noexcept {
+    print_str("\r\n[TEST] Executing Static musl-libc Binary (/bin/hello_musl)...\r\n");
+
+    if (!g_initrd_loc.valid || g_initrd_loc.start_paddr == 0U || g_initrd_loc.size == 0U) {
+        print_str("[FAIL] No valid initrd loaded.\r\n");
+        return;
+    }
+
+    const size_t pages_before = pfa_allocated_pages_count();
+    const size_t procs_before = Kernel::Process::active_process_count();
+
+    CpioEntry entry{};
+    const CpioStatus cpio_st = cpio_lookup(
+        reinterpret_cast<const void*>(Kernel::MM::phys_to_virt(g_initrd_loc.start_paddr)),
+        g_initrd_loc.size, "/bin/hello_musl", entry);
+    assert_test(cpio_st == CpioStatus::Success && entry.is_regular_file,
+                "Located /bin/hello_musl in rootfs.cpio");
+    if (cpio_st != CpioStatus::Success) {
+        return;
+    }
+
+    auto load_res = Kernel::Loader::load_elf(entry.data, entry.size);
+    assert_test(load_res.is_ok(), "Loaded static musl ELF64 binary into isolated AddressSpace");
+    if (!load_res.is_ok()) {
+        return;
+    }
+
+    auto* const proc = Kernel::Process::allocate_process(0U);
+    assert_test(proc != nullptr, "Allocated PCB for /bin/hello_musl");
+    if (proc == nullptr) {
+        load_res->address_space.destroy();
+        return;
+    }
+
+    Elf64_auxv_t auxv[Kernel::Process::STANDARD_AUXV_COUNT]{};
+    const size_t auxv_count = Kernel::Process::populate_standard_auxv(
+        *load_res, auxv, Kernel::Process::STANDARD_AUXV_COUNT);
+
+    Kernel::Process::attach_loaded_elf(*proc, static_cast<Kernel::Loader::LoadedElf&&>(*load_res));
+
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space);
+    if (!stack_res.is_ok()) {
+        Kernel::Process::release_process(*proc);
+        print_str("[FAIL] Failed to allocate user stack\r\n");
+        return;
+    }
+    proc->user_stack = stack_res.value();
+
+    const char* const argv[] = {"/bin/hello_musl", nullptr};
+    const char* const envp[] = {"PATH=/bin", "TERM=vt100", nullptr};
+    auto abi_res = Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack, 1, argv,
+                                                                       envp, auxv, auxv_count);
+    assert_test(abi_res.is_ok(), "Built System V ABI stack with AT_PHDR/AT_RANDOM auxv");
+
+    Kernel::Process::init_user_cpu_context(proc->context, proc->entry_point,
+                                           proc->user_stack.final_sp_el0, proc->user_stack.argc,
+                                           proc->user_stack.argv_vaddr);
+
+    const int64_t exit_status = Kernel::Process::execute_process(*proc);
+    assert_test(exit_status == 0 && proc->state == Kernel::Process::ProcessState::Zombie,
+                "/bin/hello_musl printed via musl stdio and exited with status 0");
+
+    Kernel::Process::release_process(*proc);
+
+    assert_test(Kernel::Process::active_process_count() == procs_before,
+                "PCB count returned to baseline");
+    assert_test(pfa_allocated_pages_count() == pages_before,
+                "Physical frame count returned to baseline");
+}
 void print_help() noexcept {
     print_str("\r\nAvailable Commands:\r\n");
     print_str("  help            - Display this menu\r\n");
@@ -1577,6 +1646,7 @@ void print_help() noexcept {
     print_str("  test tty_echo   - Run interactive EL0 TTY read/write echo test\r\n");
     print_str("  test user_mm    - Test user heap (sys_brk) & anonymous sys_mmap/sys_munmap\r\n");
     print_str("  test proc       - Test process spae and exit functions\r\n");
+    print_str("  test musl       - Test MUSL");
     print_str("  halt            - Put CPU into low-power WFI state\r\n");
 }
 
@@ -1642,6 +1712,8 @@ void dispatch_command(const char* buf) noexcept {
     } else if (streq(buf, "halt")) {
         print_str("[INFO] Halting CPU. Use QEMU 'Ctrl-A X' to exit.\r\n");
         HAL::get_cpu().halt();
+    } else if (streq(buf, "test musl")) {
+        cmd_test_musl();
     } else if (streq(buf, "clear")) {
         print_str("\033[2J\033[H");
     } else if (streq(buf, "help")) {
@@ -1668,6 +1740,7 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_user_mm();
         cmd_test_proc_exit();
         cmd_test_fork_exec();
+        cmd_test_musl();
     } else if (buf[0] != '\0') {
         print_str("Unknown command: '");
         print_str(buf);

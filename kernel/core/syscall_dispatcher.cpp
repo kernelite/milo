@@ -21,8 +21,10 @@ namespace {
 constexpr uint64_t SYS_IOCTL = 29U;
 constexpr uint64_t SYS_READ = 63U;
 constexpr uint64_t SYS_WRITE = 64U;
+constexpr uint64_t SYS_WRITEV = 66U;
 constexpr uint64_t SYS_EXIT = 93U;
 constexpr uint64_t SYS_EXIT_GROUP = 94U;
+constexpr uint64_t SYS_SET_TID_ADDRESS = 96U;
 constexpr uint64_t SYS_GETPID = 172U;
 constexpr uint64_t SYS_GETPPID = 173U;
 constexpr uint64_t SYS_BRK = 214U;
@@ -30,7 +32,10 @@ constexpr uint64_t SYS_MUNMAP = 215U;
 constexpr uint64_t SYS_CLONE = 220U;
 constexpr uint64_t SYS_EXECVE = 221U;
 constexpr uint64_t SYS_MMAP = 222U;
+constexpr uint64_t SYS_MPROTECT = 226U;
 constexpr uint64_t SYS_WAIT4 = 260U;
+
+constexpr size_t UIO_MAXIOV = 1024U;
 
 // Negated POSIX Error Codes
 constexpr int64_t ERR_ENOENT = -2;
@@ -127,6 +132,12 @@ struct winsize {
     uint16_t ws_ypixel;
 };
 static_assert(sizeof(winsize) == 8U, "winsize must be 8 bytes");
+
+struct UserIovec {
+    uint64_t iov_base;
+    uint64_t iov_len;
+};
+static_assert(sizeof(UserIovec) == 16U, "UserIovec must match Linux struct iovec ABI");
 
 ktermios g_console_termios{
     .c_iflag = TERMIOS_ICRNL,
@@ -836,8 +847,12 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
     }
 
     auto new_stack = stack_res.value();
-    auto abi_res = Kernel::Process::UserStackBuilder::build_abi_layout(new_stack, argc, argv_kptrs,
-                                                                       envp_kptrs);
+    Elf64_auxv_t auxv[Kernel::Process::STANDARD_AUXV_COUNT]{};
+    const size_t auxv_count =
+        Kernel::Process::populate_standard_auxv(loaded, auxv, Kernel::Process::STANDARD_AUXV_COUNT);
+
+    auto abi_res = Kernel::Process::UserStackBuilder::build_abi_layout(
+        new_stack, argc, argv_kptrs, envp_kptrs, auxv, auxv_count);
     if (!abi_res.is_ok()) {
         free_frames(new_stack.phys_base, new_stack.num_pages);
         loaded.address_space.destroy();
@@ -952,6 +967,156 @@ int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
     return static_cast<int64_t>(reaped_pid);
 }
 
+int64_t sys_set_tid_address(uintptr_t tidptr) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return 0;
+    }
+    proc->clear_child_tid = tidptr;
+    return static_cast<int64_t>(proc->pid);
+}
+
+int64_t sys_writev(uint64_t raw_fd, uintptr_t user_iov, uint64_t raw_iovcnt) noexcept {
+    if (raw_fd >= Kernel::Process::MAX_FDS_PER_PROCESS) {
+        return ERR_EBADF;
+    }
+    const auto fd_idx = static_cast<size_t>(raw_fd);
+
+    auto* const proc = Kernel::Process::current_process();
+    uintptr_t root_paddr = 0U;
+
+    if (proc != nullptr) {
+        const auto& desc = proc->fd_table[fd_idx];
+        if (!desc.in_use || !desc.is_writable()) {
+            return ERR_EBADF;
+        }
+        if (desc.type != Kernel::Process::FdType::ConsoleTty) {
+            return ERR_EBADF;
+        }
+        root_paddr = proc->address_space.root_paddr();
+    } else {
+        if (fd_idx != 1U && fd_idx != 2U) {
+            return ERR_EBADF;
+        }
+        root_paddr = Kernel::MM::AddressSpace::current_root_paddr();
+    }
+
+    if (raw_iovcnt == 0U) {
+        return 0;
+    }
+    if (raw_iovcnt > UIO_MAXIOV) {
+        return ERR_EINVAL;
+    }
+    const auto iovcnt = static_cast<size_t>(raw_iovcnt);
+
+    if (!validate_user_read_range(root_paddr, user_iov, iovcnt * sizeof(UserIovec))) {
+        return ERR_EFAULT;
+    }
+
+    char kbuf[WRITE_CHUNK_SIZE]{};
+    uint64_t total_written = 0ULL;
+
+    for (size_t idx = 0U; idx < iovcnt; ++idx) {
+        UserIovec iov{};
+        const uintptr_t entry_vaddr = user_iov + (idx * sizeof(UserIovec));
+        const int64_t iov_res =
+            Kernel::MM::copy_from_user(root_paddr, &iov, entry_vaddr, sizeof(UserIovec));
+        if (iov_res < 0) {
+            return (total_written > 0ULL) ? static_cast<int64_t>(total_written) : iov_res;
+        }
+
+        if (iov.iov_len == 0ULL) {
+            continue;
+        }
+        if (iov.iov_len > (UINT64_MAX - total_written) ||
+            (total_written + iov.iov_len) > static_cast<uint64_t>(INT64_MAX)) {
+            return (total_written > 0ULL) ? static_cast<int64_t>(total_written) : ERR_EINVAL;
+        }
+
+        const auto buf_vaddr = static_cast<uintptr_t>(iov.iov_base);
+        const auto buf_len = static_cast<size_t>(iov.iov_len);
+        if (!validate_user_read_range(root_paddr, buf_vaddr, buf_len)) {
+            return (total_written > 0ULL) ? static_cast<int64_t>(total_written) : ERR_EFAULT;
+        }
+
+        size_t vec_written = 0U;
+        while (vec_written < buf_len) {
+            const size_t remaining = buf_len - vec_written;
+            const size_t chunk = (remaining < WRITE_CHUNK_SIZE) ? remaining : WRITE_CHUNK_SIZE;
+
+            const int64_t copy_res =
+                Kernel::MM::copy_from_user(root_paddr, kbuf, buf_vaddr + vec_written, chunk);
+            if (copy_res < 0) {
+                return (total_written > 0ULL) ? static_cast<int64_t>(total_written) : copy_res;
+            }
+
+            HAL::get_console().write(kbuf, chunk);
+            vec_written += chunk;
+            total_written += chunk;
+        }
+    }
+
+    return static_cast<int64_t>(total_written);
+}
+
+int64_t sys_mprotect(uintptr_t addr, uint64_t length, uint64_t prot) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+
+    const size_t page_size = HAL::get_platform_info().page_size;
+    const uintptr_t page_mask = page_size - 1U;
+    const uintptr_t va_limit = Kernel::MM::user_addr_space_limit();
+
+    if ((addr & page_mask) != 0U) {
+        return ERR_EINVAL;
+    }
+    if ((prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) != 0U) {
+        return ERR_EINVAL;
+    }
+    if (addr >= va_limit) {
+        return ERR_ENOMEM;
+    }
+    if (length == 0U) {
+        return 0;
+    }
+    if (length > (UINT64_MAX - page_mask)) {
+        return ERR_ENOMEM;
+    }
+
+    const uint64_t aligned_len = (length + page_mask) & ~page_mask;
+    if (aligned_len > (va_limit - addr)) {
+        return ERR_ENOMEM;
+    }
+
+    HAL::PageFlags page_flags = HAL::PageFlags::None;
+    if (prot != PROT_NONE) {
+        page_flags = HAL::PageFlags::User;
+        if ((prot & PROT_READ) != 0U) {
+            page_flags |= HAL::PageFlags::Read;
+        }
+        if ((prot & PROT_WRITE) != 0U) {
+            page_flags |= HAL::PageFlags::Write;
+        }
+        if ((prot & PROT_EXEC) != 0U) {
+            page_flags |= HAL::PageFlags::Execute;
+        }
+    }
+
+    const uintptr_t end_addr = addr + static_cast<uintptr_t>(aligned_len);
+    for (uintptr_t page_vaddr = addr; page_vaddr < end_addr; page_vaddr += page_size) {
+        if (!proc->address_space.protect_user_page(page_vaddr, page_flags)) {
+            return ERR_ENOMEM;
+        }
+    }
+
+    if ((prot & PROT_EXEC) != 0U) {
+        HAL::get_cpu().invalidate_icache();
+    }
+
+    return 0;
+}
 } // namespace
 
 namespace Kernel {
@@ -1038,6 +1203,21 @@ class SyscallDispatcher : public HAL::TrapHandler {
                 static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)), cpu.get_syscall_arg(ctx, 2U),
                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 3U)));
+            break;
+
+        case SYS_WRITEV:
+            ret_val = sys_writev(cpu.get_syscall_arg(ctx, 0U),
+                                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
+                                 cpu.get_syscall_arg(ctx, 2U));
+            break;
+
+        case SYS_SET_TID_ADDRESS:
+            ret_val = sys_set_tid_address(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)));
+            break;
+
+        case SYS_MPROTECT:
+            ret_val = sys_mprotect(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)),
+                                   cpu.get_syscall_arg(ctx, 1U), cpu.get_syscall_arg(ctx, 2U));
             break;
 
         default:

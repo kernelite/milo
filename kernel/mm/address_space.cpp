@@ -59,6 +59,10 @@ void AddressSpace::destroy() noexcept {
     }
 }
 
+bool AddressSpace::protect_user_page(uintptr_t vaddr, HAL::PageFlags flags) const noexcept {
+    return HAL::AddressSpaceBackend::protect_user_page(m_root_paddr, vaddr, flags);
+}
+
 int64_t copy_from_user(uintptr_t root_paddr, void* dst, uintptr_t user_src, size_t len) noexcept {
     const uintptr_t va_limit = user_addr_space_limit();
     if (user_src >= va_limit) {

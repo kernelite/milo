@@ -78,6 +78,26 @@ inline constexpr Elf64_Word PF_X = 1U << 0; // Execute
 inline constexpr Elf64_Word PF_W = 1U << 1; // Write
 inline constexpr Elf64_Word PF_R = 1U << 2; // Read
 
+inline constexpr uint64_t AT_NULL = 0;
+inline constexpr uint64_t AT_IGNORE = 1;
+inline constexpr uint64_t AT_EXECFD = 2;
+inline constexpr uint64_t AT_PHDR = 3;
+inline constexpr uint64_t AT_PHENT = 4;
+inline constexpr uint64_t AT_PHNUM = 5;
+inline constexpr uint64_t AT_PAGESZ = 6;
+inline constexpr uint64_t AT_BASE = 7;
+inline constexpr uint64_t AT_FLAGS = 8;
+inline constexpr uint64_t AT_ENTRY = 9;
+inline constexpr uint64_t AT_NOTELF = 10;
+inline constexpr uint64_t AT_UID = 11;
+inline constexpr uint64_t AT_EUID = 12;
+inline constexpr uint64_t AT_GID = 13;
+inline constexpr uint64_t AT_EGID = 14;
+inline constexpr uint64_t AT_CLKTCK = 17;
+inline constexpr uint64_t AT_SECURE = 23;
+inline constexpr uint64_t AT_RANDOM = 25;
+inline constexpr uint64_t AT_EXECFN = 31;
+
 typedef struct {
     uint64_t a_type; /* Entry type */
     union {

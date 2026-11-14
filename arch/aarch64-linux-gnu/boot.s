@@ -85,8 +85,8 @@ vector_table:
 .balign 4
 
 trap_sync_common:
-    // Allocate CpuContext (272 bytes = 17 * 16 bytes) on stack
-    sub     sp, sp, #272
+    // Allocate CpuContext (288 bytes = 18 * 16 bytes) on stack
+    sub     sp, sp, #288
     stp     x0,  x1,  [sp, #0]
     stp     x2,  x3,  [sp, #16]
     stp     x4,  x5,  [sp, #32]
@@ -110,6 +110,8 @@ trap_sync_common:
     str     x1, [sp, #256]
     mrs     x2, spsr_el1
     str     x2, [sp, #264]
+    mrs     x3, tpidr_el0
+    str     x3, [sp, #272]
 
     // Route to C++ synchronous exception handler
     mov     x0, sp              // arg1: HAL::CpuContext* ctx
@@ -124,6 +126,8 @@ trap_sync_common:
     msr     elr_el1, x1
     ldr     x2, [sp, #264]
     msr     spsr_el1, x2
+    ldr     x3, [sp, #272]
+    msr     tpidr_el0, x3
 
     ldp     x0,  x1,  [sp, #0]
     ldp     x2,  x3,  [sp, #16]
@@ -141,11 +145,11 @@ trap_sync_common:
     ldp     x26, x27, [sp, #208]
     ldp     x28, x29, [sp, #224]
     ldr     x30,      [sp, #240]
-    add     sp, sp, #272
+    add     sp, sp, #288
     eret
 
 trap_invalid_common:
-    sub     sp, sp, #272
+    sub     sp, sp, #288
     stp     x0,  x1,  [sp, #0]
     stp     x2,  x3,  [sp, #16]
     stp     x4,  x5,  [sp, #32]
@@ -169,6 +173,8 @@ trap_invalid_common:
     str     x1, [sp, #256]
     mrs     x2, spsr_el1
     str     x2, [sp, #264]
+    mrs     x3, tpidr_el0
+    str     x3, [sp, #272]
 
     mov     x0, sp              // arg1: HAL::CpuContext* ctx
     mov     x1, x9              // arg2: uint64_t type
@@ -180,6 +186,8 @@ trap_invalid_common:
     msr     elr_el1, x1
     ldr     x2, [sp, #264]
     msr     spsr_el1, x2
+    ldr     x3, [sp, #272]
+    msr     tpidr_el0, x3
 
     ldp     x0,  x1,  [sp, #0]
     ldp     x2,  x3,  [sp, #16]
@@ -197,7 +205,7 @@ trap_invalid_common:
     ldp     x26, x27, [sp, #208]
     ldp     x28, x29, [sp, #224]
     ldr     x30,      [sp, #240]
-    add     sp, sp, #272
+    add     sp, sp, #288
     eret
 
 // ==========================================================================
@@ -221,6 +229,7 @@ enter_user_mode:
     msr     elr_el1, x0
     mov     x2, #0x0            // EL0t mode
     msr     spsr_el1, x2
+    msr     tpidr_el0, xzr
 
     mov     x0, #0
     mov     x1, #0
@@ -249,6 +258,8 @@ enter_user_context:
     msr     elr_el1, x1
     ldr     x1, [x9, #264]
     msr     spsr_el1, x1
+    ldr     x1, [x9, #272]
+    msr     tpidr_el0, x1
 
     ldp     x0,  x1,  [x9, #0]
     ldp     x2,  x3,  [x9, #16]
@@ -269,6 +280,7 @@ enter_user_context:
 
     isb
     eret
+
 .global return_to_kernel
 return_to_kernel:
     adrp    x2, kernel_ctx
