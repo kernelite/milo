@@ -1,3 +1,4 @@
+// File: arch/aarch64-linux-gnu/mmu_aarch64.cpp
 #include "cpu_context.hpp"
 #include "hal/console.hpp"
 #include "hal/mmu.hpp"
@@ -63,10 +64,7 @@ alignas(4096) uint64_t g_ttbr0_l0[512] = {0}; // TTBR0_EL1 (User / Lower VA spac
 alignas(4096) uint64_t g_ttbr1_l0[512] = {0}; // TTBR1_EL1 (Kernel / Higher VA space)
 
 uintptr_t allocate_table_page() noexcept {
-    uintptr_t phys = 0U;
-    if (alloc_frame != nullptr) {
-        phys = alloc_frame();
-    }
+    uintptr_t phys = alloc_frame();
 
     // Fallback static pool for early boot prior to frame allocator initialization
     if (phys == 0U) {
@@ -94,7 +92,6 @@ bool map_page_in_root(uint64_t* root_l0, uintptr_t virt_addr, uintptr_t phys_add
     const size_t l2_idx = (virt_addr >> 21U) & 0x1FFU;
     const size_t l3_idx = (virt_addr >> 12U) & 0x1FFU;
 
-    // L0 -> L1
     if ((root_l0[l0_idx] & 1U) == 0U) {
         uintptr_t l1_paddr = allocate_table_page();
         if (l1_paddr == 0U) {
@@ -105,7 +102,6 @@ bool map_page_in_root(uint64_t* root_l0, uintptr_t virt_addr, uintptr_t phys_add
     }
     auto* l1_table = reinterpret_cast<uint64_t*>(root_l0[l0_idx] & 0x000FFFFFFFFFF000ULL);
 
-    // L1 -> L2
     if ((l1_table[l1_idx] & 1U) == 0U) {
         uintptr_t l2_paddr = allocate_table_page();
         if (l2_paddr == 0U) {
@@ -116,7 +112,6 @@ bool map_page_in_root(uint64_t* root_l0, uintptr_t virt_addr, uintptr_t phys_add
     }
     auto* l2_table = reinterpret_cast<uint64_t*>(l1_table[l1_idx] & 0x000FFFFFFFFFF000ULL);
 
-    // L2 -> L3
     if ((l2_table[l2_idx] & 1U) == 0U) {
         uintptr_t l3_paddr = allocate_table_page();
         if (l3_paddr == 0U) {
@@ -127,7 +122,6 @@ bool map_page_in_root(uint64_t* root_l0, uintptr_t virt_addr, uintptr_t phys_add
     }
     auto* l3_table = reinterpret_cast<uint64_t*>(l2_table[l2_idx] & 0x000FFFFFFFFFF000ULL);
 
-    // L3 Page Descriptor Construction
     uint64_t desc = (phys_addr & 0x000FFFFFFFFFF000ULL) | 0x3ULL; // Valid + Page Descriptor
     desc |= (1ULL << 10U);                                        // Access Flag (AF)
 
@@ -136,15 +130,9 @@ bool map_page_in_root(uint64_t* root_l0, uintptr_t virt_addr, uintptr_t phys_add
     const bool is_exec = HAL::has_flag(flags, HAL::PageFlags::Execute);
     const bool is_device = HAL::has_flag(flags, HAL::PageFlags::Device);
 
-    // Select MAIR_EL1 Index: Attr 0 = Device-nGnRnE (0x00), Attr 1 = Normal WB (0xFF)
     const uint64_t attr_idx = is_device ? 0ULL : 1ULL;
     desc |= (attr_idx << 2U);
 
-    // AP[2:1] Access Permissions:
-    // 00 = Kernel RW / User None
-    // 01 = Kernel RW / User RW
-    // 10 = Kernel RO / User None
-    // 11 = Kernel RO / User RO
     uint64_t ap_ = 0ULL;
     if (!is_write) {
         ap_ = is_user ? 0x3ULL : 0x2ULL;
@@ -157,15 +145,14 @@ bool map_page_in_root(uint64_t* root_l0, uintptr_t virt_addr, uintptr_t phys_add
         desc |= (3ULL << 8U); // Inner Shareable
     }
 
-    // Execute-Never Protection (PXN / UXN):
     if (!is_exec) {
         desc |= (1ULL << 53U); // PXN
         desc |= (1ULL << 54U); // UXN
     } else {
         if (is_user) {
-            desc |= (1ULL << 53U); // PXN: User executable code cannot execute in Kernel context
+            desc |= (1ULL << 53U); // PXN
         } else {
-            desc |= (1ULL << 54U); // UXN: Kernel executable code cannot execute in User context
+            desc |= (1ULL << 54U); // UXN
         }
     }
 
@@ -228,14 +215,22 @@ class AArch64MemoryControl : public HAL::MemoryControl {
         const uintptr_t rodata_start = reinterpret_cast<uintptr_t>(_rodata_start);
         const uintptr_t rodata_end = reinterpret_cast<uintptr_t>(_rodata_end);
         const uintptr_t data_start = reinterpret_cast<uintptr_t>(_data_start);
-        const uintptr_t ram_end = Arch::RAM_BASE + (256UL * 1024UL * 1024UL); // 256 MB platform RAM
+        const uintptr_t ram_end = Arch::RAM_BASE + (256UL * 1024UL * 1024UL);
+        const uintptr_t higher_half_offset = 0xFFFF800000000000ULL;
 
-        // 1. Identity map UART MMIO register space (0x09000000) as Device-nGnRnE (RW + NX)
-        map_page_in_root(g_ttbr0_l0, 0x09000000U, 0x09000000U,
-                         HAL::PageFlags::Read | HAL::PageFlags::Write | HAL::PageFlags::Device);
+        const HAL::PageFlags dev_rw =
+            HAL::PageFlags::Read | HAL::PageFlags::Write | HAL::PageFlags::Device;
 
-        // 2. Identity map low RAM below kernel text (0x40000000 to text_start) for DTB & boot
-        // structures
+        // 1. Map GICv2 Distributor (0x08000000), CPU Interface (0x08010000), and UART0 (0x09000000)
+        map_page_in_root(g_ttbr0_l0, 0x08000000U, 0x08000000U, dev_rw);
+        map_page_in_root(g_ttbr0_l0, 0x08010000U, 0x08010000U, dev_rw);
+        map_page_in_root(g_ttbr0_l0, 0x09000000U, 0x09000000U, dev_rw);
+
+        map_page_in_root(g_ttbr1_l0, 0x08000000ULL + higher_half_offset, 0x08000000U, dev_rw);
+        map_page_in_root(g_ttbr1_l0, 0x08010000ULL + higher_half_offset, 0x08010000U, dev_rw);
+        map_page_in_root(g_ttbr1_l0, 0x09000000ULL + higher_half_offset, 0x09000000U, dev_rw);
+
+        // 2. Identity map low RAM below kernel text (0x40000000 to text_start)
         for (uintptr_t addr = Arch::RAM_BASE; addr < text_start; addr += Arch::PAGE_SIZE) {
             map_page_in_root(g_ttbr0_l0, addr, addr, HAL::PageFlags::Read | HAL::PageFlags::Write);
         }
@@ -251,14 +246,12 @@ class AArch64MemoryControl : public HAL::MemoryControl {
             map_page_in_root(g_ttbr0_l0, addr, addr, HAL::PageFlags::Read);
         }
 
-        // 5. Identity map Kernel .data, .bss, boot stack, and physical RAM pool up to ram_end (RW +
-        // NX)
+        // 5. Identity map Kernel .data, .bss, boot stack, and physical RAM pool
         for (uintptr_t addr = data_start; addr < ram_end; addr += Arch::PAGE_SIZE) {
             map_page_in_root(g_ttbr0_l0, addr, addr, HAL::PageFlags::Read | HAL::PageFlags::Write);
         }
 
         // 6. Higher-half kernel space mappings for TTBR1_EL1 (0xFFFF800040000000+)
-        const uintptr_t higher_half_offset = 0xFFFF800000000000ULL;
         for (uintptr_t addr = Arch::RAM_BASE; addr < text_start; addr += Arch::PAGE_SIZE) {
             map_page_in_root(g_ttbr1_l0, addr + higher_half_offset, addr,
                              HAL::PageFlags::Read | HAL::PageFlags::Write);
@@ -275,7 +268,6 @@ class AArch64MemoryControl : public HAL::MemoryControl {
                              HAL::PageFlags::Read | HAL::PageFlags::Write);
         }
 
-        // Activate hardware MMU and system control registers
         Arch::init_mmu(reinterpret_cast<uintptr_t>(g_ttbr0_l0),
                        reinterpret_cast<uintptr_t>(g_ttbr1_l0));
     }
@@ -301,50 +293,35 @@ void init_mmu(uintptr_t ttbr0_base, uintptr_t ttbr1_base) {
     flush_dcache_range(ttbr0_base, 4096U);
     flush_dcache_range(ttbr1_base, 4096U);
 
-    // 1. Setup MAIR_EL1: Attr0 = 0x00 (Device-nGnRnE), Attr1 = 0xFF (Normal Inner/Outer Write-Back)
     const uint64_t mair = (0x00ULL << 0U) | (0xFFULL << 8U);
     asm volatile("msr mair_el1, %0" ::"r"(mair));
 
-    // 2. Query CPU PARange to prevent Address Size Faults
     uint64_t mmfr0;
     asm volatile("mrs %0, id_aa64mmfr0_el1" : "=r"(mmfr0));
     const uint64_t pa_range = mmfr0 & 0xFU;
 
-    // 3. Setup TCR_EL1: 48-bit VA space (T0SZ=16, T1SZ=16), 4KB Granules (TG0=00b, TG1=10b),
-    // IS=11b, Inner/Outer WB
-    const uint64_t tcr = (16ULL << 0U) |    // T0SZ  = 16 (48-bit VA for TTBR0)
-                         (1ULL << 8U) |     // IRGN0 = 01 (Normal WB WA)
-                         (1ULL << 10U) |    // ORGN0 = 01 (Normal WB WA)
-                         (3ULL << 12U) |    // SH0   = 11 (Inner Shareable)
-                         (0ULL << 14U) |    // TG0   = 00 (4KB granule for TTBR0)
-                         (16ULL << 16U) |   // T1SZ  = 16 (48-bit VA for TTBR1)
-                         (1ULL << 24U) |    // IRGN1 = 01 (Normal WB WA)
-                         (1ULL << 26U) |    // ORGN1 = 01 (Normal WB WA)
-                         (3ULL << 28U) |    // SH1   = 11 (Inner Shareable)
-                         (2ULL << 30U) |    // TG1   = 10 (4KB granule for TTBR1)
-                         (pa_range << 32U); // IPS   = PA physical address range
+    const uint64_t tcr = (16ULL << 0U) | (1ULL << 8U) | (1ULL << 10U) | (3ULL << 12U) |
+                         (0ULL << 14U) | (16ULL << 16U) | (1ULL << 24U) | (1ULL << 26U) |
+                         (3ULL << 28U) | (2ULL << 30U) | (pa_range << 32U);
     asm volatile("msr tcr_el1, %0" ::"r"(tcr));
 
-    // 4. Set Page Table Roots
     asm volatile("msr ttbr0_el1, %0" ::"r"(ttbr0_base));
     asm volatile("msr ttbr1_el1, %0" ::"r"(ttbr1_base));
 
-    // 5. Full system barrier & TLB flush
     asm volatile("dsb sy\n\t"
                  "tlbi vmalle1is\n\t"
                  "dsb sy\n\t"
                  "isb" ::
                      : "memory");
 
-    // 6. Enable MMU (M bit 0), Data Cache (C bit 2), and Instruction Cache (I bit 12)
     uint64_t sctlr;
     asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
-    sctlr |= (1ULL << 0U);  // M: Enable MMU
-    sctlr |= (1ULL << 2U);  // C: Enable Data Cache
-    sctlr |= (1ULL << 12U); // I: Enable Instruction Cache
-    sctlr &= ~(1ULL << 1U); // Clear strict alignment check (A)
-    sctlr &= ~(1ULL << 3U); // Clear Stack Alignment check (SA)
-    sctlr &= ~(1ULL << 4U); // Clear Stack Alignment check for EL0 (SA0)
+    sctlr |= (1ULL << 0U);
+    sctlr |= (1ULL << 2U);
+    sctlr |= (1ULL << 12U);
+    sctlr &= ~(1ULL << 1U);
+    sctlr &= ~(1ULL << 3U);
+    sctlr &= ~(1ULL << 4U);
     asm volatile("msr sctlr_el1, %0\n\t"
                  "isb" ::"r"(sctlr)
                  : "memory");
@@ -356,6 +333,7 @@ namespace HAL {
 MemoryControl& get_mmu() noexcept {
     return aarch64_mmu;
 }
+
 uintptr_t AddressSpaceBackend::create_root() noexcept {
     const uintptr_t root_phys = allocate_zeroed_table();
     if (root_phys == 0U) {
@@ -467,13 +445,10 @@ bool AddressSpaceBackend::query_user_page(uintptr_t root_paddr, uintptr_t vaddr,
         return false;
     }
 
-    // Enforce AP[1] == 1 so privileged-only mappings (e.g., UART MMIO at 0x09000000) are rejected
     if ((l3_desc & AP_USER_BIT) == 0ULL) {
         return false;
     }
 
-    // Privileged-only or PROT_NONE mappings (AP[1] == 0) omit HAL::PageFlags::User so
-    // copy_from_user / copy_to_user reject them with -EFAULT while munmap can reclaim frames.
     out_paddr = (l3_desc & TABLE_ADDR_MASK) | (vaddr & PAGE_OFFSET_MASK);
 
     HAL::PageFlags flags = HAL::PageFlags::None;
@@ -697,7 +672,6 @@ bool AddressSpaceBackend::protect_user_page(uintptr_t root_paddr, uintptr_t vadd
         return false;
     }
 
-    // Clear AP[2:1] (bits [7:6]), PXN (bit 53), and UXN (bit 54)
     l3_desc &= ~((0x3ULL << 6U) | (1ULL << 53U) | (1ULL << 54U));
 
     const bool is_write = HAL::has_flag(flags, HAL::PageFlags::Write);

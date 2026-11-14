@@ -9,6 +9,9 @@
 #include "mm/address_space.hpp"
 #include "mm/pfa.hpp"
 #include "process/process.hpp"
+#include "process/scheduler.hpp"
+#include "hal/targets/qemu_virt/gicv2.hpp"
+#include "hal/targets/qemu_virt/timer.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -1613,6 +1616,96 @@ void cmd_test_musl() noexcept {
     assert_test(pfa_allocated_pages_count() == pages_before,
                 "Physical frame count returned to baseline");
 }
+
+void cmd_test_sched() noexcept {
+    print_str("\r\n[TEST] Running Preemptive Timer IRQ, Timeslice & WaitQueue Suite...\r\n");
+
+    const size_t pages_before = pfa_allocated_pages_count();
+    const size_t procs_before = Kernel::Process::active_process_count();
+    const uint64_t ticks_before = Kernel::Scheduler::timer_ticks();
+
+    // 1. Verify WaitQueue initialization
+    Kernel::Process::WaitQueue wq{};
+    assert_test(wq.empty(), "WaitQueue initialized empty");
+
+    // 2. Spawn EL0 coordinator + two CPU-bound workers preempted by 100Hz timer IRQs
+    auto* const parent = Kernel::Process::allocate_process(0U);
+    assert_test(parent != nullptr, "Allocated coordinator PCB");
+    if (parent == nullptr) {
+        return;
+    }
+
+    auto as_res = Kernel::MM::AddressSpace::create();
+    if (!as_res.is_ok()) {
+        Kernel::Process::release_process(*parent);
+        print_str("[FAIL] Failed to create AddressSpace\r\n");
+        return;
+    }
+    parent->address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
+
+    constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
+    constexpr uintptr_t DATA_VADDR = 0x0000000000500000ULL;
+    const uintptr_t code_paddr = alloc_frame();
+    const uintptr_t data_paddr = alloc_frame();
+
+    parent->address_space.map_user_page(CODE_VADDR, code_paddr,
+                                        HAL::PageFlags::User | HAL::PageFlags::Read |
+                                            HAL::PageFlags::Execute);
+    parent->address_space.map_user_page(DATA_VADDR, data_paddr,
+                                        HAL::PageFlags::User | HAL::PageFlags::Read |
+                                            HAL::PageFlags::Write);
+
+    auto* const k_code = reinterpret_cast<void*>(Kernel::MM::phys_to_virt(code_paddr));
+    const size_t code_bytes = HAL::Test::write_user_sched_suite_program(k_code);
+    HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(k_code), code_bytes);
+    HAL::get_cpu().invalidate_icache();
+
+    constexpr uintptr_t ARGS_VADDR = DATA_VADDR;
+    const HAL::Test::SchedSuiteArgs init_args{.worker_a_pid = 0U, .worker_b_pid = 0U};
+    Kernel::MM::copy_to_user(parent->address_space, ARGS_VADDR, &init_args, sizeof(init_args));
+
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(parent->address_space);
+    if (!stack_res.is_ok()) {
+        free_frame(code_paddr);
+        free_frame(data_paddr);
+        Kernel::Process::release_process(*parent);
+        print_str("[FAIL] Failed to allocate user stack\r\n");
+        return;
+    }
+    parent->user_stack = stack_res.value();
+
+    const char* const argv[] = {"sched_test"};
+    Kernel::Process::UserStackBuilder::build_abi_layout(parent->user_stack, 1, argv);
+
+    parent->entry_point = CODE_VADDR;
+    Kernel::Process::init_user_cpu_context(parent->context, CODE_VADDR,
+                                           parent->user_stack.final_sp_el0, ARGS_VADDR, 0ULL);
+
+    const int64_t exit_status = Kernel::Process::execute_process(*parent);
+    const uint64_t ticks_after = Kernel::Scheduler::timer_ticks();
+
+    HAL::Test::SchedSuiteArgs out_args{};
+    Kernel::MM::copy_from_user(parent->address_space, &out_args, ARGS_VADDR, sizeof(out_args));
+    const uint64_t worker_a_ticks = Kernel::Process::last_cpu_ticks_for_pid(out_args.worker_a_pid);
+    const uint64_t worker_b_ticks = Kernel::Process::last_cpu_ticks_for_pid(out_args.worker_b_pid);
+
+    assert_test(ticks_after > ticks_before,
+                "Hardware timer fired periodic PPI 30 interrupts during EL0 execution");
+    assert_test(worker_a_ticks > 0ULL && worker_b_ticks > 0ULL,
+                "Both CPU-bound EL0 workers were preempted and shared CPU time equitably");
+    assert_test(exit_status == 0,
+                "Parent blocked on WaitQueue in wait4() and reaped both workers cleanly");
+
+    free_frame(code_paddr);
+    free_frame(data_paddr);
+    Kernel::Process::release_process(*parent);
+
+    assert_test(Kernel::Process::active_process_count() == procs_before,
+                "All PCB slots released back to baseline");
+    assert_test(pfa_allocated_pages_count() == pages_before,
+                "All kernel stack, user stack, and page-table frames freed cleanly");
+}
+
 void print_help() noexcept {
     print_str("\r\nAvailable Commands:\r\n");
     print_str("  help            - Display this menu\r\n");
@@ -1711,9 +1804,16 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_fork_exec();
     } else if (streq(buf, "halt")) {
         print_str("[INFO] Halting CPU. Use QEMU 'Ctrl-A X' to exit.\r\n");
-        HAL::get_cpu().halt();
+        HAL::get_cpu().disable_interrupts();
+        HAL::QemuVirt::GenericTimer::disable();
+        HAL::QemuVirt::GicV2::disable_irq(HAL::QemuVirt::TIMER_PPI_IRQ);
+        while (true) {
+            HAL::get_cpu().halt();
+        }
     } else if (streq(buf, "test musl")) {
         cmd_test_musl();
+    } else if (streq(buf, "test sched")) {
+        cmd_test_sched();
     } else if (streq(buf, "clear")) {
         print_str("\033[2J\033[H");
     } else if (streq(buf, "help")) {
@@ -1741,6 +1841,7 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_proc_exit();
         cmd_test_fork_exec();
         cmd_test_musl();
+        cmd_test_sched();
     } else if (buf[0] != '\0') {
         print_str("Unknown command: '");
         print_str(buf);

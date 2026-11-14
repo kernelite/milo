@@ -1,13 +1,18 @@
 #include "cpu_context.hpp"
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
+#include "hal/targets/qemu_virt/gicv2.hpp"
+#include "hal/targets/qemu_virt/timer.hpp"
 #include "hal/trap.hpp"
+#include "process/process.hpp"
+#include "process/scheduler.hpp"
 
 #include <cstddef>
 #include <cstdint>
 
 extern "C" {
 void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t far) noexcept;
+void aarch64_handle_irq_exception(HAL::CpuContext* ctx) noexcept;
 void aarch64_handle_invalid_exception(HAL::CpuContext* ctx, uint64_t type) noexcept;
 [[noreturn]] void return_to_kernel(int64_t exit_code) noexcept;
 }
@@ -75,18 +80,26 @@ void dump_registers(const AArch64CpuContext* arch_ctx) noexcept {
     print_str("\r\n===================================================\r\n");
 }
 
-class AArch64TrapHandler : public HAL::TrapHandler {
-  public:
-    constexpr AArch64TrapHandler() = default;
-
-    void handle_trap(HAL::TrapFrame& frame) override { (void)frame; }
-};
-
-constinit AArch64TrapHandler aarch64_trap_handler{};
-
 } // namespace
 
 extern "C" {
+
+void aarch64_handle_irq_exception(HAL::CpuContext* ctx) noexcept {
+    (void)ctx;
+    const uint32_t irq = HAL::QemuVirt::GicV2::acknowledge_irq();
+    if (irq >= 1020U) {
+        return; // Spurious interrupt
+    }
+
+    if (irq == HAL::QemuVirt::TIMER_PPI_IRQ) {
+        HAL::QemuVirt::GenericTimer::reload();
+        HAL::QemuVirt::GicV2::end_of_interrupt(irq);
+        Kernel::Scheduler::on_timer_tick();
+        return;
+    }
+
+    HAL::QemuVirt::GicV2::end_of_interrupt(irq);
+}
 
 void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t far) noexcept {
     const uint32_t eclass = static_cast<uint32_t>((esr >> 26U) & 0x3FU); // Exception Class (EC)
@@ -115,6 +128,9 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
 
         if (arch_ctx != nullptr && (arch_ctx->spsr_el1 & 0x0FU) == 0U) {
             print_str("[TRAP] Terminating faulting EL0 process.\r\n");
+            if (Kernel::Process::current_process() != nullptr) {
+                Kernel::Process::exit_current_process(-1);
+            }
             return_to_kernel(-1);
         }
 
@@ -146,6 +162,9 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
 
         if (arch_ctx != nullptr && (arch_ctx->spsr_el1 & 0x0FU) == 0U) {
             print_str("[TRAP] Terminating faulting EL0 process.\r\n");
+            if (Kernel::Process::current_process() != nullptr) {
+                Kernel::Process::exit_current_process(-1);
+            }
             return_to_kernel(-1);
         }
 
@@ -188,6 +207,9 @@ void aarch64_handle_invalid_exception(HAL::CpuContext* ctx, uint64_t type) noexc
 
     if (arch_ctx != nullptr && (arch_ctx->spsr_el1 & 0x0FU) == 0U) {
         print_str("[TRAP] Terminating faulting EL0 process.\r\n");
+        if (Kernel::Process::current_process() != nullptr) {
+            Kernel::Process::exit_current_process(-3);
+        }
         return_to_kernel(-3);
     }
 

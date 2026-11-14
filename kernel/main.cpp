@@ -2,7 +2,10 @@
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
+#include "hal/targets/qemu_virt/gicv2.hpp"
+#include "hal/targets/qemu_virt/timer.hpp"
 #include "mm/pfa.hpp"
+#include "process/scheduler.hpp"
 #include "shell/shell.hpp"
 
 #include <cstdint>
@@ -88,7 +91,14 @@ extern "C" void kmain(uintptr_t dtb_paddr) {
     HAL::get_mmu().activate();
     print_str("[KERNEL] MMU Activated successfully.\r\n");
 
-    // 6. Disable interrupts and drop into shell
+    // 6. Initialize GICv2, 100Hz Timer, and Preemptive Scheduler
+    HAL::QemuVirt::GicV2::init();
+    HAL::QemuVirt::GenericTimer::init(100U);
+    HAL::QemuVirt::GicV2::enable_irq(HAL::QemuVirt::TIMER_PPI_IRQ);
+    Kernel::Scheduler::init();
+    print_str("[KERNEL] GICv2 & 100Hz Preemptive Scheduler initialized.\r\n");
+
+    // 7. Drop into interactive kernel shell
     HAL::get_cpu().disable_interrupts();
     Kernel::Shell::run();
 }

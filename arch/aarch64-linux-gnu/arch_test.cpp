@@ -22,6 +22,8 @@ extern const uint8_t el0_proc_lifecycle_suite_start[];
 extern const uint8_t el0_proc_lifecycle_suite_end[];
 extern const uint8_t el0_fork_exec_suite_start[];
 extern const uint8_t el0_fork_exec_suite_end[];
+extern const uint8_t el0_sched_suite_start[];
+extern const uint8_t el0_sched_suite_end[];
 }
 
 namespace {
@@ -212,6 +214,12 @@ size_t write_user_proc_lifecycle_program(void* dst_kva) noexcept {
 size_t write_user_fork_exec_program(void* dst_kva) noexcept {
     const auto size = static_cast<size_t>(el0_fork_exec_suite_end - el0_fork_exec_suite_start);
     memcpy(dst_kva, el0_fork_exec_suite_start, size);
+    return size;
+}
+
+size_t write_user_sched_suite_program(void* dst_kva) noexcept {
+    const auto size = static_cast<size_t>(el0_sched_suite_end - el0_sched_suite_start);
+    memcpy(dst_kva, el0_sched_suite_start, size);
     return size;
 }
 } // namespace HAL::Test
