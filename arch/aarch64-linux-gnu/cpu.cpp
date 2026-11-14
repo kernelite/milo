@@ -4,9 +4,12 @@
 #include "memory_config.hpp"
 
 extern "C" {
+void cpu_switch_context(HAL::KernelContext* prev, const HAL::KernelContext* next) noexcept;
+void user_trap_exit() noexcept;
 int64_t enter_user_mode(uintptr_t entry_point, uintptr_t user_sp);
 int64_t enter_user_context(const HAL::CpuContext* ctx);
 [[noreturn]] void return_to_kernel(int64_t exit_code);
+void* memcpy(void* dest, const void* src, size_t count) noexcept;
 }
 
 namespace {
@@ -44,6 +47,36 @@ class AArch64CpuControl : public HAL::CpuControl {
         (void)new_ctx;
     }
 
+    void switch_kernel_context(HAL::KernelContext* prev,
+                               const HAL::KernelContext* next) noexcept override {
+        if (next != nullptr) {
+            cpu_switch_context(prev, next);
+        }
+    }
+
+    void init_user_kstack(HAL::KernelContext& kctx, uintptr_t kstack_top,
+                          const HAL::CpuContext& user_ctx) const noexcept override {
+        const uintptr_t frame_addr = kstack_top - sizeof(HAL::CpuContext);
+        auto* const frame_ptr = reinterpret_cast<HAL::CpuContext*>(frame_addr);
+        memcpy(frame_ptr, &user_ctx, sizeof(HAL::CpuContext));
+
+        auto* const arch_kctx = reinterpret_cast<AArch64KernelContext*>(&kctx);
+        arch_kctx->x19 = 0ULL;
+        arch_kctx->x20 = 0ULL;
+        arch_kctx->x21 = 0ULL;
+        arch_kctx->x22 = 0ULL;
+        arch_kctx->x23 = 0ULL;
+        arch_kctx->x24 = 0ULL;
+        arch_kctx->x25 = 0ULL;
+        arch_kctx->x26 = 0ULL;
+        arch_kctx->x27 = 0ULL;
+        arch_kctx->x28 = 0ULL;
+        arch_kctx->x29 = 0ULL;
+        arch_kctx->x30 = reinterpret_cast<uintptr_t>(&user_trap_exit);
+        arch_kctx->sp = frame_addr;
+        arch_kctx->_pad = 0ULL;
+    }
+
     void flush_dcache_range(uintptr_t addr, size_t size) noexcept override {
         constexpr uintptr_t line_size = 64U;
         const uintptr_t end = addr + size;
@@ -73,6 +106,18 @@ class AArch64CpuControl : public HAL::CpuControl {
         arch_ctx->sp_el0 = user_sp;
         arch_ctx->elr_el1 = entry_point;
         arch_ctx->spsr_el1 = 0x00ULL; // EL0t mode with DAIF unmasked
+        arch_ctx->tpidr_el0 = 0ULL;
+        arch_ctx->_pad = 0ULL;
+    }
+
+    void set_user_tls_pointer(HAL::CpuContext& ctx, uintptr_t tls) const noexcept override {
+        auto* const arch_ctx = reinterpret_cast<AArch64CpuContext*>(&ctx);
+        arch_ctx->tpidr_el0 = tls;
+    }
+
+    uintptr_t get_user_tls_pointer(const HAL::CpuContext& ctx) const noexcept override {
+        const auto* const arch_ctx = reinterpret_cast<const AArch64CpuContext*>(&ctx);
+        return static_cast<uintptr_t>(arch_ctx->tpidr_el0);
     }
 
     int64_t enter_user_mode(uintptr_t entry_point, uintptr_t user_sp) noexcept override {

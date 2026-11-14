@@ -68,6 +68,8 @@ class AddressSpace {
 
     bool unmap_user_page(uintptr_t vaddr) const noexcept;
 
+    bool protect_user_page(uintptr_t vaddr, HAL::PageFlags flags) const noexcept;
+
     bool query_user_page(uintptr_t vaddr, uintptr_t& out_paddr,
                          HAL::PageFlags& out_flags) const noexcept;
 

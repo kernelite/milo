@@ -63,4 +63,11 @@ size_t write_user_mm_suite_program(void* dst_kva) noexcept;
 size_t write_user_proc_lifecycle_program(void* dst_kva) noexcept;
 size_t write_user_fork_exec_program(void* dst_kva) noexcept;
 
+// Add struct SchedSuiteArgs and declaration inside namespace HAL::Test:
+struct SchedSuiteArgs {
+    uint32_t worker_a_pid;
+    uint32_t worker_b_pid;
+};
+
+size_t write_user_sched_suite_program(void* dst_kva) noexcept;
 } // namespace HAL::Test

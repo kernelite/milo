@@ -32,6 +32,9 @@ struct LoadedElf {
     Kernel::MM::AddressSpace address_space;
     uintptr_t entry_point{0U};
     uintptr_t max_vaddr{0U};
+    uintptr_t phdr_vaddr{0U};
+    uint16_t phentsize{0U};
+    uint16_t phnum{0U};
     size_t loaded_segment_count{0U};
 };
 
