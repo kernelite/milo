@@ -98,6 +98,11 @@ void aarch64_handle_irq_exception(HAL::CpuContext* ctx) noexcept {
         return;
     }
 
+    auto* const arch_ctx = reinterpret_cast<AArch64CpuContext*>(ctx);
+    if (arch_ctx != nullptr && (arch_ctx->spsr_el1 & 0x0FU) == 0U) {
+        Kernel::Process::deliver_pending_signals(*ctx);
+    }
+
     HAL::QemuVirt::GicV2::end_of_interrupt(irq);
 }
 
@@ -109,6 +114,9 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
     case 0x15U: { // SVC in AArch64
         HAL::TrapFrame frame{.type = HAL::TrapType::Syscall, .error_code = esr, .context = ctx};
         HAL::get_trap_dispatcher().handle_trap(frame);
+        if (ctx != nullptr) {
+            Kernel::Process::deliver_pending_signals(*ctx);
+        }
         return;
     }
 

@@ -154,6 +154,47 @@ class AArch64CpuControl : public HAL::CpuControl {
         auto* const arch_ctx = reinterpret_cast<AArch64CpuContext*>(&ctx);
         arch_ctx->sp_el0 = user_sp;
     }
+
+    uint64_t get_reg(const HAL::CpuContext& ctx, size_t index) const noexcept override {
+        if (index >= 31U) {
+            return 0ULL;
+        }
+        const auto* const arch_ctx = reinterpret_cast<const AArch64CpuContext*>(&ctx);
+        return arch_ctx->x[index];
+    }
+
+    void set_reg(HAL::CpuContext& ctx, size_t index, uint64_t value) const noexcept override {
+        if (index >= 31U) {
+            return;
+        }
+        auto* const arch_ctx = reinterpret_cast<AArch64CpuContext*>(&ctx);
+        arch_ctx->x[index] = value;
+    }
+
+    uintptr_t get_user_stack_pointer(const HAL::CpuContext& ctx) const noexcept override {
+        const auto* const arch_ctx = reinterpret_cast<const AArch64CpuContext*>(&ctx);
+        return static_cast<uintptr_t>(arch_ctx->sp_el0);
+    }
+
+    uintptr_t get_user_pc(const HAL::CpuContext& ctx) const noexcept override {
+        const auto* const arch_ctx = reinterpret_cast<const AArch64CpuContext*>(&ctx);
+        return static_cast<uintptr_t>(arch_ctx->elr_el1);
+    }
+
+    void set_user_pc(HAL::CpuContext& ctx, uintptr_t program_counter) const noexcept override {
+        auto* const arch_ctx = reinterpret_cast<AArch64CpuContext*>(&ctx);
+        arch_ctx->elr_el1 = program_counter;
+    }
+
+    uint64_t get_user_pstate(const HAL::CpuContext& ctx) const noexcept override {
+        const auto* const arch_ctx = reinterpret_cast<const AArch64CpuContext*>(&ctx);
+        return arch_ctx->spsr_el1;
+    }
+
+    void set_user_pstate(HAL::CpuContext& ctx, uint64_t pstate) const noexcept override {
+        auto* const arch_ctx = reinterpret_cast<AArch64CpuContext*>(&ctx);
+        arch_ctx->spsr_el1 = pstate;
+    }
 };
 
 constinit AArch64CpuControl aarch64_cpu{};
