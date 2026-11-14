@@ -112,6 +112,54 @@
       "-Iarch/aarch64-linux-gnu",
       "-c",
       "-o",
+      "build/kernel/hal/targets/qemu_virt/gicv2.o",
+      "kernel/hal/targets/qemu_virt/gicv2.cpp"
+    ],
+    "directory": "/workspaces/milo",
+    "file": "/workspaces/milo/kernel/hal/targets/qemu_virt/gicv2.cpp",
+    "output": "/workspaces/milo/build/kernel/hal/targets/qemu_virt/gicv2.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/aarch64-linux-gnu-g++",
+      "-std=c++20",
+      "-ffreestanding",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-fno-use-cxa-atexit",
+      "-fno-exceptions",
+      "-fno-rtti",
+      "-fno-threadsafe-statics",
+      "-g",
+      "-Ikernel",
+      "-Iarch/aarch64-linux-gnu",
+      "-c",
+      "-o",
+      "build/kernel/hal/targets/qemu_virt/timer.o",
+      "kernel/hal/targets/qemu_virt/timer.cpp"
+    ],
+    "directory": "/workspaces/milo",
+    "file": "/workspaces/milo/kernel/hal/targets/qemu_virt/timer.cpp",
+    "output": "/workspaces/milo/build/kernel/hal/targets/qemu_virt/timer.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/aarch64-linux-gnu-g++",
+      "-std=c++20",
+      "-ffreestanding",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-fno-use-cxa-atexit",
+      "-fno-exceptions",
+      "-fno-rtti",
+      "-fno-threadsafe-statics",
+      "-g",
+      "-Ikernel",
+      "-Iarch/aarch64-linux-gnu",
+      "-c",
+      "-o",
       "build/kernel/main.o",
       "kernel/main.cpp"
     ],
@@ -328,6 +376,30 @@
       "-Iarch/aarch64-linux-gnu",
       "-c",
       "-o",
+      "build/kernel/fs/pipe.o",
+      "kernel/fs/pipe.cpp"
+    ],
+    "directory": "/workspaces/milo",
+    "file": "/workspaces/milo/kernel/fs/pipe.cpp",
+    "output": "/workspaces/milo/build/kernel/fs/pipe.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/aarch64-linux-gnu-g++",
+      "-std=c++20",
+      "-ffreestanding",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-fno-use-cxa-atexit",
+      "-fno-exceptions",
+      "-fno-rtti",
+      "-fno-threadsafe-statics",
+      "-g",
+      "-Ikernel",
+      "-Iarch/aarch64-linux-gnu",
+      "-c",
+      "-o",
       "build/kernel/loader/elf64.o",
       "kernel/loader/elf64.cpp"
     ],
@@ -406,6 +478,54 @@
     "directory": "/workspaces/milo",
     "file": "/workspaces/milo/kernel/process/process.cpp",
     "output": "/workspaces/milo/build/kernel/process/process.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/aarch64-linux-gnu-g++",
+      "-std=c++20",
+      "-ffreestanding",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-fno-use-cxa-atexit",
+      "-fno-exceptions",
+      "-fno-rtti",
+      "-fno-threadsafe-statics",
+      "-g",
+      "-Ikernel",
+      "-Iarch/aarch64-linux-gnu",
+      "-c",
+      "-o",
+      "build/kernel/process/scheduler.o",
+      "kernel/process/scheduler.cpp"
+    ],
+    "directory": "/workspaces/milo",
+    "file": "/workspaces/milo/kernel/process/scheduler.cpp",
+    "output": "/workspaces/milo/build/kernel/process/scheduler.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/aarch64-linux-gnu-g++",
+      "-std=c++20",
+      "-ffreestanding",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-fno-use-cxa-atexit",
+      "-fno-exceptions",
+      "-fno-rtti",
+      "-fno-threadsafe-statics",
+      "-g",
+      "-Ikernel",
+      "-Iarch/aarch64-linux-gnu",
+      "-c",
+      "-o",
+      "build/kernel/process/wait_queue.o",
+      "kernel/process/wait_queue.cpp"
+    ],
+    "directory": "/workspaces/milo",
+    "file": "/workspaces/milo/kernel/process/wait_queue.cpp",
+    "output": "/workspaces/milo/build/kernel/process/wait_queue.o"
   },
   {
     "arguments": [

@@ -63,6 +63,15 @@ class CpuControl {
     virtual void set_user_stack_pointer(CpuContext& ctx, uintptr_t user_sp) const noexcept = 0;
     virtual void set_user_tls_pointer(CpuContext& ctx, uintptr_t tls) const noexcept = 0;
     virtual uintptr_t get_user_tls_pointer(const CpuContext& ctx) const noexcept = 0;
+
+    // --- Signal Frame & Register Accessors ---
+    virtual uint64_t get_reg(const CpuContext& ctx, size_t index) const noexcept = 0;
+    virtual void set_reg(CpuContext& ctx, size_t index, uint64_t value) const noexcept = 0;
+    virtual uintptr_t get_user_stack_pointer(const CpuContext& ctx) const noexcept = 0;
+    virtual uintptr_t get_user_pc(const CpuContext& ctx) const noexcept = 0;
+    virtual void set_user_pc(CpuContext& ctx, uintptr_t program_counter) const noexcept = 0;
+    virtual uint64_t get_user_pstate(const CpuContext& ctx) const noexcept = 0;
+    virtual void set_user_pstate(CpuContext& ctx, uint64_t pstate) const noexcept = 0;
 };
 
 CpuControl& get_cpu() noexcept;

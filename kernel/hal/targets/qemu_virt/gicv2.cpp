@@ -19,8 +19,8 @@ void GicV2::init() noexcept {
 
     // Configure all interrupts in Group 0
     for (uint32_t irq = 0U; irq < 256U; irq += 32U) {
-        auto* const gicd_igroupr =
-            reinterpret_cast<volatile uint32_t*>(gicd + 0x080U + ((irq / 32U) * 4U));
+        auto* const gicd_igroupr = reinterpret_cast<volatile uint32_t*>(
+            gicd + 0x080U + (static_cast<uintptr_t>(irq / 32U) * 4U));
         *gicd_igroupr = 0U;
     }
 
@@ -35,15 +35,15 @@ void GicV2::init() noexcept {
 
 void GicV2::enable_irq(uint32_t irq) noexcept {
     const uintptr_t gicd = Kernel::MM::phys_to_virt(GICD_BASE);
-    auto* const gicd_isenabler =
-        reinterpret_cast<volatile uint32_t*>(gicd + 0x100U + ((irq / 32U) * 4U));
+    auto* const gicd_isenabler = reinterpret_cast<volatile uint32_t*>(
+        gicd + 0x100U + (static_cast<uintptr_t>(irq / 32U) * 4U));
     *gicd_isenabler = 1U << (irq % 32U);
 }
 
 void GicV2::disable_irq(uint32_t irq) noexcept {
     const uintptr_t gicd = Kernel::MM::phys_to_virt(GICD_BASE);
-    auto* const gicd_icenabler =
-        reinterpret_cast<volatile uint32_t*>(gicd + 0x180U + ((irq / 32U) * 4U));
+    auto* const gicd_icenabler = reinterpret_cast<volatile uint32_t*>(
+        gicd + 0x180U + (static_cast<uintptr_t>(irq / 32U) * 4U));
     *gicd_icenabler = 1U << (irq % 32U);
 }
 

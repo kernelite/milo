@@ -60,15 +60,19 @@ $(BUILD_DIR)/%.o: %.s
 # File: Makefile
 MUSL_CC ?= $(shell command -v aarch64-linux-musl-gcc 2>/dev/null || echo /opt/aarch64-musl/bin/musl-gcc)
 
+LINUX_VER := 6.6.63
+
 .PHONY: setup-musl
 setup-musl:
 	@curl -fL https://musl.libc.org/releases/musl-1.2.5.tar.gz | tar -xz -C /tmp
 	@cd /tmp/musl-1.2.5 && CC=$(PREFIX)gcc CROSS_COMPILE=$(PREFIX) ./configure --prefix=/opt/aarch64-musl --target=aarch64-linux-gnu && $(MAKE) -j$$(nproc) && sudo $(MAKE) install
+	@curl -fL https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$(LINUX_VER).tar.xz | tar -xJ -C /tmp
+	@cd /tmp/linux-$(LINUX_VER) && sudo $(MAKE) ARCH=arm64 INSTALL_HDR_PATH=/opt/aarch64-musl headers_install
 	@sudo ln -sf /opt/aarch64-musl/bin/musl-gcc /usr/local/bin/aarch64-linux-musl-gcc
 	@for tool in ar ld nm objcopy objdump ranlib strip; do \
 		sudo ln -sf /usr/bin/$(PREFIX)$$tool /usr/local/bin/aarch64-linux-musl-$$tool; \
 	done
-	@rm -rf /tmp/musl-1.2.5
+	sudo rm -rf /tmp/musl-1.2.5 /tmp/linux-$(LINUX_VER)
 
 # Standalone EL0 ELF payload embedded into initrd at /bin/hello
 $(ROOTFS_DIR)/bin/hello: user/hello.s
@@ -139,3 +143,34 @@ commit: quality
 
 ai-dump:
 	./concat_files.sh dump-for-ai.txt arch/ build/ kernel/ Makefile compile_commands.json
+
+BUSYBOX_VER := 1.36.1
+BUSYBOX_BIN := $(BUILD_DIR)/busybox-$(BUSYBOX_VER)/busybox
+
+.PHONY: setup-busybox
+setup-busybox: $(BUSYBOX_BIN)
+
+$(BUSYBOX_BIN):
+	@mkdir -p $(BUILD_DIR)
+	@if [ ! -d "$(BUILD_DIR)/busybox-$(BUSYBOX_VER)" ]; then \
+		curl -fL https://busybox.net/downloads/busybox-$(BUSYBOX_VER).tar.bz2 | tar -xj -C $(BUILD_DIR); \
+	fi
+	@cd $(BUILD_DIR)/busybox-$(BUSYBOX_VER) && \
+		$(MAKE) defconfig && \
+		sed -i 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config && \
+		sed -i 's/CONFIG_TC=y/# CONFIG_TC is not set/' .config && \
+		$(MAKE) -j$$(nproc) CROSS_COMPILE=aarch64-linux-musl- CC="$(MUSL_CC)"
+
+# CPIO Archive Generation (Embed BusyBox if built)
+$(ROOTFS_CPIO): $(ROOTFS_DIR)/bin/hello $(ROOTFS_DIR)/bin/hello_musl $(wildcard $(BUSYBOX_BIN))
+	@mkdir -p $(ROOTFS_DIR)/bin $(ROOTFS_DIR)/dev $(ROOTFS_DIR)/proc $(ROOTFS_DIR)/tmp
+	@echo "milo-initrd-v1" > $(ROOTFS_DIR)/init.txt
+	@if [ -f "$(BUSYBOX_BIN)" ]; then \
+		cp $(BUSYBOX_BIN) $(ROOTFS_DIR)/bin/busybox && \
+		chmod +x $(ROOTFS_DIR)/bin/busybox && \
+		ln -sf busybox $(ROOTFS_DIR)/bin/sh && \
+		for app in ls cat echo pwd ps uname grep wc head tail mkdir rm cp mv sleep true false; do \
+			ln -sf busybox $(ROOTFS_DIR)/bin/$$app; \
+		done; \
+	fi
+	@cd $(ROOTFS_DIR) && find . | cpio -o -H newc > ../rootfs.cpio 2>/dev/null

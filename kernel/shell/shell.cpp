@@ -3,6 +3,8 @@
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
+#include "hal/targets/qemu_virt/gicv2.hpp"
+#include "hal/targets/qemu_virt/timer.hpp"
 #include "hal/test_hooks.hpp"
 #include "loader/elf64.hpp"
 #include "loader/elf_loader.hpp"
@@ -10,8 +12,6 @@
 #include "mm/pfa.hpp"
 #include "process/process.hpp"
 #include "process/scheduler.hpp"
-#include "hal/targets/qemu_virt/gicv2.hpp"
-#include "hal/targets/qemu_virt/timer.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -1625,8 +1625,8 @@ void cmd_test_sched() noexcept {
     const uint64_t ticks_before = Kernel::Scheduler::timer_ticks();
 
     // 1. Verify WaitQueue initialization
-    Kernel::Process::WaitQueue wq{};
-    assert_test(wq.empty(), "WaitQueue initialized empty");
+    Kernel::Process::WaitQueue wait_queue{};
+    assert_test(wait_queue.empty(), "WaitQueue initialized empty");
 
     // 2. Spawn EL0 coordinator + two CPU-bound workers preempted by 100Hz timer IRQs
     auto* const parent = Kernel::Process::allocate_process(0U);
@@ -1706,6 +1706,72 @@ void cmd_test_sched() noexcept {
                 "All kernel stack, user stack, and page-table frames freed cleanly");
 }
 
+void cmd_sh() noexcept {
+    if (!g_initrd_loc.valid || g_initrd_loc.start_paddr == 0U || g_initrd_loc.size == 0U) {
+        print_str("[ERROR] No valid initrd loaded.\r\n");
+        return;
+    }
+
+    CpioEntry entry{};
+    const CpioStatus cpio_st = cpio_lookup(
+        reinterpret_cast<const void*>(Kernel::MM::phys_to_virt(g_initrd_loc.start_paddr)),
+        g_initrd_loc.size, "/bin/busybox", entry);
+    if (cpio_st != CpioStatus::Success || !entry.is_regular_file) {
+        print_str(
+            "[ERROR] /bin/busybox not found in rootfs.cpio (run 'make setup-busybox all').\r\n");
+        return;
+    }
+
+    auto load_res = Kernel::Loader::load_elf(entry.data, entry.size);
+    if (!load_res.is_ok()) {
+        print_str("[ERROR] Failed to load /bin/busybox ELF64 image.\r\n");
+        return;
+    }
+
+    auto* const proc = Kernel::Process::allocate_process(0U);
+    if (proc == nullptr) {
+        load_res->address_space.destroy();
+        print_str("[ERROR] Failed to allocate PCB.\r\n");
+        return;
+    }
+
+    Elf64_auxv_t auxv[Kernel::Process::STANDARD_AUXV_COUNT]{};
+    const size_t auxv_count = Kernel::Process::populate_standard_auxv(
+        *load_res, auxv, Kernel::Process::STANDARD_AUXV_COUNT);
+
+    Kernel::Process::attach_loaded_elf(*proc, static_cast<Kernel::Loader::LoadedElf&&>(*load_res));
+
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space);
+    if (!stack_res.is_ok()) {
+        Kernel::Process::release_process(*proc);
+        print_str("[ERROR] Failed to allocate user stack.\r\n");
+        return;
+    }
+    proc->user_stack = stack_res.value();
+
+    const char* const argv[] = {"/bin/sh", nullptr};
+    const char* const envp[] = {"PATH=/bin", "HOME=/", "TERM=vt100", "PS1=milo-sh$ ", nullptr};
+    if (!Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack, 1, argv, envp, auxv,
+                                                             auxv_count)
+             .is_ok()) {
+        Kernel::Process::release_process(*proc);
+        print_str("[ERROR] Failed to build System V ABI stack.\r\n");
+        return;
+    }
+
+    Kernel::Process::init_user_cpu_context(proc->context, proc->entry_point,
+                                           proc->user_stack.final_sp_el0, proc->user_stack.argc,
+                                           proc->user_stack.argv_vaddr);
+
+    print_str("[KERNEL] Launching interactive BusyBox /bin/sh...\r\n");
+    const int64_t exit_status = Kernel::Process::execute_process(*proc);
+    Kernel::Process::release_process(*proc);
+
+    print_str("\r\n[KERNEL] /bin/sh exited with status ");
+    print_dec64(static_cast<uint64_t>(exit_status));
+    print_str("\r\n");
+}
+
 void print_help() noexcept {
     print_str("\r\nAvailable Commands:\r\n");
     print_str("  help            - Display this menu\r\n");
@@ -1740,6 +1806,7 @@ void print_help() noexcept {
     print_str("  test user_mm    - Test user heap (sys_brk) & anonymous sys_mmap/sys_munmap\r\n");
     print_str("  test proc       - Test process spae and exit functions\r\n");
     print_str("  test musl       - Test MUSL");
+    print_str("  sh              - Run interactive BusyBox shell");
     print_str("  halt            - Put CPU into low-power WFI state\r\n");
 }
 
@@ -1814,6 +1881,8 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_musl();
     } else if (streq(buf, "test sched")) {
         cmd_test_sched();
+    } else if (streq(buf, "sh")) {
+        cmd_sh();
     } else if (streq(buf, "clear")) {
         print_str("\033[2J\033[H");
     } else if (streq(buf, "help")) {
