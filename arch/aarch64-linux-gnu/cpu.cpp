@@ -73,6 +73,18 @@ class AArch64CpuControl : public HAL::CpuControl {
         arch_ctx->sp_el0 = user_sp;
         arch_ctx->elr_el1 = entry_point;
         arch_ctx->spsr_el1 = 0x00ULL; // EL0t mode with DAIF unmasked
+        arch_ctx->tpidr_el0 = 0ULL;
+        arch_ctx->_pad = 0ULL;
+    }
+
+    void set_user_tls_pointer(HAL::CpuContext& ctx, uintptr_t tls) const noexcept override {
+        auto* const arch_ctx = reinterpret_cast<AArch64CpuContext*>(&ctx);
+        arch_ctx->tpidr_el0 = tls;
+    }
+
+    uintptr_t get_user_tls_pointer(const HAL::CpuContext& ctx) const noexcept override {
+        const auto* const arch_ctx = reinterpret_cast<const AArch64CpuContext*>(&ctx);
+        return static_cast<uintptr_t>(arch_ctx->tpidr_el0);
     }
 
     int64_t enter_user_mode(uintptr_t entry_point, uintptr_t user_sp) noexcept override {

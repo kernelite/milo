@@ -406,5 +406,20 @@
     "directory": "/workspaces/milo",
     "file": "/workspaces/milo/kernel/process/process.cpp",
     "output": "/workspaces/milo/build/kernel/process/process.o"
+  },
+  {
+    "arguments": [
+      "/usr/local/bin/aarch64-linux-musl-gcc",
+      "-c",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-o",
+      "build/rootfs/bin/hello_musl",
+      "user/hello_musl.c"
+    ],
+    "directory": "/workspaces/milo",
+    "file": "/workspaces/milo/user/hello_musl.c",
+    "output": "/workspaces/milo/build/rootfs/bin/hello_musl"
   }
 ]

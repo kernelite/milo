@@ -51,6 +51,7 @@ struct Process {
     uintptr_t brk_start{0U};
     uintptr_t brk_current{0U};
     uintptr_t mmap_next_vaddr{0U};
+    uintptr_t clear_child_tid{0U};
     FileDescriptor fd_table[MAX_FDS_PER_PROCESS]{};
 };
 

@@ -70,6 +70,7 @@ Process* allocate_process(uint32_t ppid) noexcept {
             slot.brk_start = platform.user_brk_base;
             slot.brk_current = platform.user_brk_base;
             slot.mmap_next_vaddr = platform.user_mmap_base;
+            slot.clear_child_tid = 0U;
             init_standard_fds(slot);
             return &slot;
         }
@@ -97,6 +98,7 @@ void release_process(Process& proc) noexcept {
     proc.brk_start = 0U;
     proc.brk_current = 0U;
     proc.mmap_next_vaddr = 0U;
+    proc.clear_child_tid = 0U;
     reset_fd_table(proc);
 }
 
@@ -152,6 +154,13 @@ int64_t execute_process(Process& proc) noexcept {
     proc.address_space.activate();
 
     const int64_t exit_code = HAL::get_cpu().enter_user_context(proc.context);
+
+    const uintptr_t restore_tls =
+        (prev_proc != nullptr) ? HAL::get_cpu().get_user_tls_pointer(prev_proc->context) : 0U;
+    HAL::get_cpu().set_user_tls_pointer(proc.context, 0U);
+    if (prev_proc != nullptr) {
+        HAL::get_cpu().set_user_tls_pointer(prev_proc->context, restore_tls);
+    }
 
     for (size_t idx = 0U; idx < 13U; ++idx) {
         kernel_ctx[idx] = saved_kernel_ctx[idx];

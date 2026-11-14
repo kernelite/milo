@@ -1,3 +1,4 @@
+// File: kernel/process/stack_builder.cpp
 #include "process/stack_builder.hpp"
 
 #include "hal/cpu.hpp"
@@ -13,6 +14,23 @@ size_t str_len(const char* str) noexcept {
         len++;
     }
     return len;
+}
+
+void generate_at_random_bytes(uint8_t out[16]) noexcept {
+    static uint64_t seed = 0x9E3779B97F4A7C15ULL;
+    seed ^= (seed << 13U);
+    seed ^= (seed >> 7U);
+    seed ^= (seed << 17U);
+    const uint64_t word0 = seed;
+
+    seed += 0xBF58476D1CE4E5B9ULL;
+    seed ^= (seed << 13U);
+    seed ^= (seed >> 7U);
+    seed ^= (seed << 17U);
+    const uint64_t word1 = seed;
+
+    memcpy(out, &word0, sizeof(word0));
+    memcpy(out + 8U, &word1, sizeof(word1));
 }
 
 } // namespace
@@ -36,6 +54,28 @@ const char* stack_builder_error_str(StackBuilderError error) noexcept {
     default:
         return "UnknownError";
     }
+}
+
+size_t populate_standard_auxv(const Loader::LoadedElf& loaded, Elf64_auxv_t* out_auxv,
+                              size_t capacity) noexcept {
+    if (out_auxv == nullptr || capacity < STANDARD_AUXV_COUNT) {
+        return 0U;
+    }
+
+    const uint64_t page_size = HAL::get_platform_info().page_size;
+    size_t idx = 0U;
+    out_auxv[idx++] = Elf64_auxv_t{AT_PAGESZ, {page_size}};
+    out_auxv[idx++] = Elf64_auxv_t{AT_PHDR, {loaded.phdr_vaddr}};
+    out_auxv[idx++] = Elf64_auxv_t{AT_PHENT, {loaded.phentsize}};
+    out_auxv[idx++] = Elf64_auxv_t{AT_PHNUM, {loaded.phnum}};
+    out_auxv[idx++] = Elf64_auxv_t{AT_ENTRY, {loaded.entry_point}};
+    out_auxv[idx++] = Elf64_auxv_t{AT_UID, {0ULL}};
+    out_auxv[idx++] = Elf64_auxv_t{AT_EUID, {0ULL}};
+    out_auxv[idx++] = Elf64_auxv_t{AT_GID, {0ULL}};
+    out_auxv[idx++] = Elf64_auxv_t{AT_EGID, {0ULL}};
+    out_auxv[idx++] = Elf64_auxv_t{AT_SECURE, {0ULL}};
+    out_auxv[idx++] = Elf64_auxv_t{AT_RANDOM, {0ULL}}; // Patched by build_abi_layout()
+    return idx;
 }
 
 Result<UserStack, StackBuilderError>
@@ -97,7 +137,6 @@ UserStackBuilder::build_abi_layout(UserStack& stack, int argc, const char* const
 
     constexpr size_t MAX_ABI_ENTRIES = 64U;
 
-    // 1. Calculate envc length
     size_t envc = 0U;
     if (envp != nullptr) {
         while (envp[envc] != nullptr) {
@@ -105,7 +144,6 @@ UserStackBuilder::build_abi_layout(UserStack& stack, int argc, const char* const
         }
     }
 
-    // Enforce bounds before processing to prevent out-of-bounds uninitialized array reads
     if (static_cast<size_t>(argc) > MAX_ABI_ENTRIES || envc > MAX_ABI_ENTRIES) {
         return StackBuilderError::BufferOverflow;
     }
@@ -145,7 +183,7 @@ UserStackBuilder::build_abi_layout(UserStack& stack, int argc, const char* const
         return true;
     };
 
-    // 2. Push envp string payloads
+    // 1. Push envp string payloads
     uintptr_t envp_vaddrs[MAX_ABI_ENTRIES] = {0U};
     for (size_t i = 0U; i < envc; ++i) {
         if (!push_string(envp[i], envp_vaddrs[i])) {
@@ -153,7 +191,7 @@ UserStackBuilder::build_abi_layout(UserStack& stack, int argc, const char* const
         }
     }
 
-    // 3. Push argv string payloads
+    // 2. Push argv string payloads
     uintptr_t argv_vaddrs[MAX_ABI_ENTRIES] = {0U};
     for (int i = 0; i < argc; ++i) {
         if (!push_string(argv[i], argv_vaddrs[i])) {
@@ -161,21 +199,45 @@ UserStackBuilder::build_abi_layout(UserStack& stack, int argc, const char* const
         }
     }
 
-    // 4. Push Auxiliary Vector (auxv) terminating with AT_NULL
-    const Elf64_auxv_t null_aux{PT_NULL, {0ULL}};
+    // 3. Push 16 random bytes for AT_RANDOM
+    uint8_t random_bytes[16]{};
+    generate_at_random_bytes(random_bytes);
+    if (!push_bytes(random_bytes, sizeof(random_bytes))) {
+        return StackBuilderError::BufferOverflow;
+    }
+    const uintptr_t at_random_vaddr = curr_vaddr;
+
+    // 4. Align downward to 16 bytes, then add 8 bytes padding if total pointer/header words is odd
+    // so that final SP_EL0 is 16-byte aligned with argc at [SP+0] and argv[0] at [SP+8].
+    curr_vaddr &= ~0xFULL;
+    const size_t total_words =
+        1U + (static_cast<size_t>(argc) + 1U) + (envc + 1U) + ((auxv_count + 1U) * 2U);
+    if ((total_words & 1U) != 0U) {
+        if (!check_overflow(sizeof(uint64_t))) {
+            return StackBuilderError::BufferOverflow;
+        }
+        curr_vaddr -= sizeof(uint64_t);
+    }
+
+    // 5. Push Auxiliary Vector (auxv) terminating with AT_NULL
+    const Elf64_auxv_t null_aux{AT_NULL, {0ULL}};
     if (!push_bytes(&null_aux, sizeof(null_aux))) {
         return StackBuilderError::BufferOverflow;
     }
 
     if (auxv != nullptr && auxv_count > 0U) {
         for (size_t i = auxv_count; i > 0U; --i) {
-            if (!push_bytes(&auxv[i - 1U], sizeof(Elf64_auxv_t))) {
+            Elf64_auxv_t entry = auxv[i - 1U];
+            if (entry.a_type == AT_RANDOM && entry.a_un.a_val == 0ULL) {
+                entry.a_un.a_val = at_random_vaddr;
+            }
+            if (!push_bytes(&entry, sizeof(Elf64_auxv_t))) {
                 return StackBuilderError::BufferOverflow;
             }
         }
     }
 
-    // 5. Push envp pointer array (NULL terminated)
+    // 6. Push envp pointer array (NULL terminated)
     const uint64_t null_ptr = 0ULL;
     if (!push_bytes(&null_ptr, sizeof(null_ptr))) {
         return StackBuilderError::BufferOverflow;
@@ -187,7 +249,7 @@ UserStackBuilder::build_abi_layout(UserStack& stack, int argc, const char* const
         }
     }
 
-    // 6. Push argv pointer array (NULL terminated)
+    // 7. Push argv pointer array (NULL terminated)
     if (!push_bytes(&null_ptr, sizeof(null_ptr))) {
         return StackBuilderError::BufferOverflow;
     }
@@ -198,18 +260,14 @@ UserStackBuilder::build_abi_layout(UserStack& stack, int argc, const char* const
         }
     }
 
-    // Capture user-space address of argv[0] pointer slot
     stack.argv_vaddr = curr_vaddr;
 
-    // 7. Push argc
+    // 8. Push argc at the exact 16-byte aligned SP_EL0
     const uint64_t argc_val = static_cast<uint64_t>(argc);
     if (!push_bytes(&argc_val, sizeof(argc_val))) {
         return StackBuilderError::BufferOverflow;
     }
     stack.argc = argc_val;
-
-    // 8. Align Stack Pointer downwards to 16-byte boundary (AAPCS64 requirement)
-    curr_vaddr &= ~0xFULL;
     stack.final_sp_el0 = curr_vaddr;
 
     HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(kbuf), stack.size);

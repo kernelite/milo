@@ -1,3 +1,4 @@
+// File: kernel/loader/elf_loader.cpp
 #include "loader/elf_loader.hpp"
 
 #include "hal/cpu.hpp"
@@ -6,6 +7,7 @@
 namespace {
 
 constexpr size_t MAX_TRACKED_SEGMENTS = 32U;
+constexpr uintptr_t PIE_DEFAULT_LOAD_BIAS = 0x0000000000400000ULL;
 
 struct SegmentAllocationRecord {
     uintptr_t paddr_base{0U};
@@ -69,9 +71,32 @@ Result<LoadedElf, ElfLoaderError> load_elf(const uint8_t* elf_data, size_t elf_s
     MM::AddressSpace address_space = static_cast<MM::AddressSpace&&>(as_res.value());
 
     const size_t page_size = HAL::get_platform_info().page_size;
+    const uintptr_t load_bias = elf.is_position_independent() ? PIE_DEFAULT_LOAD_BIAS : 0U;
+
     SegmentAllocationRecord tracked_allocations[MAX_TRACKED_SEGMENTS];
     size_t tracked_count = 0U;
     uintptr_t max_vaddr = 0U;
+    uintptr_t phdr_vaddr = 0U;
+
+    const auto& ehdr = elf.header();
+    elf.for_each_segment([&](const Elf64Segment& seg) -> bool {
+        if (seg.type == PT_PHDR) {
+            phdr_vaddr = static_cast<uintptr_t>(seg.vaddr) + load_bias;
+            return false;
+        }
+        return true;
+    });
+
+    if (phdr_vaddr == 0U) {
+        elf.for_each_load_segment([&](const Elf64Segment& seg) -> bool {
+            if (ehdr.e_phoff >= seg.offset && ehdr.e_phoff < (seg.offset + seg.filesz)) {
+                phdr_vaddr = static_cast<uintptr_t>(seg.vaddr) + load_bias +
+                             static_cast<uintptr_t>(ehdr.e_phoff - seg.offset);
+                return false;
+            }
+            return true;
+        });
+    }
 
     auto rollback_and_abort = [&](ElfLoaderError err) -> Result<LoadedElf, ElfLoaderError> {
         for (size_t i = 0U; i < tracked_count; ++i) {
@@ -89,15 +114,17 @@ Result<LoadedElf, ElfLoaderError> load_elf(const uint8_t* elf_data, size_t elf_s
             return true;
         }
 
-        if (seg.vaddr > UINT64_MAX - seg.memsz) {
+        if (seg.vaddr > UINT64_MAX - load_bias ||
+            (seg.vaddr + load_bias) > UINT64_MAX - seg.memsz) {
             pipeline_failed = true;
             failure_reason = ElfLoaderError::ArithmeticOverflow;
             return false;
         }
 
+        const uint64_t seg_vaddr = seg.vaddr + load_bias;
         const uint64_t page_mask = page_size - 1U;
-        const uint64_t start_page = seg.vaddr & ~page_mask;
-        const uint64_t end_page = (seg.vaddr + seg.memsz + page_mask) & ~page_mask;
+        const uint64_t start_page = seg_vaddr & ~page_mask;
+        const uint64_t end_page = (seg_vaddr + seg.memsz + page_mask) & ~page_mask;
         const size_t num_pages = static_cast<size_t>((end_page - start_page) / page_size);
 
         if (end_page > max_vaddr) {
@@ -129,7 +156,7 @@ Result<LoadedElf, ElfLoaderError> load_elf(const uint8_t* elf_data, size_t elf_s
             dest_base[i] = 0U;
         }
 
-        const uint64_t page_offset = seg.vaddr & page_mask;
+        const uint64_t page_offset = seg_vaddr & page_mask;
         uint8_t* const payload_dest = dest_base + page_offset;
 
         if (seg.filesz > 0U && seg.data != nullptr) {
@@ -173,8 +200,11 @@ Result<LoadedElf, ElfLoaderError> load_elf(const uint8_t* elf_data, size_t elf_s
 
     return LoadedElf{
         .address_space = static_cast<MM::AddressSpace&&>(address_space),
-        .entry_point = elf.entry_point(),
+        .entry_point = static_cast<uintptr_t>(elf.entry_point()) + load_bias,
         .max_vaddr = max_vaddr,
+        .phdr_vaddr = phdr_vaddr,
+        .phentsize = ehdr.e_phentsize,
+        .phnum = ehdr.e_phnum,
         .loaded_segment_count = tracked_count,
     };
 }

@@ -650,4 +650,84 @@ bool AddressSpaceBackend::clone_user_space(uintptr_t src_root, uintptr_t dst_roo
                      : "memory");
     return true;
 }
+
+bool AddressSpaceBackend::protect_user_page(uintptr_t root_paddr, uintptr_t vaddr,
+                                            HAL::PageFlags flags) noexcept {
+    constexpr uintptr_t USER_VA_LIMIT = 0x40000000ULL;
+    constexpr size_t UART_L2_IDX = (0x09000000ULL >> 21U) & 0x1FFU;
+
+    if (root_paddr == 0U || vaddr >= USER_VA_LIMIT) {
+        return false;
+    }
+
+    const size_t l0_idx = (vaddr >> 39U) & 0x1FFU;
+    const size_t l1_idx = (vaddr >> 30U) & 0x1FFU;
+    const size_t l2_idx = (vaddr >> 21U) & 0x1FFU;
+    const size_t l3_idx = (vaddr >> 12U) & 0x1FFU;
+
+    if (l0_idx == 0U && l1_idx == 0U && l2_idx == UART_L2_IDX) {
+        return false;
+    }
+
+    const auto* const l0_table =
+        reinterpret_cast<const uint64_t*>(Kernel::MM::phys_to_virt(root_paddr));
+    const uint64_t l0_desc = l0_table[l0_idx];
+    if ((l0_desc & DESC_TYPE_TABLE) != DESC_TYPE_TABLE) {
+        return false;
+    }
+
+    const auto* const l1_table =
+        reinterpret_cast<const uint64_t*>(Kernel::MM::phys_to_virt(l0_desc & TABLE_ADDR_MASK));
+    const uint64_t l1_desc = l1_table[l1_idx];
+    if ((l1_desc & DESC_TYPE_TABLE) != DESC_TYPE_TABLE) {
+        return false;
+    }
+
+    const auto* const l2_table =
+        reinterpret_cast<const uint64_t*>(Kernel::MM::phys_to_virt(l1_desc & TABLE_ADDR_MASK));
+    const uint64_t l2_desc = l2_table[l2_idx];
+    if ((l2_desc & DESC_TYPE_TABLE) != DESC_TYPE_TABLE) {
+        return false;
+    }
+
+    auto* const l3_table =
+        reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(l2_desc & TABLE_ADDR_MASK));
+    uint64_t l3_desc = l3_table[l3_idx];
+    if ((l3_desc & DESC_TYPE_TABLE) != DESC_TYPE_TABLE) {
+        return false;
+    }
+
+    // Clear AP[2:1] (bits [7:6]), PXN (bit 53), and UXN (bit 54)
+    l3_desc &= ~((0x3ULL << 6U) | (1ULL << 53U) | (1ULL << 54U));
+
+    const bool is_write = HAL::has_flag(flags, HAL::PageFlags::Write);
+    const bool is_user = HAL::has_flag(flags, HAL::PageFlags::User);
+    const bool is_exec = HAL::has_flag(flags, HAL::PageFlags::Execute);
+
+    uint64_t ap_bits = 0ULL;
+    if (!is_write) {
+        ap_bits = is_user ? 0x3ULL : 0x2ULL;
+    } else {
+        ap_bits = is_user ? 0x1ULL : 0x0ULL;
+    }
+    l3_desc |= (ap_bits << 6U);
+
+    if (!is_exec) {
+        l3_desc |= (1ULL << 53U) | (1ULL << 54U);
+    } else if (is_user) {
+        l3_desc |= (1ULL << 53U);
+    } else {
+        l3_desc |= (1ULL << 54U);
+    }
+
+    l3_table[l3_idx] = l3_desc;
+    flush_dcache_range(reinterpret_cast<uintptr_t>(&l3_table[l3_idx]), sizeof(uint64_t));
+
+    asm volatile("dsb ish\n\t"
+                 "tlbi vaae1is, %0\n\t"
+                 "dsb ish\n\t"
+                 "isb" ::"r"(vaddr >> 12U)
+                 : "memory");
+    return true;
+}
 } // namespace HAL
