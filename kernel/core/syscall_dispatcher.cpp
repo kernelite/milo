@@ -1,3 +1,4 @@
+// File: kernel/core/syscall_dispatcher.cpp
 #include "boot/fdt.hpp"
 #include "fs/cpio.hpp"
 #include "hal/console.hpp"
@@ -8,6 +9,7 @@
 #include "mm/address_space.hpp"
 #include "mm/pfa.hpp"
 #include "process/process.hpp"
+#include "process/scheduler.hpp"
 #include "process/stack_builder.hpp"
 
 #include <cstddef>
@@ -25,6 +27,7 @@ constexpr uint64_t SYS_WRITEV = 66U;
 constexpr uint64_t SYS_EXIT = 93U;
 constexpr uint64_t SYS_EXIT_GROUP = 94U;
 constexpr uint64_t SYS_SET_TID_ADDRESS = 96U;
+constexpr uint64_t SYS_SCHED_YIELD = 124U;
 constexpr uint64_t SYS_GETPID = 172U;
 constexpr uint64_t SYS_GETPPID = 173U;
 constexpr uint64_t SYS_BRK = 214U;
@@ -491,10 +494,8 @@ int64_t sys_write(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexc
 [[noreturn]] void sys_exit(uint64_t raw_status) noexcept {
     const auto exit_code =
         static_cast<int64_t>(static_cast<int32_t>(static_cast<uint32_t>(raw_status)));
-    auto* const proc = Kernel::Process::current_process();
-    if (proc != nullptr) {
-        proc->exit_status = exit_code;
-        proc->state = Kernel::Process::ProcessState::Zombie;
+    if (Kernel::Process::current_process() != nullptr) {
+        Kernel::Process::exit_current_process(exit_code);
     }
     HAL::get_cpu().return_to_kernel(exit_code);
     while (true) {
@@ -758,7 +759,8 @@ int64_t sys_clone(HAL::CpuContext& parent_ctx, uint64_t flags, uintptr_t child_s
         cpu.set_user_stack_pointer(child->context, child_stack);
     }
     cpu.set_syscall_return(child->context, 0);
-    child->state = Kernel::Process::ProcessState::Ready;
+    child->kctx_initialized = false;
+    Kernel::Scheduler::enqueue(child);
 
     return static_cast<int64_t>(child->pid);
 }
@@ -860,7 +862,6 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
         return ERR_E2BIG;
     }
 
-    // Switch TTBR0_EL1 to the new AddressSpace before tearing down the old one
     loaded.address_space.activate();
 
     if (proc->user_stack.phys_base != 0U && proc->user_stack.num_pages > 0U) {
@@ -899,48 +900,47 @@ int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
         return ERR_ECHILD;
     }
 
-    Kernel::Process::Process* zombie_child = nullptr;
-    Kernel::Process::Process* ready_child = nullptr;
+    Kernel::Process::Process* target_child = nullptr;
 
-    for (size_t idx = 0U; idx < Kernel::Process::MAX_PROCESSES; ++idx) {
-        auto* const candidate = Kernel::Process::process_at(idx);
-        if (candidate == nullptr || candidate->state == Kernel::Process::ProcessState::Unused) {
-            continue;
-        }
-        if (candidate->ppid != parent->pid) {
-            continue;
-        }
-        if (target_pid > 0 && candidate->pid != static_cast<uint32_t>(target_pid)) {
-            continue;
+    while (true) {
+        HAL::get_cpu().disable_interrupts();
+
+        bool has_matching_child = false;
+        Kernel::Process::Process* zombie_child = nullptr;
+
+        for (size_t idx = 0U; idx < Kernel::Process::MAX_PROCESSES; ++idx) {
+            auto* const candidate = Kernel::Process::process_at(idx);
+            if (candidate == nullptr || candidate->state == Kernel::Process::ProcessState::Unused) {
+                continue;
+            }
+            if (candidate->ppid != parent->pid) {
+                continue;
+            }
+            if (target_pid > 0 && candidate->pid != static_cast<uint32_t>(target_pid)) {
+                continue;
+            }
+
+            has_matching_child = true;
+            if (candidate->state == Kernel::Process::ProcessState::Zombie) {
+                zombie_child = candidate;
+                break;
+            }
         }
 
-        if (candidate->state == Kernel::Process::ProcessState::Zombie) {
-            zombie_child = candidate;
-            break;
-        }
-        if (candidate->state == Kernel::Process::ProcessState::Ready && ready_child == nullptr) {
-            ready_child = candidate;
-        }
-    }
-
-    Kernel::Process::Process* target_child = zombie_child;
-    if (target_child == nullptr) {
-        if (ready_child == nullptr) {
+        if (!has_matching_child) {
             return ERR_ECHILD;
         }
+
+        if (zombie_child != nullptr) {
+            target_child = zombie_child;
+            break;
+        }
+
         if ((options & WAIT_WNOHANG) != 0ULL) {
             return 0;
         }
 
-        parent->state = Kernel::Process::ProcessState::Blocked;
-        const int64_t child_ret = Kernel::Process::execute_process(*ready_child);
-        parent->state = Kernel::Process::ProcessState::Running;
-
-        if (ready_child->state != Kernel::Process::ProcessState::Zombie) {
-            ready_child->exit_status = child_ret;
-            ready_child->state = Kernel::Process::ProcessState::Zombie;
-        }
-        target_child = ready_child;
+        parent->child_wait_queue.sleep();
     }
 
     if (user_wstatus != 0U) {
@@ -1117,6 +1117,7 @@ int64_t sys_mprotect(uintptr_t addr, uint64_t length, uint64_t prot) noexcept {
 
     return 0;
 }
+
 } // namespace
 
 namespace Kernel {
@@ -1153,9 +1154,24 @@ class SyscallDispatcher : public HAL::TrapHandler {
                                 cpu.get_syscall_arg(ctx, 2U));
             break;
 
+        case SYS_WRITEV:
+            ret_val = sys_writev(cpu.get_syscall_arg(ctx, 0U),
+                                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
+                                 cpu.get_syscall_arg(ctx, 2U));
+            break;
+
         case SYS_EXIT:
         case SYS_EXIT_GROUP:
             sys_exit(cpu.get_syscall_arg(ctx, 0U));
+
+        case SYS_SET_TID_ADDRESS:
+            ret_val = sys_set_tid_address(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)));
+            break;
+
+        case SYS_SCHED_YIELD:
+            Kernel::Scheduler::yield();
+            ret_val = 0;
+            break;
 
         case SYS_GETPID:
             ret_val = sys_getpid();
@@ -1181,6 +1197,11 @@ class SyscallDispatcher : public HAL::TrapHandler {
                                cpu.get_syscall_arg(ctx, 5U));
             break;
 
+        case SYS_MPROTECT:
+            ret_val = sys_mprotect(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)),
+                                   cpu.get_syscall_arg(ctx, 1U), cpu.get_syscall_arg(ctx, 2U));
+            break;
+
         case SYS_CLONE:
             ret_val = sys_clone(ctx, cpu.get_syscall_arg(ctx, 0U),
                                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
@@ -1194,7 +1215,7 @@ class SyscallDispatcher : public HAL::TrapHandler {
                                  static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
                                  static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 2U)));
             if (ret_val == 0) {
-                return; // Preserve argc in ctx.x[0] initialized for the new binary
+                return;
             }
             break;
 
@@ -1203,21 +1224,6 @@ class SyscallDispatcher : public HAL::TrapHandler {
                 static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)), cpu.get_syscall_arg(ctx, 2U),
                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 3U)));
-            break;
-
-        case SYS_WRITEV:
-            ret_val = sys_writev(cpu.get_syscall_arg(ctx, 0U),
-                                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
-                                 cpu.get_syscall_arg(ctx, 2U));
-            break;
-
-        case SYS_SET_TID_ADDRESS:
-            ret_val = sys_set_tid_address(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)));
-            break;
-
-        case SYS_MPROTECT:
-            ret_val = sys_mprotect(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)),
-                                   cpu.get_syscall_arg(ctx, 1U), cpu.get_syscall_arg(ctx, 2U));
             break;
 
         default:

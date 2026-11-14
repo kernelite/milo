@@ -786,3 +786,86 @@ el0_fork_exec_suite_start:
     mov     x0, #88
     svc     #0
 el0_fork_exec_suite_end:
+
+// ==========================================================================
+// EL0 Preemptive Timeslice & WaitQueue Verification Suite
+// Entry: x0 = pointer to HAL::Test::SchedSuiteArgs in user memory
+//   [x0, #0] = worker_a_pid (written by parent)
+//   [x0, #4] = worker_b_pid (written by parent)
+// ==========================================================================
+.global el0_sched_suite_start
+.global el0_sched_suite_end
+el0_sched_suite_start:
+    mov     x20, x0                 // x20 = SchedSuiteArgs*
+    mov     x19, #0                 // x19 = failure count
+
+    // Fork Worker A
+    mov     x8, #220                // SYS_CLONE
+    mov     x0, #17                 // SIGCHLD
+    mov     x1, #0
+    mov     x2, #0
+    mov     x3, #0
+    mov     x4, #0
+    svc     #0
+    cmp     x0, #0
+    b.lt    .Lsched_fail
+    cbz     x0, .Lworker_loop
+    mov     x21, x0                 // x21 = pid_a
+
+    // Fork Worker B
+    mov     x8, #220                // SYS_CLONE
+    mov     x0, #17                 // SIGCHLD
+    mov     x1, #0
+    mov     x2, #0
+    mov     x3, #0
+    mov     x4, #0
+    svc     #0
+    cmp     x0, #0
+    b.lt    .Lsched_fail
+    cbz     x0, .Lworker_loop
+    mov     x22, x0                 // x22 = pid_b
+
+    // Record child PIDs in parent's args page for kernel tick verification
+    str     w21, [x20, #0]
+    str     w22, [x20, #4]
+
+    // Block on WaitQueue via SYS_WAIT4 until both CPU-bound workers complete
+    mov     x8, #260                // SYS_WAIT4
+    mov     x0, x21
+    mov     x1, #0
+    mov     x2, #0
+    mov     x3, #0
+    svc     #0
+    cmp     x0, x21
+    b.eq    1f
+    add     x19, x19, #1
+1:
+    mov     x8, #260                // SYS_WAIT4
+    mov     x0, x22
+    mov     x1, #0
+    mov     x2, #0
+    mov     x3, #0
+    svc     #0
+    cmp     x0, x22
+    b.eq    2f
+    add     x19, x19, #1
+2:
+    mov     x8, #93                 // SYS_EXIT
+    mov     x0, x19
+    svc     #0
+
+.Lworker_loop:
+    // Pure CPU-bound loop (~25M iterations, spanning multiple 50ms timer timeslices)
+    movz    x4, #0x0180, lsl #16
+3:
+    subs    x4, x4, #1
+    b.ne    3b
+    mov     x8, #93                 // SYS_EXIT
+    mov     x0, #0
+    svc     #0
+
+.Lsched_fail:
+    mov     x8, #93                 // SYS_EXIT
+    mov     x0, #99
+    svc     #0
+el0_sched_suite_end:
