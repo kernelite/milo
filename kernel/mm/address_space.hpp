@@ -21,7 +21,7 @@ inline uintptr_t user_addr_space_limit() noexcept {
     return HAL::get_platform_info().user_va_limit;
 }
 
-enum class AddressSpaceError {
+enum class AddressSpaceError : uint8_t {
     Success = 0,
     OutOfMemory,
     InvalidVirtualAddress,

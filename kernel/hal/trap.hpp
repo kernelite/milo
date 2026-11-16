@@ -3,7 +3,7 @@
 
 namespace HAL {
 
-enum class TrapType { Syscall, DataAbort, InstructionAbort, Interrupt, Unknown };
+enum class TrapType : uint8_t { Syscall, DataAbort, InstructionAbort, Interrupt, Unknown };
 
 struct TrapFrame {
     TrapType type;

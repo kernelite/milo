@@ -141,8 +141,12 @@ void schedule() noexcept {
         next->address_space.activate();
     }
 
-    HAL::KernelContext* const prev_kctx =
-        (current != nullptr) ? &current->kctx : (g_bootstrap_active ? &g_bootstrap_kctx : nullptr);
+    HAL::KernelContext* prev_kctx = nullptr;
+    if (current != nullptr) {
+        prev_kctx = &current->kctx;
+    } else if (g_bootstrap_active) {
+        prev_kctx = &g_bootstrap_kctx;
+    }
     cpu.switch_kernel_context(prev_kctx, &next->kctx);
 }
 

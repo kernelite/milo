@@ -17,7 +17,7 @@ struct Elf64_auxv_t {
     } a_un;
 };
 
-enum class ElfLoaderError {
+enum class ElfLoaderError : uint8_t {
     Success = 0,
     InvalidElf,
     NoLoadSegments,

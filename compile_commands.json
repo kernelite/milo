@@ -526,20 +526,5 @@
     "directory": "/workspaces/milo",
     "file": "/workspaces/milo/kernel/process/wait_queue.cpp",
     "output": "/workspaces/milo/build/kernel/process/wait_queue.o"
-  },
-  {
-    "arguments": [
-      "/usr/local/bin/aarch64-linux-musl-gcc",
-      "-c",
-      "-O2",
-      "-Wall",
-      "-Wextra",
-      "-o",
-      "build/user/hello_musl",
-      "user/hello_musl.c"
-    ],
-    "directory": "/workspaces/milo",
-    "file": "/workspaces/milo/user/hello_musl.c",
-    "output": "/workspaces/milo/build/user/hello_musl"
   }
 ]

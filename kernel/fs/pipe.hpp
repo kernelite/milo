@@ -17,8 +17,8 @@ struct Pipe {
     size_t read_pos{0U};
     size_t write_pos{0U};
     size_t count{0U};
-    Process::WaitQueue read_wq{};
-    Process::WaitQueue write_wq{};
+    Process::WaitQueue read_wq;
+    Process::WaitQueue write_wq;
     uint8_t buffer[PIPE_BUF_SIZE]{};
 };
 

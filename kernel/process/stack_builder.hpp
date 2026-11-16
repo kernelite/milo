@@ -25,7 +25,7 @@ struct UserStack {
     uint64_t argc{0U};
 };
 
-enum class StackBuilderError {
+enum class StackBuilderError : uint8_t {
     Success = 0,
     AllocationFailed,
     MappingFailed,

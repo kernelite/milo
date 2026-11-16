@@ -36,7 +36,7 @@ inline constexpr uint32_t CPIO_MODE_REGULAR = 0100000;
 inline constexpr uint32_t CPIO_MODE_SYMLINK = 0120000;
 
 // Explicit error results
-enum class CpioStatus {
+enum class CpioStatus : uint8_t {
     Success = 0,
     ArchiveTooSmall,
     InvalidMagic,
