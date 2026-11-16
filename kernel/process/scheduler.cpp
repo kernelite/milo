@@ -148,6 +148,7 @@ void schedule() noexcept {
 
 void on_timer_tick() noexcept {
     g_timer_ticks = g_timer_ticks + 1ULL;
+    Process::poll_console_tty();
 
     auto* const current = Process::current_process();
     if (current == nullptr || current->state != Process::ProcessState::Running) {

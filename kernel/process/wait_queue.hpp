@@ -6,7 +6,7 @@ namespace Kernel::Process {
 
 struct Process;
 
-constexpr size_t MAX_WAITERS = 16U;
+constexpr size_t MAX_WAITERS = 64U;
 
 class WaitQueue {
   public:

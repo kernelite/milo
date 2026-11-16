@@ -119,6 +119,96 @@ void print_hex64(uint64_t val) noexcept {
     print_str(buf);
 }
 
+void launch_initrd_shell(const char* bin_path, const char* argv0, const char* shell_env,
+                        const char* ps1_env) noexcept {
+    if (!g_initrd_loc.valid || g_initrd_loc.start_paddr == 0U || g_initrd_loc.size == 0U) {
+        print_str("[ERROR] No valid initrd loaded.\r\n");
+        return;
+    }
+
+    CpioEntry entry{};
+    const CpioStatus cpio_st = cpio_lookup(
+        reinterpret_cast<const void*>(Kernel::MM::phys_to_virt(g_initrd_loc.start_paddr)),
+        g_initrd_loc.size, bin_path, entry);
+    if (cpio_st != CpioStatus::Success || !entry.is_regular_file) {
+        print_str("[ERROR] ");
+        print_str(bin_path);
+        print_str(" not found in rootfs.cpio.\r\n");
+        return;
+    }
+
+    auto load_res = Kernel::Loader::load_elf(entry.data, entry.size);
+    if (!load_res.is_ok()) {
+        print_str("[ERROR] Failed to load ELF64 image for ");
+        print_str(bin_path);
+        print_str(".\r\n");
+        return;
+    }
+
+    auto* const proc = Kernel::Process::allocate_process(0U);
+    if (proc == nullptr) {
+        load_res->address_space.destroy();
+        print_str("[ERROR] Failed to allocate PCB.\r\n");
+        return;
+    }
+
+    size_t idx = 0U;
+    for (; idx + 1U < Kernel::Process::MAX_PATH_LEN && bin_path[idx] != '\0'; ++idx) {
+        proc->exe_path[idx] = bin_path[idx];
+    }
+    proc->exe_path[idx] = '\0';
+
+    Elf64_auxv_t auxv[Kernel::Process::STANDARD_AUXV_COUNT]{};
+    const size_t auxv_count = Kernel::Process::populate_standard_auxv(
+        *load_res, auxv, Kernel::Process::STANDARD_AUXV_COUNT);
+
+    Kernel::Process::attach_loaded_elf(*proc, static_cast<Kernel::Loader::LoadedElf&&>(*load_res));
+
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space);
+    if (!stack_res.is_ok()) {
+        Kernel::Process::release_process(*proc);
+        print_str("[ERROR] Failed to allocate user stack.\r\n");
+        return;
+    }
+    proc->user_stack = stack_res.value();
+
+    const char* const argv[] = {argv0, nullptr};
+    const char* const envp[] = {"PATH=/bin:/usr/bin", "HOME=/", "TERM=vt100", shell_env, ps1_env,
+                                nullptr};
+    if (!Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack, 1, argv, envp, auxv,
+                                                             auxv_count)
+             .is_ok()) {
+        Kernel::Process::release_process(*proc);
+        print_str("[ERROR] Failed to build System V ABI stack.\r\n");
+        return;
+    }
+
+    Kernel::Process::init_user_cpu_context(proc->context, proc->entry_point,
+                                           proc->user_stack.final_sp_el0, proc->user_stack.argc,
+                                           proc->user_stack.argv_vaddr);
+
+    const uint32_t prev_fg_pgid = Kernel::Process::get_foreground_pgid();
+    Kernel::Process::set_foreground_pgid(proc->pgid);
+
+    print_str("[KERNEL] Launching interactive ");
+    print_str(bin_path);
+    print_str("...\r\n");
+    const int64_t exit_status = Kernel::Process::execute_process(*proc);
+
+    Kernel::Process::set_foreground_pgid(prev_fg_pgid);
+    Kernel::Process::release_process(*proc);
+
+    print_str("\r\n[KERNEL] ");
+    print_str(argv0);
+    print_str(" exited with status ");
+    print_dec64(static_cast<uint64_t>(exit_status));
+    print_str("\r\n");
+}
+
+void cmd_bash() noexcept {
+    launch_initrd_shell("/bin/bash", "/bin/bash", "SHELL=/bin/bash", "PS1=milo-bash\\$ ");
+}
+
 void cmd_test_vmm() noexcept {
     print_str("\r\n[TEST] Running AddressSpace Lifecycle & Mapping Test...\r\n");
 
@@ -1707,69 +1797,17 @@ void cmd_test_sched() noexcept {
 }
 
 void cmd_sh() noexcept {
-    if (!g_initrd_loc.valid || g_initrd_loc.start_paddr == 0U || g_initrd_loc.size == 0U) {
-        print_str("[ERROR] No valid initrd loaded.\r\n");
-        return;
+    if (g_initrd_loc.valid && g_initrd_loc.start_paddr != 0U && g_initrd_loc.size > 0U) {
+        CpioEntry bash_entry{};
+        if (cpio_lookup(
+                reinterpret_cast<const void*>(Kernel::MM::phys_to_virt(g_initrd_loc.start_paddr)),
+                g_initrd_loc.size, "/bin/bash", bash_entry) == CpioStatus::Success &&
+            bash_entry.is_regular_file) {
+            launch_initrd_shell("/bin/bash", "/bin/sh", "SHELL=/bin/sh", "PS1=milo-sh\\$ ");
+            return;
+        }
     }
-
-    CpioEntry entry{};
-    const CpioStatus cpio_st = cpio_lookup(
-        reinterpret_cast<const void*>(Kernel::MM::phys_to_virt(g_initrd_loc.start_paddr)),
-        g_initrd_loc.size, "/bin/busybox", entry);
-    if (cpio_st != CpioStatus::Success || !entry.is_regular_file) {
-        print_str(
-            "[ERROR] /bin/busybox not found in rootfs.cpio (run 'make setup-busybox all').\r\n");
-        return;
-    }
-
-    auto load_res = Kernel::Loader::load_elf(entry.data, entry.size);
-    if (!load_res.is_ok()) {
-        print_str("[ERROR] Failed to load /bin/busybox ELF64 image.\r\n");
-        return;
-    }
-
-    auto* const proc = Kernel::Process::allocate_process(0U);
-    if (proc == nullptr) {
-        load_res->address_space.destroy();
-        print_str("[ERROR] Failed to allocate PCB.\r\n");
-        return;
-    }
-
-    Elf64_auxv_t auxv[Kernel::Process::STANDARD_AUXV_COUNT]{};
-    const size_t auxv_count = Kernel::Process::populate_standard_auxv(
-        *load_res, auxv, Kernel::Process::STANDARD_AUXV_COUNT);
-
-    Kernel::Process::attach_loaded_elf(*proc, static_cast<Kernel::Loader::LoadedElf&&>(*load_res));
-
-    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space);
-    if (!stack_res.is_ok()) {
-        Kernel::Process::release_process(*proc);
-        print_str("[ERROR] Failed to allocate user stack.\r\n");
-        return;
-    }
-    proc->user_stack = stack_res.value();
-
-    const char* const argv[] = {"/bin/sh", nullptr};
-    const char* const envp[] = {"PATH=/bin", "HOME=/", "TERM=vt100", "PS1=milo-sh$ ", nullptr};
-    if (!Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack, 1, argv, envp, auxv,
-                                                             auxv_count)
-             .is_ok()) {
-        Kernel::Process::release_process(*proc);
-        print_str("[ERROR] Failed to build System V ABI stack.\r\n");
-        return;
-    }
-
-    Kernel::Process::init_user_cpu_context(proc->context, proc->entry_point,
-                                           proc->user_stack.final_sp_el0, proc->user_stack.argc,
-                                           proc->user_stack.argv_vaddr);
-
-    print_str("[KERNEL] Launching interactive BusyBox /bin/sh...\r\n");
-    const int64_t exit_status = Kernel::Process::execute_process(*proc);
-    Kernel::Process::release_process(*proc);
-
-    print_str("\r\n[KERNEL] /bin/sh exited with status ");
-    print_dec64(static_cast<uint64_t>(exit_status));
-    print_str("\r\n");
+    launch_initrd_shell("/bin/busybox", "/bin/sh", "SHELL=/bin/sh", "PS1=milo-sh$ ");
 }
 
 void print_help() noexcept {
@@ -1806,7 +1844,8 @@ void print_help() noexcept {
     print_str("  test user_mm    - Test user heap (sys_brk) & anonymous sys_mmap/sys_munmap\r\n");
     print_str("  test proc       - Test process spae and exit functions\r\n");
     print_str("  test musl       - Test MUSL");
-    print_str("  sh              - Run interactive BusyBox shell");
+    print_str("  bash            - Run interactive GNU bash shell\r\n");
+    print_str("  sh              - Run interactive POSIX shell (/bin/bash or BusyBox)\r\n");
     print_str("  halt            - Put CPU into low-power WFI state\r\n");
 }
 
@@ -1881,6 +1920,8 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_musl();
     } else if (streq(buf, "test sched")) {
         cmd_test_sched();
+    } else if (streq(buf, "bash")) {
+        cmd_bash();
     } else if (streq(buf, "sh")) {
         cmd_sh();
     } else if (streq(buf, "clear")) {

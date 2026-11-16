@@ -29,6 +29,12 @@ class UARTConsole : public HAL::Console {
         }
         return static_cast<uint8_t>(*DataReg & 0xFFU);
     }
+
+    bool has_input() const noexcept override {
+        volatile const uint32_t* const FlagReg =
+            reinterpret_cast<volatile const uint32_t*>(UART0_BASE + 0x18);
+        return (*FlagReg & (1U << 4U)) == 0U;
+    }
 };
 
 // Use constinit (C++20) to guarantee zero runtime constructor overhead
