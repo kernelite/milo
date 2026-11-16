@@ -120,7 +120,7 @@ void print_hex64(uint64_t val) noexcept {
 }
 
 void launch_initrd_shell(const char* bin_path, const char* argv0, const char* shell_env,
-                        const char* ps1_env) noexcept {
+                         const char* ps1_env) noexcept {
     if (!g_initrd_loc.valid || g_initrd_loc.start_paddr == 0U || g_initrd_loc.size == 0U) {
         print_str("[ERROR] No valid initrd loaded.\r\n");
         return;
@@ -173,8 +173,8 @@ void launch_initrd_shell(const char* bin_path, const char* argv0, const char* sh
     proc->user_stack = stack_res.value();
 
     const char* const argv[] = {argv0, nullptr};
-    const char* const envp[] = {"PATH=/bin:/usr/bin", "HOME=/", "TERM=vt100", shell_env, ps1_env,
-                                nullptr};
+    const char* const envp[] = {
+        "PATH=/bin:/usr/bin", "HOME=/", "TERM=vt100", shell_env, ps1_env, nullptr};
     if (!Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack, 1, argv, envp, auxv,
                                                              auxv_count)
              .is_ok()) {
