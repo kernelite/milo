@@ -1,19 +1,49 @@
-FROM mcr.microsoft.com/devcontainers/base:bookworm
+FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04
 
-# Install Arm64 cross-compilation toolchain, QEMU, ROMs, and debugging tools
-RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
-    && apt-get -y install --no-install-recommends \
-        gcc-aarch64-linux-gnu \
-        g++-aarch64-linux-gnu \
-        binutils-aarch64-linux-gnu \
-        build-essential \
-        make \
-        qemu-system-aarch64 \
-        ipxe-qemu \
-        gdb-multiarch \
-        git \
-        bear \
-        clang-format \
-        clang-tidy \
-        cpio \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+ARG MUSL_VER=1.2.5
+ARG LINUX_VER=6.6.63
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 1. Install AArch64 bare-metal toolchain, linters, build utilities, and QEMU/GDB
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    curl \
+    tar \
+    xz-utils \
+    bzip2 \
+    gzip \
+    cpio \
+    python3 \
+    git \
+    gcc-aarch64-linux-gnu \
+    g++-aarch64-linux-gnu \
+    binutils-aarch64-linux-gnu \
+    clang \
+    clang-format \
+    clang-tidy \
+    bear \
+    qemu-system-arm \
+    gdb-multiarch \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. Build and install musl-libc 1.2.5 for AArch64 into /opt/aarch64-musl
+RUN curl -fL "https://musl.libc.org/releases/musl-${MUSL_VER}.tar.gz" | tar -xz -C /tmp \
+    && cd "/tmp/musl-${MUSL_VER}" \
+    && CC=aarch64-linux-gnu-gcc CROSS_COMPILE=aarch64-linux-gnu- \
+       ./configure --prefix=/opt/aarch64-musl --target=aarch64-linux-gnu \
+    && make -j"$(nproc)" \
+    && make install \
+    && rm -rf "/tmp/musl-${MUSL_VER}"
+
+# 3. Install Linux UAPI headers into /opt/aarch64-musl/include
+RUN curl -fL "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${LINUX_VER}.tar.xz" | tar -xJ -C /tmp \
+    && make -C "/tmp/linux-${LINUX_VER}" ARCH=arm64 INSTALL_HDR_PATH=/opt/aarch64-musl headers_install \
+    && rm -rf "/tmp/linux-${LINUX_VER}"
+
+# 4. Expose aarch64-linux-musl-* toolchain wrappers on PATH
+RUN ln -sf /opt/aarch64-musl/bin/musl-gcc /usr/local/bin/aarch64-linux-musl-gcc \
+    && for tool in ar ld nm objcopy objdump ranlib strip; do \
+        ln -sf "/usr/bin/aarch64-linux-gnu-${tool}" "/usr/local/bin/aarch64-linux-musl-${tool}"; \
+    done
