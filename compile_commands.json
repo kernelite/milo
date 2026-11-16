@@ -535,11 +535,11 @@
       "-Wall",
       "-Wextra",
       "-o",
-      "build/rootfs/bin/hello_musl",
+      "build/user/hello_musl",
       "user/hello_musl.c"
     ],
     "directory": "/workspaces/milo",
     "file": "/workspaces/milo/user/hello_musl.c",
-    "output": "/workspaces/milo/build/rootfs/bin/hello_musl"
+    "output": "/workspaces/milo/build/user/hello_musl"
   }
 ]

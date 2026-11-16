@@ -415,28 +415,26 @@ void tty_flush_rx_unlocked() noexcept {
 void tty_pump_uart_unlocked() noexcept {
     auto& console = HAL::get_console();
     while (console.has_input() && g_tty_rx_count < TTY_RX_BUF_SIZE) {
-        const uint8_t ch = console.getc();
+        const uint8_t chr = console.getc();
         if ((g_console_termios.c_lflag & TERMIOS_ISIG) != 0U) {
-            if (ch == g_console_termios.c_cc[CC_VINTR]) {
+            if (chr == g_console_termios.c_cc[CC_VINTR]) {
                 if ((g_console_termios.c_lflag & TERMIOS_ECHO) != 0U) {
                     console.write("^C\r\n", 4U);
                 }
                 tty_flush_rx_unlocked();
-                Kernel::Process::signal_process_group(g_foreground_pgid,
-                                                      Kernel::Process::SIG_INT);
+                Kernel::Process::signal_process_group(g_foreground_pgid, Kernel::Process::SIG_INT);
                 continue;
             }
-            if (ch == g_console_termios.c_cc[CC_VQUIT]) {
+            if (chr == g_console_termios.c_cc[CC_VQUIT]) {
                 if ((g_console_termios.c_lflag & TERMIOS_ECHO) != 0U) {
                     console.write("^\\\r\n", 4U);
                 }
                 tty_flush_rx_unlocked();
-                Kernel::Process::signal_process_group(g_foreground_pgid,
-                                                      Kernel::Process::SIG_QUIT);
+                Kernel::Process::signal_process_group(g_foreground_pgid, Kernel::Process::SIG_QUIT);
                 continue;
             }
         }
-        g_tty_rx_buf[g_tty_rx_tail] = ch;
+        g_tty_rx_buf[g_tty_rx_tail] = chr;
         g_tty_rx_tail = (g_tty_rx_tail + 1U) % TTY_RX_BUF_SIZE;
         g_tty_rx_count++;
     }
@@ -484,13 +482,13 @@ void wait_for_event_or_tick() noexcept {
     cpu.disable_interrupts();
 }
 
-uint64_t timespec_to_timer_ticks(const LinuxTimespec& ts, uint64_t freq) noexcept {
-    if (freq == 0ULL || (ts.tv_sec == 0 && ts.tv_nsec == 0)) {
+uint64_t timespec_to_timer_ticks(const LinuxTimespec& time_spec, uint64_t freq) noexcept {
+    if (freq == 0ULL || (time_spec.tv_sec == 0 && time_spec.tv_nsec == 0)) {
         return 0ULL;
     }
-    const uint64_t sec_ticks = static_cast<uint64_t>(ts.tv_sec) * freq;
+    const uint64_t sec_ticks = static_cast<uint64_t>(time_spec.tv_sec) * freq;
     const uint64_t nsec_ticks =
-        (static_cast<uint64_t>(ts.tv_nsec) * freq + 999999999ULL) / 1000000000ULL;
+        (static_cast<uint64_t>(time_spec.tv_nsec) * freq + 999999999ULL) / 1000000000ULL;
     return sec_ticks + nsec_ticks;
 }
 
@@ -1282,8 +1280,7 @@ int64_t sys_readlinkat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_bu
     if (cstr_eq(canon_path, "/proc/self/exe")) {
         const char* exe_target = (proc->exe_path[0] != '\0') ? proc->exe_path : "/bin/bash";
         const size_t target_len = cstr_len(exe_target);
-        const size_t copy_len =
-            (bufsiz < target_len) ? static_cast<size_t>(bufsiz) : target_len;
+        const size_t copy_len = (bufsiz < target_len) ? static_cast<size_t>(bufsiz) : target_len;
         if (Kernel::MM::copy_to_user(proc->address_space, user_buf, exe_target, copy_len) < 0) {
             return ERR_EFAULT;
         }
@@ -1943,7 +1940,6 @@ int64_t sys_read(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexce
         }
 
         if (raw_byte == g_console_termios.c_cc[CC_VEOF]) {
-            line_done = true;
             break;
         }
 
@@ -2134,70 +2130,71 @@ int64_t sys_writev(uint64_t raw_fd, uintptr_t user_iov, uint64_t raw_iovcnt) noe
     return static_cast<int64_t>(total_written);
 }
 
-int16_t poll_fd_revents(const Kernel::Process::Process& proc, int32_t fd, int16_t events) noexcept {
-    if (fd < 0) {
+int16_t poll_fd_revents(const Kernel::Process::Process& proc, int32_t raw_fd,
+                        int16_t events) noexcept {
+    if (raw_fd < 0) {
         return 0;
     }
-    if (static_cast<size_t>(fd) >= Kernel::Process::MAX_FDS_PER_PROCESS) {
+    if (static_cast<size_t>(raw_fd) >= Kernel::Process::MAX_FDS_PER_PROCESS) {
         return POLLNVAL;
     }
-    const auto& desc = proc.fd_table[static_cast<size_t>(fd)];
+    const auto& desc = proc.fd_table[static_cast<size_t>(raw_fd)];
     if (!desc.in_use) {
         return POLLNVAL;
     }
 
-    int16_t revents = 0;
+    const auto event_mask = static_cast<uint16_t>(events);
+    uint32_t revents = 0U;
     switch (desc.type) {
     case Kernel::Process::FdType::ConsoleTty:
         if (desc.is_readable() && tty_rx_available() > 0U) {
-            revents |= static_cast<int16_t>(events & (POLLIN | POLLRDNORM));
+            revents |= event_mask & static_cast<uint16_t>(POLLIN | POLLRDNORM);
         }
         if (desc.is_writable()) {
-            revents |= static_cast<int16_t>(events & (POLLOUT | POLLWRNORM));
+            revents |= event_mask & static_cast<uint16_t>(POLLOUT | POLLWRNORM);
         }
         break;
 
     case Kernel::Process::FdType::DevNull:
     case Kernel::Process::FdType::InitrdFile:
         if (desc.is_readable()) {
-            revents |= static_cast<int16_t>(events & (POLLIN | POLLRDNORM));
+            revents |= event_mask & static_cast<uint16_t>(POLLIN | POLLRDNORM);
         }
         if (desc.is_writable()) {
-            revents |= static_cast<int16_t>(events & (POLLOUT | POLLWRNORM));
+            revents |= event_mask & static_cast<uint16_t>(POLLOUT | POLLWRNORM);
         }
         break;
 
     case Kernel::Process::FdType::PipeRead:
         if (desc.pipe == nullptr || !desc.pipe->in_use) {
-            revents |= POLLNVAL;
+            revents |= static_cast<uint16_t>(POLLNVAL);
         } else {
             if (desc.pipe->count > 0U) {
-                revents |= static_cast<int16_t>(events & (POLLIN | POLLRDNORM));
+                revents |= event_mask & static_cast<uint16_t>(POLLIN | POLLRDNORM);
             }
             if (desc.pipe->writers == 0U) {
-                revents |= POLLHUP;
+                revents |= static_cast<uint16_t>(POLLHUP);
             }
         }
         break;
 
     case Kernel::Process::FdType::PipeWrite:
         if (desc.pipe == nullptr || !desc.pipe->in_use) {
-            revents |= POLLNVAL;
+            revents |= static_cast<uint16_t>(POLLNVAL);
         } else if (desc.pipe->readers == 0U) {
-            revents |= POLLERR;
+            revents |= static_cast<uint16_t>(POLLERR);
         } else if (desc.pipe->count < Kernel::FS::PIPE_BUF_SIZE) {
-            revents |= static_cast<int16_t>(events & (POLLOUT | POLLWRNORM));
+            revents |= event_mask & static_cast<uint16_t>(POLLOUT | POLLWRNORM);
         }
         break;
 
     default:
-        revents |= POLLNVAL;
+        revents |= static_cast<uint16_t>(POLLNVAL);
         break;
     }
 
-    return revents;
+    return static_cast<int16_t>(revents);
 }
-
 int64_t sys_ppoll(uintptr_t user_fds, uint64_t nfds, uintptr_t user_tmo, uintptr_t user_sigmask,
                   uint64_t sigsetsize) noexcept {
     auto* const proc = Kernel::Process::current_process();
@@ -2216,8 +2213,8 @@ int64_t sys_ppoll(uintptr_t user_fds, uint64_t nfds, uintptr_t user_tmo, uintptr
         if (user_fds == 0U) {
             return ERR_EFAULT;
         }
-        if (Kernel::MM::copy_from_user(root_paddr, kfdfs, user_fds,
-                                       count * sizeof(LinuxPollFd)) < 0) {
+        if (Kernel::MM::copy_from_user(root_paddr, kfdfs, user_fds, count * sizeof(LinuxPollFd)) <
+            0) {
             return ERR_EFAULT;
         }
     }
@@ -2786,8 +2783,7 @@ int64_t sys_getrusage(int32_t who, uintptr_t user_usage) noexcept {
         return ERR_EINVAL;
     }
 
-    const uint64_t ticks =
-        (who == RUSAGE_CHILDREN) ? proc->children_cpu_ticks : proc->cpu_ticks;
+    const uint64_t ticks = (who == RUSAGE_CHILDREN) ? proc->children_cpu_ticks : proc->cpu_ticks;
     // Timer runs at 100 Hz (10,000 microseconds per tick)
     const uint64_t total_usec = ticks * 10000ULL;
 
@@ -2827,18 +2823,19 @@ int64_t sys_getrandom(uintptr_t user_buf, uint64_t raw_buflen, uint64_t flags) n
     size_t written = 0U;
 
     while (written < buflen) {
-        const size_t chunk = ((buflen - written) < sizeof(kbuf)) ? (buflen - written) : sizeof(kbuf);
+        const size_t chunk =
+            ((buflen - written) < sizeof(kbuf)) ? (buflen - written) : sizeof(kbuf);
         for (size_t i = 0U; i < chunk; i += 8U) {
             entropy_state += 0x9E3779B97F4A7C15ULL;
-            uint64_t z = entropy_state;
-            z = (z ^ (z >> 30U)) * 0xBF58476D1CE4E5B9ULL;
-            z = (z ^ (z >> 27U)) * 0x94D049BB133111EBULL;
-            z = z ^ (z >> 31U);
+            uint64_t mixed = entropy_state;
+            mixed = (mixed ^ (mixed >> 30U)) * 0xBF58476D1CE4E5B9ULL;
+            mixed = (mixed ^ (mixed >> 27U)) * 0x94D049BB133111EBULL;
+            mixed = mixed ^ (mixed >> 31U);
 
             const size_t rem = chunk - i;
             const size_t bytes = (rem < 8U) ? rem : 8U;
-            for (size_t b = 0U; b < bytes; ++b) {
-                kbuf[i + b] = static_cast<uint8_t>((z >> (b * 8U)) & 0xFFULL);
+            for (size_t byte_idx = 0U; byte_idx < bytes; ++byte_idx) {
+                kbuf[i + byte_idx] = static_cast<uint8_t>((mixed >> (byte_idx * 8U)) & 0xFFULL);
             }
         }
 
@@ -2883,7 +2880,8 @@ int64_t sys_nanosleep(uintptr_t user_req, uintptr_t user_rem) noexcept {
                     .tv_sec = static_cast<int64_t>(rem_ticks / freq),
                     .tv_nsec = static_cast<int64_t>(((rem_ticks % freq) * 1000000000ULL) / freq),
                 };
-                if (Kernel::MM::copy_to_user(proc->address_space, user_rem, &rem, sizeof(rem)) < 0) {
+                if (Kernel::MM::copy_to_user(proc->address_space, user_rem, &rem, sizeof(rem)) <
+                    0) {
                     return ERR_EFAULT;
                 }
             }
@@ -3331,7 +3329,7 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
         }
 
         const int extra = has_shebang_arg ? 2 : 1;
-        if (static_cast<size_t>(argc + extra) > EXEC_MAX_ARGS) {
+        if (static_cast<size_t>(argc) + static_cast<size_t>(extra) > EXEC_MAX_ARGS) {
             free_frame(scratch_paddr);
             return ERR_E2BIG;
         }
@@ -3459,8 +3457,8 @@ int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
                 candidate->state == Kernel::Process::ProcessState::Stopped &&
                 !candidate->stop_reported) {
                 ready_child = candidate;
-                encoded_wstatus = static_cast<int32_t>(
-                    ((candidate->stop_signal & 0xFFU) << 8U) | 0x7FU);
+                encoded_wstatus =
+                    static_cast<int32_t>(((candidate->stop_signal & 0xFFU) << 8U) | 0x7FU);
                 candidate->stop_reported = true;
                 reap_child = false;
                 break;
@@ -3507,8 +3505,8 @@ int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
         const uint64_t child_usec = target_child->cpu_ticks * 10000ULL;
         rusage.ru_utime.tv_sec = static_cast<int64_t>(child_usec / 1000000ULL);
         rusage.ru_utime.tv_usec = static_cast<int64_t>(child_usec % 1000000ULL);
-        const int64_t rusage_res = Kernel::MM::copy_to_user(parent->address_space, user_rusage,
-                                                            &rusage, sizeof(rusage));
+        const int64_t rusage_res =
+            Kernel::MM::copy_to_user(parent->address_space, user_rusage, &rusage, sizeof(rusage));
         if (rusage_res < 0) {
             return ERR_EFAULT;
         }
@@ -3793,11 +3791,10 @@ class SyscallDispatcher : public HAL::TrapHandler {
             break;
 
         case SYS_PPOLL:
-            ret_val = sys_ppoll(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)),
-                                cpu.get_syscall_arg(ctx, 1U),
-                                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 2U)),
-                                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 3U)),
-                                cpu.get_syscall_arg(ctx, 4U));
+            ret_val = sys_ppoll(
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)), cpu.get_syscall_arg(ctx, 1U),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 2U)),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 3U)), cpu.get_syscall_arg(ctx, 4U));
             break;
 
         case SYS_READLINKAT:
