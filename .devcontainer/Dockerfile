@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     clang-tidy \
     bear \
     qemu-system-arm \
+    ipxe-qemu \
     gdb-multiarch \
     && rm -rf /var/lib/apt/lists/*
 

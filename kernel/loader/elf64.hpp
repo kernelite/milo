@@ -138,7 +138,7 @@ struct [[gnu::packed]] Elf64_Phdr {
 static_assert(sizeof(Elf64_Phdr) == 56, "Elf64_Phdr must be exactly 56 bytes");
 
 // Explicit error model
-enum class ElfStatus {
+enum class ElfStatus : uint8_t {
     Success = 0,
     BufferTooSmall,
     InvalidMagic,

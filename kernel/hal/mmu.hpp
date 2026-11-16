@@ -5,7 +5,7 @@
 
 namespace HAL {
 
-enum class PageFlags : uint32_t {
+enum class PageFlags : uint8_t {
     None = 0,
     Read = 1 << 0,
     Write = 1 << 1,
@@ -16,19 +16,22 @@ enum class PageFlags : uint32_t {
 };
 
 constexpr PageFlags operator|(PageFlags lhs, PageFlags rhs) noexcept {
-    return static_cast<PageFlags>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+    return static_cast<PageFlags>(static_cast<uint8_t>(lhs) | static_cast<uint8_t>(rhs));
 }
 
 constexpr PageFlags operator&(PageFlags lhs, PageFlags rhs) noexcept {
-    return static_cast<PageFlags>(static_cast<uint32_t>(lhs) & static_cast<uint32_t>(rhs));
+    return static_cast<PageFlags>(static_cast<uint8_t>(lhs) & static_cast<uint8_t>(rhs));
 }
 
 constexpr PageFlags operator^(PageFlags lhs, PageFlags rhs) noexcept {
-    return static_cast<PageFlags>(static_cast<uint32_t>(lhs) ^ static_cast<uint32_t>(rhs));
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+    return static_cast<PageFlags>(static_cast<uint8_t>(lhs) ^ static_cast<uint8_t>(rhs));
 }
 
 constexpr PageFlags operator~(PageFlags flags) noexcept {
-    return static_cast<PageFlags>(~static_cast<uint32_t>(flags));
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+    return static_cast<PageFlags>(static_cast<uint8_t>(~static_cast<uint8_t>(flags)));
 }
 
 constexpr PageFlags& operator|=(PageFlags& lhs, PageFlags rhs) noexcept {
