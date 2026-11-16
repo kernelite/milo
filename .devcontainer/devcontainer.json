@@ -6,6 +6,7 @@
   "customizations": {
     "vscode": {
       "extensions": [
+        "llvm-vs-code-extensions.vscode-clangd",
         "google.google-antigravity",
         "ms-vscode.makefile-tools",
         "ms-vscode.cpptools",
@@ -22,6 +23,7 @@
         "C_Cpp.default.cStandard": "c17",
         "C_Cpp.default.compilerPath": "/usr/bin/aarch64-linux-gnu-g++",
         "C_Cpp.default.intelliSenseMode": "linux-gcc-arm64",
+        "C_Cpp.intelliSenseEngine": "disabled",
         "C_Cpp.default.includePath": [
           "${workspaceFolder}",
           "${workspaceFolder}/kernel",

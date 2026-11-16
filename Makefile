@@ -61,7 +61,9 @@ $(BUILD_DIR)/%.o: %.s
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) $< -o $@
 
-MUSL_CC ?= $(shell command -v aarch64-linux-musl-gcc 2>/dev/null || echo /opt/aarch64-musl/bin/musl-gcc)
+MUSL_CC       ?= $(shell command -v aarch64-linux-musl-gcc 2>/dev/null || echo /opt/aarch64-musl/bin/musl-gcc)
+HAS_MUSL_CC   := $(wildcard $(MUSL_CC))
+MUSL_USER_BIN := $(if $(HAS_MUSL_CC),$(BUILD_DIR)/user/hello_musl)
 LINUX_VER := 6.6.63
 
 setup-musl:
@@ -100,12 +102,14 @@ $(BUSYBOX_BIN):
 		sed -i 's/CONFIG_TC=y/# CONFIG_TC is not set/' .config && \
 		$(MAKE) -j$$(nproc) CROSS_COMPILE=aarch64-linux-musl- CC="$(MUSL_CC)"
 
-$(BUSYBOX_CPIO): $(BUILD_DIR)/user/hello $(BUILD_DIR)/user/hello_musl $(wildcard $(BUSYBOX_BIN))
+$(BUSYBOX_CPIO): $(BUILD_DIR)/user/hello $(MUSL_USER_BIN) $(wildcard $(BUSYBOX_BIN))
 	@rm -rf $(BUSYBOX_ROOTFS_DIR)
 	@mkdir -p $(INITRDS_DIR) $(BUSYBOX_ROOTFS_DIR)/bin $(BUSYBOX_ROOTFS_DIR)/dev $(BUSYBOX_ROOTFS_DIR)/proc $(BUSYBOX_ROOTFS_DIR)/tmp
 	@echo "milo-initrd-v1" > $(BUSYBOX_ROOTFS_DIR)/init.txt
 	@install -m 0755 $(BUILD_DIR)/user/hello $(BUSYBOX_ROOTFS_DIR)/bin/hello
-	@install -m 0755 $(BUILD_DIR)/user/hello_musl $(BUSYBOX_ROOTFS_DIR)/bin/hello_musl
+	@if [ -f "$(BUILD_DIR)/user/hello_musl" ]; then \
+		install -m 0755 $(BUILD_DIR)/user/hello_musl $(BUSYBOX_ROOTFS_DIR)/bin/hello_musl; \
+	fi
 	@if [ -f "$(BUSYBOX_BIN)" ]; then \
 		install -m 0755 $(BUSYBOX_BIN) $(BUSYBOX_ROOTFS_DIR)/bin/busybox && \
 		ln -sf busybox $(BUSYBOX_ROOTFS_DIR)/bin/sh && \
@@ -143,12 +147,14 @@ $(BASH_BIN):
 		$(MAKE) -j$$(nproc) && \
 		aarch64-linux-musl-strip bash
 
-$(BASH_CPIO): $(BUILD_DIR)/user/hello $(BUILD_DIR)/user/hello_musl $(BASH_BIN)
+$(BASH_CPIO): $(BUILD_DIR)/user/hello $(MUSL_USER_BIN) $(BASH_BIN)
 	@rm -rf $(BASH_ROOTFS_DIR)
 	@mkdir -p $(INITRDS_DIR) $(BASH_ROOTFS_DIR)/bin $(BASH_ROOTFS_DIR)/dev $(BASH_ROOTFS_DIR)/proc $(BASH_ROOTFS_DIR)/tmp
 	@echo "milo-initrd-v1" > $(BASH_ROOTFS_DIR)/init.txt
 	@install -m 0755 $(BUILD_DIR)/user/hello $(BASH_ROOTFS_DIR)/bin/hello
-	@install -m 0755 $(BUILD_DIR)/user/hello_musl $(BASH_ROOTFS_DIR)/bin/hello_musl
+	@if [ -f "$(BUILD_DIR)/user/hello_musl" ]; then \
+		install -m 0755 $(BUILD_DIR)/user/hello_musl $(BASH_ROOTFS_DIR)/bin/hello_musl; \
+	fi
 	@install -m 0755 $(BASH_BIN) $(BASH_ROOTFS_DIR)/bin/bash
 	@ln -sf bash $(BASH_ROOTFS_DIR)/bin/sh
 	@cd $(BASH_ROOTFS_DIR) && find . | cpio -o -H newc > ../../$(BASH_CPIO) 2>/dev/null
@@ -182,7 +188,7 @@ HDRS := $(shell find kernel arch -name '*.hpp' -o -name '*.h')
 # --- Compilation Database Generation ---
 compile_commands.json: clean
 	@echo "[BEAR] Generating compilation database..."
-	bear -- $(MAKE) all
+	bear -- $(MAKE) $(BUILD_DIR)/$(TARGET)
 
 # --- Code Quality Targets ---
 lint: compile_commands.json
