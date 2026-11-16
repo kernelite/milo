@@ -7,7 +7,7 @@
 
 namespace Kernel::FS {
 
-constexpr size_t MAX_PIPES = 16U;
+constexpr size_t MAX_PIPES = 64U;
 constexpr size_t PIPE_BUF_SIZE = 4096U;
 
 struct Pipe {

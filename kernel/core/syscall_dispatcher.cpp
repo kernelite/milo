@@ -36,12 +36,15 @@ constexpr uint64_t SYS_LSEEK = 62U;
 constexpr uint64_t SYS_READ = 63U;
 constexpr uint64_t SYS_WRITE = 64U;
 constexpr uint64_t SYS_WRITEV = 66U;
+constexpr uint64_t SYS_PSELECT6 = 72U;
+constexpr uint64_t SYS_PPOLL = 73U;
 constexpr uint64_t SYS_READLINKAT = 78U;
 constexpr uint64_t SYS_NEWFSTATAT = 79U;
 constexpr uint64_t SYS_FSTAT = 80U;
 constexpr uint64_t SYS_EXIT = 93U;
 constexpr uint64_t SYS_EXIT_GROUP = 94U;
 constexpr uint64_t SYS_SET_TID_ADDRESS = 96U;
+constexpr uint64_t SYS_NANOSLEEP = 101U;
 constexpr uint64_t SYS_CLOCK_GETTIME = 113U;
 constexpr uint64_t SYS_SCHED_YIELD = 124U;
 constexpr uint64_t SYS_KILL = 129U;
@@ -53,6 +56,8 @@ constexpr uint64_t SYS_GETPGID = 155U;
 constexpr uint64_t SYS_GETSID = 156U;
 constexpr uint64_t SYS_SETSID = 157U;
 constexpr uint64_t SYS_UNAME = 160U;
+constexpr uint64_t SYS_GETRUSAGE = 165U;
+constexpr uint64_t SYS_UMASK = 166U;
 constexpr uint64_t SYS_GETPID = 172U;
 constexpr uint64_t SYS_GETPPID = 173U;
 constexpr uint64_t SYS_GETUID = 174U;
@@ -67,6 +72,9 @@ constexpr uint64_t SYS_EXECVE = 221U;
 constexpr uint64_t SYS_MMAP = 222U;
 constexpr uint64_t SYS_MPROTECT = 226U;
 constexpr uint64_t SYS_WAIT4 = 260U;
+constexpr uint64_t SYS_PRLIMIT64 = 261U;
+constexpr uint64_t SYS_GETRANDOM = 278U;
+constexpr uint64_t SYS_FACCESSAT2 = 439U;
 
 constexpr size_t UIO_MAXIOV = 1024U;
 
@@ -74,6 +82,7 @@ constexpr size_t UIO_MAXIOV = 1024U;
 constexpr int64_t ERR_EPERM = -1;
 constexpr int64_t ERR_ENOENT = -2;
 constexpr int64_t ERR_ESRCH = -3;
+constexpr int64_t ERR_EINTR = -4;
 constexpr int64_t ERR_E2BIG = -7;
 constexpr int64_t ERR_ENOEXEC = -8;
 constexpr int64_t ERR_EBADF = -9;
@@ -94,6 +103,8 @@ constexpr int64_t ERR_ENOSYS = -38;
 
 // File / Open / Fcntl Constants
 constexpr int32_t AT_FDCWD = -100;
+constexpr uint64_t AT_SYMLINK_NOFOLLOW = 0x100ULL;
+constexpr uint64_t AT_EACCESS = 0x200ULL;
 constexpr uint64_t AT_EMPTY_PATH = 0x1000ULL;
 
 constexpr uint64_t O_ACCMODE = 0x3ULL;
@@ -142,8 +153,8 @@ constexpr uint64_t WAIT_WCONTINUED = 0x00000008ULL;
 constexpr size_t LINUX_RUSAGE_SIZE = 144U;
 
 constexpr size_t EXEC_MAX_PATH_LEN = 256U;
-constexpr size_t EXEC_MAX_ARGS = 32U;
-constexpr size_t EXEC_MAX_ENVS = 32U;
+constexpr size_t EXEC_MAX_ARGS = 64U;
+constexpr size_t EXEC_MAX_ENVS = 64U;
 
 // mmap Protection & Mapping Flags
 constexpr uint64_t PROT_NONE = 0x0U;
@@ -168,6 +179,8 @@ constexpr uint64_t IOCTL_TIOCSPGRP = 0x5410U;
 constexpr uint64_t IOCTL_TIOCGWINSZ = 0x5413U;
 
 // termios Flag Bits
+constexpr uint32_t TERMIOS_INLCR = 0x0040U;
+constexpr uint32_t TERMIOS_IGNCR = 0x0080U;
 constexpr uint32_t TERMIOS_ICRNL = 0x0100U;
 constexpr uint32_t TERMIOS_OPOST = 0x0001U;
 constexpr uint32_t TERMIOS_ONLCR = 0x0004U;
@@ -180,17 +193,57 @@ constexpr uint32_t TERMIOS_ECHO = 0x0008U;
 constexpr uint32_t TERMIOS_ECHOE = 0x0010U;
 constexpr uint32_t TERMIOS_ECHOK = 0x0020U;
 
+// termios c_cc Indices (Linux asm-generic)
+constexpr size_t CC_VINTR = 0U;
+constexpr size_t CC_VQUIT = 1U;
+constexpr size_t CC_VERASE = 2U;
+constexpr size_t CC_VKILL = 3U;
+constexpr size_t CC_VEOF = 4U;
+constexpr size_t CC_VTIME = 5U;
+constexpr size_t CC_VMIN = 6U;
+
 constexpr size_t TERMIOS_NCCS = 19U;
 constexpr uint16_t DEFAULT_TTY_ROWS = 24U;
 constexpr uint16_t DEFAULT_TTY_COLS = 80U;
 
 constexpr size_t READ_CHUNK_SIZE = 256U;
 constexpr size_t WRITE_CHUNK_SIZE = 256U;
+constexpr size_t TTY_RX_BUF_SIZE = 256U;
 
 // Signal masks
 constexpr uint64_t SIG_BLOCK = 0ULL;
 constexpr uint64_t SIG_UNBLOCK = 1ULL;
 constexpr uint64_t SIG_SETMASK = 2ULL;
+
+// Resource Limits (Linux asm-generic/resource.h)
+constexpr uint32_t RLIMIT_STACK = 3U;
+constexpr uint32_t RLIMIT_CORE = 4U;
+constexpr uint32_t RLIMIT_NPROC = 6U;
+constexpr uint32_t RLIMIT_NOFILE = 7U;
+constexpr uint32_t RLIM_NLIMITS = 16U;
+constexpr uint64_t RLIM64_INFINITY = ~0ULL;
+
+// getrandom Flags
+constexpr uint64_t GRND_NONBLOCK = 0x0001ULL;
+constexpr uint64_t GRND_RANDOM = 0x0002ULL;
+constexpr uint64_t GRND_INSECURE = 0x0004ULL;
+
+// getrusage Selectors
+constexpr int32_t RUSAGE_SELF = 0;
+constexpr int32_t RUSAGE_CHILDREN = -1;
+constexpr int32_t RUSAGE_THREAD = 1;
+
+// poll Event Bitmasks
+constexpr int16_t POLLIN = 0x0001;
+constexpr int16_t POLLOUT = 0x0004;
+constexpr int16_t POLLERR = 0x0008;
+constexpr int16_t POLLHUP = 0x0010;
+constexpr int16_t POLLNVAL = 0x0020;
+constexpr int16_t POLLRDNORM = 0x0040;
+constexpr int16_t POLLWRNORM = 0x0100;
+
+constexpr size_t MAX_FDSET_FDS = 1024U;
+constexpr size_t MAX_FDSET_WORDS = MAX_FDSET_FDS / 64U;
 
 struct ktermios {
     uint32_t c_iflag;
@@ -247,7 +300,6 @@ struct [[gnu::packed]] LinuxDirent64Header {
     uint16_t d_reclen;
     uint8_t d_type;
 };
-
 static_assert(sizeof(LinuxDirent64Header) == 19U, "LinuxDirent64Header must be 19 bytes");
 
 struct LinuxSigAction {
@@ -273,6 +325,52 @@ struct LinuxTimespec {
     int64_t tv_nsec;
 };
 static_assert(sizeof(LinuxTimespec) == 16U, "LinuxTimespec must be 16 bytes");
+
+struct LinuxTimeval {
+    int64_t tv_sec;
+    int64_t tv_usec;
+};
+static_assert(sizeof(LinuxTimeval) == 16U, "LinuxTimeval must be 16 bytes");
+
+struct LinuxRusage {
+    LinuxTimeval ru_utime;
+    LinuxTimeval ru_stime;
+    int64_t ru_maxrss;
+    int64_t ru_ixrss;
+    int64_t ru_idrss;
+    int64_t ru_isrss;
+    int64_t ru_minflt;
+    int64_t ru_majflt;
+    int64_t ru_nswap;
+    int64_t ru_inblock;
+    int64_t ru_oublock;
+    int64_t ru_msgsnd;
+    int64_t ru_msgrcv;
+    int64_t ru_nsignals;
+    int64_t ru_nvcsw;
+    int64_t ru_nivcsw;
+};
+static_assert(sizeof(LinuxRusage) == LINUX_RUSAGE_SIZE,
+              "LinuxRusage must match Linux AArch64 ABI (144 bytes)");
+
+struct LinuxRlimit64 {
+    uint64_t rlim_cur;
+    uint64_t rlim_max;
+};
+static_assert(sizeof(LinuxRlimit64) == 16U, "LinuxRlimit64 must be 16 bytes");
+
+struct LinuxPollFd {
+    int32_t fd;
+    int16_t events;
+    int16_t revents;
+};
+static_assert(sizeof(LinuxPollFd) == 8U, "LinuxPollFd must be 8 bytes");
+
+struct LinuxSigsetArgpack {
+    uint64_t ss;
+    uint64_t ss_len;
+};
+static_assert(sizeof(LinuxSigsetArgpack) == 16U, "LinuxSigsetArgpack must be 16 bytes");
 
 struct LinuxSysinfo {
     int64_t uptime;
@@ -303,6 +401,98 @@ ktermios g_console_termios{
 };
 
 uint32_t g_foreground_pgid = 1U;
+uint8_t g_tty_rx_buf[TTY_RX_BUF_SIZE]{};
+size_t g_tty_rx_head = 0U;
+size_t g_tty_rx_tail = 0U;
+size_t g_tty_rx_count = 0U;
+
+void tty_flush_rx_unlocked() noexcept {
+    g_tty_rx_head = 0U;
+    g_tty_rx_tail = 0U;
+    g_tty_rx_count = 0U;
+}
+
+void tty_pump_uart_unlocked() noexcept {
+    auto& console = HAL::get_console();
+    while (console.has_input() && g_tty_rx_count < TTY_RX_BUF_SIZE) {
+        const uint8_t ch = console.getc();
+        if ((g_console_termios.c_lflag & TERMIOS_ISIG) != 0U) {
+            if (ch == g_console_termios.c_cc[CC_VINTR]) {
+                if ((g_console_termios.c_lflag & TERMIOS_ECHO) != 0U) {
+                    console.write("^C\r\n", 4U);
+                }
+                tty_flush_rx_unlocked();
+                Kernel::Process::signal_process_group(g_foreground_pgid,
+                                                      Kernel::Process::SIG_INT);
+                continue;
+            }
+            if (ch == g_console_termios.c_cc[CC_VQUIT]) {
+                if ((g_console_termios.c_lflag & TERMIOS_ECHO) != 0U) {
+                    console.write("^\\\r\n", 4U);
+                }
+                tty_flush_rx_unlocked();
+                Kernel::Process::signal_process_group(g_foreground_pgid,
+                                                      Kernel::Process::SIG_QUIT);
+                continue;
+            }
+        }
+        g_tty_rx_buf[g_tty_rx_tail] = ch;
+        g_tty_rx_tail = (g_tty_rx_tail + 1U) % TTY_RX_BUF_SIZE;
+        g_tty_rx_count++;
+    }
+}
+
+size_t tty_rx_available() noexcept {
+    auto& cpu = HAL::get_cpu();
+    const bool irq_was_enabled = cpu.interrupts_enabled();
+    cpu.disable_interrupts();
+
+    tty_pump_uart_unlocked();
+    const size_t avail = g_tty_rx_count;
+
+    if (irq_was_enabled) {
+        cpu.enable_interrupts();
+    }
+    return avail;
+}
+
+bool tty_try_pop_byte(uint8_t& out_byte) noexcept {
+    auto& cpu = HAL::get_cpu();
+    const bool irq_was_enabled = cpu.interrupts_enabled();
+    cpu.disable_interrupts();
+
+    tty_pump_uart_unlocked();
+    bool got_byte = false;
+    if (g_tty_rx_count > 0U) {
+        out_byte = g_tty_rx_buf[g_tty_rx_head];
+        g_tty_rx_head = (g_tty_rx_head + 1U) % TTY_RX_BUF_SIZE;
+        g_tty_rx_count--;
+        got_byte = true;
+    }
+
+    if (irq_was_enabled) {
+        cpu.enable_interrupts();
+    }
+    return got_byte;
+}
+
+void wait_for_event_or_tick() noexcept {
+    auto& cpu = HAL::get_cpu();
+    Kernel::Scheduler::yield();
+    cpu.enable_interrupts();
+    cpu.halt();
+    cpu.disable_interrupts();
+}
+
+uint64_t timespec_to_timer_ticks(const LinuxTimespec& ts, uint64_t freq) noexcept {
+    if (freq == 0ULL || (ts.tv_sec == 0 && ts.tv_nsec == 0)) {
+        return 0ULL;
+    }
+    const uint64_t sec_ticks = static_cast<uint64_t>(ts.tv_sec) * freq;
+    const uint64_t nsec_ticks =
+        (static_cast<uint64_t>(ts.tv_nsec) * freq + 999999999ULL) / 1000000000ULL;
+    return sec_ticks + nsec_ticks;
+}
 
 size_t cstr_len(const char* str) noexcept {
     size_t len = 0U;
@@ -364,7 +554,6 @@ bool normalize_vfs_path(const char* base_dir, const char* input, char* out,
     }
     combined[pos] = '\0';
 
-    // Stack of component start offsets inside `out`
     size_t comp_starts[32]{};
     size_t comp_count = 0U;
     out[0] = '/';
@@ -422,8 +611,6 @@ bool normalize_vfs_path(const char* base_dir, const char* input, char* out,
     return true;
 }
 
-// Resolves a canonical path ("/" or "/bin/sh") against initrd CPIO entries,
-// synthesizing virtual directories if intermediate components exist.
 bool resolve_initrd_path(const char* canon_path, CpioEntry& out_entry) noexcept {
     if (canon_path == nullptr || canon_path[0] != '/') {
         return false;
@@ -457,7 +644,6 @@ bool resolve_initrd_path(const char* canon_path, CpioEntry& out_entry) noexcept 
         return true;
     }
 
-    // Check if any entry has `target_rel/` as a prefix (implicit directory in CPIO)
     const char* const target_rel = canon_path + 1;
     const size_t target_len = cstr_len(target_rel);
     bool has_children = false;
@@ -510,6 +696,10 @@ void fill_stat_from_fd(const Kernel::Process::FileDescriptor& desc, LinuxStat& s
         stat_out.st_ino = 2ULL;
         stat_out.st_mode = 0020666U; // S_IFCHR | 0666
         stat_out.st_rdev = 0x0501ULL;
+    } else if (desc.type == Kernel::Process::FdType::DevNull) {
+        stat_out.st_ino = 4ULL;
+        stat_out.st_mode = 0020666U; // S_IFCHR | 0666
+        stat_out.st_rdev = 0x0103ULL;
     } else if (desc.type == Kernel::Process::FdType::PipeRead ||
                desc.type == Kernel::Process::FdType::PipeWrite) {
         stat_out.st_ino = 3ULL;
@@ -535,7 +725,11 @@ void fill_stat_from_cpio(const char* canon_path, const CpioEntry& entry,
 }
 
 int allocate_fd_slot(Kernel::Process::Process& proc, size_t min_fd = 0U) noexcept {
-    for (size_t idx = min_fd; idx < Kernel::Process::MAX_FDS_PER_PROCESS; ++idx) {
+    size_t max_fds = Kernel::Process::MAX_FDS_PER_PROCESS;
+    if (proc.rlim_nofile_cur < max_fds) {
+        max_fds = static_cast<size_t>(proc.rlim_nofile_cur);
+    }
+    for (size_t idx = min_fd; idx < max_fds; ++idx) {
         if (!proc.fd_table[idx].in_use) {
             return static_cast<int>(idx);
         }
@@ -742,10 +936,6 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
         return ERR_EINVAL;
     }
 
-    if ((flags & (O_CREAT | O_TRUNC)) != 0ULL || (flags & O_ACCMODE) != O_RDONLY) {
-        return ERR_EROFS;
-    }
-
     char raw_path[Kernel::Process::MAX_PATH_LEN]{};
     size_t path_len = 0U;
     const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
@@ -767,23 +957,61 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
         return ERR_ENOENT;
     }
 
-    const int slot = allocate_fd_slot(*proc);
-    if (slot < 0) {
-        return ERR_EMFILE;
+    const uint64_t accmode = flags & O_ACCMODE;
+    uint32_t rw_flags = 0U;
+    if (accmode == O_RDONLY) {
+        rw_flags = Kernel::Process::FD_FLAG_READ;
+    } else if (accmode == O_WRONLY) {
+        rw_flags = Kernel::Process::FD_FLAG_WRITE;
+    } else if (accmode == O_RDWR) {
+        rw_flags = Kernel::Process::FD_FLAG_READ | Kernel::Process::FD_FLAG_WRITE;
+    } else {
+        return ERR_EINVAL;
+    }
+
+    uint32_t extra_flags = 0U;
+    if ((flags & O_CLOEXEC) != 0ULL) {
+        extra_flags |= Kernel::Process::FD_FLAG_CLOEXEC;
+    }
+    if ((flags & O_NONBLOCK) != 0ULL) {
+        extra_flags |= Kernel::Process::FD_FLAG_NONBLOCK;
     }
 
     if (cstr_eq(canon_path, "/dev/console") || cstr_eq(canon_path, "/dev/tty")) {
-        uint32_t fd_flags = Kernel::Process::FD_FLAG_READ | Kernel::Process::FD_FLAG_WRITE;
-        if ((flags & O_CLOEXEC) != 0ULL) {
-            fd_flags |= Kernel::Process::FD_FLAG_CLOEXEC;
+        const int slot = allocate_fd_slot(*proc);
+        if (slot < 0) {
+            return ERR_EMFILE;
         }
         proc->fd_table[slot] = Kernel::Process::FileDescriptor{
             .type = Kernel::Process::FdType::ConsoleTty,
-            .flags = fd_flags,
+            .flags = rw_flags | extra_flags,
             .offset = 0U,
             .in_use = true,
         };
         return slot;
+    }
+
+    if (cstr_eq(canon_path, "/dev/null")) {
+        const int slot = allocate_fd_slot(*proc);
+        if (slot < 0) {
+            return ERR_EMFILE;
+        }
+        proc->fd_table[slot] = Kernel::Process::FileDescriptor{
+            .type = Kernel::Process::FdType::DevNull,
+            .flags = rw_flags | extra_flags,
+            .offset = 0U,
+            .in_use = true,
+        };
+        return slot;
+    }
+
+    if ((flags & (O_CREAT | O_TRUNC)) != 0ULL || accmode != O_RDONLY) {
+        return ERR_EROFS;
+    }
+
+    const int slot = allocate_fd_slot(*proc);
+    if (slot < 0) {
+        return ERR_EMFILE;
     }
 
     CpioEntry entry{};
@@ -795,15 +1023,10 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
         return ERR_ENOTDIR;
     }
 
-    uint32_t fd_flags = Kernel::Process::FD_FLAG_READ;
-    if ((flags & O_CLOEXEC) != 0ULL) {
-        fd_flags |= Kernel::Process::FD_FLAG_CLOEXEC;
-    }
-
     auto& desc = proc->fd_table[slot];
     desc = Kernel::Process::FileDescriptor{
         .type = Kernel::Process::FdType::InitrdFile,
-        .flags = fd_flags,
+        .flags = Kernel::Process::FD_FLAG_READ | extra_flags,
         .offset = 0U,
         .in_use = true,
         .cpio_entry = entry,
@@ -836,6 +1059,9 @@ int64_t sys_lseek(uint64_t raw_fd, int64_t offset, uint64_t whence) noexcept {
     auto& desc = proc->fd_table[static_cast<size_t>(raw_fd)];
     if (!desc.in_use) {
         return ERR_EBADF;
+    }
+    if (desc.type == Kernel::Process::FdType::DevNull) {
+        return 0;
     }
     if (desc.type == Kernel::Process::FdType::PipeRead ||
         desc.type == Kernel::Process::FdType::PipeWrite ||
@@ -929,6 +1155,17 @@ int64_t sys_newfstatat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_st
         return Kernel::MM::copy_to_user(proc->address_space, user_statbuf, &stat, sizeof(stat));
     }
 
+    if (cstr_eq(canon_path, "/dev/null")) {
+        LinuxStat stat{};
+        stat.st_dev = 1ULL;
+        stat.st_ino = 4ULL;
+        stat.st_mode = 0020666U;
+        stat.st_nlink = 1U;
+        stat.st_rdev = 0x0103ULL;
+        stat.st_blksize = 4096;
+        return Kernel::MM::copy_to_user(proc->address_space, user_statbuf, &stat, sizeof(stat));
+    }
+
     CpioEntry entry{};
     if (!resolve_initrd_path(canon_path, entry)) {
         return ERR_ENOENT;
@@ -939,11 +1176,16 @@ int64_t sys_newfstatat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_st
     return Kernel::MM::copy_to_user(proc->address_space, user_statbuf, &stat, sizeof(stat));
 }
 
-int64_t sys_faccessat(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
-                      uint64_t flags) noexcept {
-    (void)flags;
+int64_t sys_faccessat2(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
+                       uint64_t flags) noexcept {
     auto* const proc = Kernel::Process::current_process();
     if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+    if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_EACCESS | AT_EMPTY_PATH)) != 0ULL) {
+        return ERR_EINVAL;
+    }
+    if ((mode & ~7ULL) != 0ULL) {
         return ERR_EINVAL;
     }
 
@@ -953,6 +1195,20 @@ int64_t sys_faccessat(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
                                                raw_path, sizeof(raw_path), path_len);
     if (copy_res < 0) {
         return copy_res;
+    }
+
+    if (path_len == 0U && (flags & AT_EMPTY_PATH) != 0ULL) {
+        if (dirfd < 0 || static_cast<size_t>(dirfd) >= Kernel::Process::MAX_FDS_PER_PROCESS) {
+            return ERR_EBADF;
+        }
+        const auto& desc = proc->fd_table[static_cast<size_t>(dirfd)];
+        if (!desc.in_use) {
+            return ERR_EBADF;
+        }
+        if (desc.type == Kernel::Process::FdType::InitrdFile && (mode & 2ULL) != 0ULL) {
+            return ERR_EROFS;
+        }
+        return 0;
     }
 
     const char* base_dir = "/";
@@ -968,8 +1224,9 @@ int64_t sys_faccessat(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
         return ERR_ENOENT;
     }
 
-    if (cstr_eq(canon_path, "/dev/console") || cstr_eq(canon_path, "/dev/tty")) {
-        return 0;
+    if (cstr_eq(canon_path, "/dev/console") || cstr_eq(canon_path, "/dev/tty") ||
+        cstr_eq(canon_path, "/dev/null")) {
+        return ((mode & 1ULL) != 0ULL) ? ERR_EACCES : 0;
     }
 
     CpioEntry entry{};
@@ -977,15 +1234,18 @@ int64_t sys_faccessat(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
         return ERR_ENOENT;
     }
 
-    // W_OK (2) on read-only initrd
     if ((mode & 2ULL) != 0ULL) {
         return ERR_EROFS;
     }
-    // X_OK (1)
     if ((mode & 1ULL) != 0ULL && !entry.is_directory && (entry.mode & 0111U) == 0U) {
         return ERR_EACCES;
     }
     return 0;
+}
+
+int64_t sys_faccessat(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
+                      uint64_t flags) noexcept {
+    return sys_faccessat2(dirfd, user_pathname, mode, flags);
 }
 
 int64_t sys_readlinkat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_buf,
@@ -1020,9 +1280,10 @@ int64_t sys_readlinkat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_bu
     }
 
     if (cstr_eq(canon_path, "/proc/self/exe")) {
-        const char exe_target[] = "/bin/busybox";
-        const size_t copy_len = (bufsiz < (sizeof(exe_target) - 1U)) ? static_cast<size_t>(bufsiz)
-                                                                     : (sizeof(exe_target) - 1U);
+        const char* exe_target = (proc->exe_path[0] != '\0') ? proc->exe_path : "/bin/bash";
+        const size_t target_len = cstr_len(exe_target);
+        const size_t copy_len =
+            (bufsiz < target_len) ? static_cast<size_t>(bufsiz) : target_len;
         if (Kernel::MM::copy_to_user(proc->address_space, user_buf, exe_target, copy_len) < 0) {
             return ERR_EFAULT;
         }
@@ -1066,7 +1327,6 @@ int64_t sys_getdents64(uint64_t raw_fd, uintptr_t user_dirp, uint64_t count) noe
         return ERR_EFAULT;
     }
 
-    // Track emitted direct children to deduplicate synthesized parent directories
     char seen_names[64][64]{};
     size_t seen_count = 0U;
     size_t entry_index = 0U;
@@ -1215,6 +1475,9 @@ int64_t sys_dup3(uint64_t raw_oldfd, uint64_t raw_newfd, uint64_t flags) noexcep
         raw_newfd >= Kernel::Process::MAX_FDS_PER_PROCESS) {
         return ERR_EBADF;
     }
+    if (raw_newfd >= proc->rlim_nofile_cur) {
+        return ERR_EBADF;
+    }
     if (raw_oldfd == raw_newfd) {
         return ERR_EINVAL;
     }
@@ -1253,7 +1516,7 @@ int64_t sys_fcntl(uint64_t raw_fd, uint64_t cmd, uint64_t arg) noexcept {
     switch (cmd) {
     case F_DUPFD:
     case F_DUPFD_CLOEXEC: {
-        if (arg >= Kernel::Process::MAX_FDS_PER_PROCESS) {
+        if (arg >= proc->rlim_nofile_cur || arg >= Kernel::Process::MAX_FDS_PER_PROCESS) {
             return ERR_EINVAL;
         }
         const int new_idx = allocate_fd_slot(*proc, static_cast<size_t>(arg));
@@ -1368,7 +1631,7 @@ int64_t sys_pipe2(uintptr_t user_pipefd, uint64_t flags) noexcept {
 }
 
 // ==========================================================================
-// TTY & I/O Syscalls
+// TTY, Multiplexing & I/O Syscalls
 // ==========================================================================
 
 int64_t sys_ioctl(uint64_t raw_fd, uint64_t request, uintptr_t arg) noexcept {
@@ -1410,7 +1673,16 @@ int64_t sys_ioctl(uint64_t raw_fd, uint64_t request, uintptr_t arg) noexcept {
         if (copy_res < 0) {
             return copy_res;
         }
+        auto& cpu = HAL::get_cpu();
+        const bool irq_was_enabled = cpu.interrupts_enabled();
+        cpu.disable_interrupts();
         g_console_termios = updated;
+        if (request == IOCTL_TCSETSF) {
+            tty_flush_rx_unlocked();
+        }
+        if (irq_was_enabled) {
+            cpu.enable_interrupts();
+        }
         return 0;
     }
 
@@ -1456,6 +1728,7 @@ int64_t sys_read(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexce
 
     auto* const proc = Kernel::Process::current_process();
     uintptr_t root_paddr = 0U;
+    bool nonblock = false;
 
     if (raw_count > Kernel::MM::user_addr_space_limit()) {
         return ERR_EFAULT;
@@ -1468,11 +1741,16 @@ int64_t sys_read(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexce
             return ERR_EBADF;
         }
         root_paddr = proc->address_space.root_paddr();
+        nonblock = (desc.flags & Kernel::Process::FD_FLAG_NONBLOCK) != 0U;
 
         if (!validate_user_write_range(root_paddr, user_buf, count)) {
             return ERR_EFAULT;
         }
         if (count == 0U) {
+            return 0;
+        }
+
+        if (desc.type == Kernel::Process::FdType::DevNull) {
             return 0;
         }
 
@@ -1495,7 +1773,6 @@ int64_t sys_read(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexce
         }
 
         if (desc.type == Kernel::Process::FdType::PipeRead) {
-            const bool nonblock = (desc.flags & Kernel::Process::FD_FLAG_NONBLOCK) != 0U;
             return Kernel::FS::pipe_read(desc.pipe, root_paddr, user_buf, count, nonblock);
         }
 
@@ -1518,69 +1795,215 @@ int64_t sys_read(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexce
     const bool canonical = (g_console_termios.c_lflag & TERMIOS_ICANON) != 0U;
     const bool echo = (g_console_termios.c_lflag & TERMIOS_ECHO) != 0U;
     const bool echoe = (g_console_termios.c_lflag & TERMIOS_ECHOE) != 0U;
+    const bool echok = (g_console_termios.c_lflag & TERMIOS_ECHOK) != 0U;
     const bool map_cr_to_nl = (g_console_termios.c_iflag & TERMIOS_ICRNL) != 0U;
+    const bool map_nl_to_cr = (g_console_termios.c_iflag & TERMIOS_INLCR) != 0U;
+    const bool ignore_cr = (g_console_termios.c_iflag & TERMIOS_IGNCR) != 0U;
+
+    auto translate_input_char = [&](char chr, bool& skip_char) -> char {
+        skip_char = false;
+        if (chr == '\r') {
+            if (ignore_cr) {
+                skip_char = true;
+                return chr;
+            }
+            if (map_cr_to_nl) {
+                return '\n';
+            }
+        } else if (chr == '\n' && map_nl_to_cr) {
+            return '\r';
+        }
+        return chr;
+    };
 
     char kbuf[READ_CHUNK_SIZE]{};
     size_t total_read = 0U;
     size_t chunk_pos = 0U;
-    bool line_done = false;
 
-    while ((total_read + chunk_pos) < count && !line_done) {
-        char chr = static_cast<char>(HAL::get_console().getc());
+    auto flush_chunk = [&]() -> int64_t {
+        if (chunk_pos == 0U) {
+            return 0;
+        }
+        const int64_t copy_res =
+            Kernel::MM::copy_to_user(root_paddr, user_buf + total_read, kbuf, chunk_pos);
+        if (copy_res < 0) {
+            return copy_res;
+        }
+        total_read += chunk_pos;
+        chunk_pos = 0U;
+        return 0;
+    };
 
-        if (canonical) {
-            if (chr == '\b' || static_cast<uint8_t>(chr) == 0x7FU) {
-                if (chunk_pos > 0U) {
-                    chunk_pos--;
-                    if (echo) {
-                        if (echoe) {
-                            HAL::get_console().write("\b \b", 3U);
-                        } else {
-                            HAL::get_console().putc('\b');
-                        }
-                    }
+    // Non-canonical mode (~TERMIOS_ICANON): POSIX VMIN / VTIME read semantics
+    if (!canonical) {
+        const uint8_t vmin = g_console_termios.c_cc[CC_VMIN];
+        const uint8_t vtime = g_console_termios.c_cc[CC_VTIME];
+        const size_t target_min = (vmin < count) ? vmin : count;
+        const uint64_t freq = HAL::QemuVirt::GenericTimer::frequency_hz();
+        const uint64_t timeout_ticks =
+            (vtime > 0U && freq > 0ULL) ? ((static_cast<uint64_t>(vtime) * freq) / 10ULL) : 0ULL;
+        uint64_t deadline_ticks =
+            (timeout_ticks > 0ULL) ? (HAL::QemuVirt::GenericTimer::counter_ticks() + timeout_ticks)
+                                   : 0ULL;
+
+        while ((total_read + chunk_pos) < count) {
+            uint8_t raw_byte = 0U;
+            while ((total_read + chunk_pos) < count && tty_try_pop_byte(raw_byte)) {
+                bool skip_char = false;
+                const char chr = translate_input_char(static_cast<char>(raw_byte), skip_char);
+                if (skip_char) {
+                    continue;
                 }
-                continue;
-            }
-
-            if (chr == '\r' && map_cr_to_nl) {
-                chr = '\n';
-            }
-
-            kbuf[chunk_pos++] = chr;
-
-            if (chr == '\n') {
+                kbuf[chunk_pos++] = chr;
                 if (echo) {
-                    HAL::get_console().write("\r\n", 2U);
-                }
-                line_done = true;
-            } else if (echo) {
-                const auto byte_val = static_cast<uint8_t>(chr);
-                if (byte_val >= 0x20U && byte_val <= 0x7EU) {
                     HAL::get_console().putc(chr);
                 }
+                if (chunk_pos == READ_CHUNK_SIZE) {
+                    const int64_t fres = flush_chunk();
+                    if (fres < 0) {
+                        return (total_read > 0U) ? static_cast<int64_t>(total_read) : fres;
+                    }
+                }
+                if (timeout_ticks > 0ULL) {
+                    deadline_ticks = HAL::QemuVirt::GenericTimer::counter_ticks() + timeout_ticks;
+                }
             }
-        } else {
-            if (chr == '\r' && map_cr_to_nl) {
-                chr = '\n';
+
+            const size_t buffered = total_read + chunk_pos;
+            if (nonblock) {
+                if (buffered > 0U) {
+                    break;
+                }
+                if (proc != nullptr && Kernel::Process::has_unblocked_pending_signal(*proc)) {
+                    return ERR_EINTR;
+                }
+                return ERR_EAGAIN;
             }
-            kbuf[chunk_pos++] = chr;
+
+            if (vmin == 0U && vtime == 0U) {
+                // Polling read: return immediately with whatever bytes are available
+                break;
+            }
+
+            if (vmin > 0U && buffered >= target_min) {
+                // Satisfied minimum byte threshold
+                break;
+            }
+
+            if (vmin == 0U && vtime > 0U) {
+                // Timed read: return as soon as >= 1 byte arrives or overall timer expires
+                if (buffered > 0U) {
+                    break;
+                }
+                if (HAL::QemuVirt::GenericTimer::counter_ticks() >= deadline_ticks) {
+                    break;
+                }
+            } else if (vmin > 0U && vtime > 0U && buffered > 0U) {
+                // Inter-byte timer active once at least 1 byte has been received
+                if (HAL::QemuVirt::GenericTimer::counter_ticks() >= deadline_ticks) {
+                    break;
+                }
+            }
+
+            if (proc != nullptr && Kernel::Process::has_unblocked_pending_signal(*proc)) {
+                const int64_t fres = flush_chunk();
+                if (fres < 0 && total_read == 0U) {
+                    return fres;
+                }
+                return (total_read > 0U) ? static_cast<int64_t>(total_read) : ERR_EINTR;
+            }
+
+            wait_for_event_or_tick();
+        }
+
+        const int64_t fres = flush_chunk();
+        if (fres < 0 && total_read == 0U) {
+            return fres;
+        }
+        return static_cast<int64_t>(total_read);
+    }
+
+    // Canonical mode (TERMIOS_ICANON): line-buffered input with erase/kill/EOF
+    bool line_done = false;
+    while ((total_read + chunk_pos) < count && !line_done) {
+        uint8_t raw_byte = 0U;
+        if (!tty_try_pop_byte(raw_byte)) {
+            if (proc != nullptr && Kernel::Process::has_unblocked_pending_signal(*proc)) {
+                const int64_t fres = flush_chunk();
+                if (fres < 0 && total_read == 0U) {
+                    return fres;
+                }
+                return (total_read > 0U) ? static_cast<int64_t>(total_read) : ERR_EINTR;
+            }
+            if (nonblock) {
+                return ERR_EAGAIN;
+            }
+            wait_for_event_or_tick();
+            continue;
+        }
+
+        if (raw_byte == g_console_termios.c_cc[CC_VEOF]) {
+            line_done = true;
+            break;
+        }
+
+        if (raw_byte == g_console_termios.c_cc[CC_VKILL]) {
+            while (chunk_pos > 0U) {
+                chunk_pos--;
+                if (echo && echok) {
+                    HAL::get_console().write("\b \b", 3U);
+                }
+            }
+            continue;
+        }
+
+        if (raw_byte == '\b' || raw_byte == 0x7FU ||
+            raw_byte == g_console_termios.c_cc[CC_VERASE]) {
+            if (chunk_pos > 0U) {
+                chunk_pos--;
+                if (echo) {
+                    if (echoe) {
+                        HAL::get_console().write("\b \b", 3U);
+                    } else {
+                        HAL::get_console().putc('\b');
+                    }
+                }
+            }
+            continue;
+        }
+
+        bool skip_char = false;
+        const char chr = translate_input_char(static_cast<char>(raw_byte), skip_char);
+        if (skip_char) {
+            continue;
+        }
+
+        kbuf[chunk_pos++] = chr;
+
+        if (chr == '\n') {
             if (echo) {
+                HAL::get_console().write("\r\n", 2U);
+            }
+            line_done = true;
+        } else if (echo) {
+            const auto byte_val = static_cast<uint8_t>(chr);
+            if (byte_val >= 0x20U && byte_val <= 0x7EU) {
                 HAL::get_console().putc(chr);
             }
         }
 
         if (chunk_pos == READ_CHUNK_SIZE || (total_read + chunk_pos) == count || line_done) {
-            const int64_t copy_res =
-                Kernel::MM::copy_to_user(root_paddr, user_buf + total_read, kbuf, chunk_pos);
-            if (copy_res < 0) {
-                return (total_read > 0U) ? static_cast<int64_t>(total_read) : copy_res;
+            const int64_t fres = flush_chunk();
+            if (fres < 0) {
+                return (total_read > 0U) ? static_cast<int64_t>(total_read) : fres;
             }
-            total_read += chunk_pos;
-            chunk_pos = 0U;
         }
     }
 
+    const int64_t fres = flush_chunk();
+    if (fres < 0 && total_read == 0U) {
+        return fres;
+    }
     return static_cast<int64_t>(total_read);
 }
 
@@ -1610,6 +2033,10 @@ int64_t sys_write(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexc
         }
         if (count == 0U) {
             return 0;
+        }
+
+        if (desc.type == Kernel::Process::FdType::DevNull) {
+            return static_cast<int64_t>(count);
         }
 
         if (desc.type == Kernel::Process::FdType::PipeWrite) {
@@ -1705,6 +2132,346 @@ int64_t sys_writev(uint64_t raw_fd, uintptr_t user_iov, uint64_t raw_iovcnt) noe
     }
 
     return static_cast<int64_t>(total_written);
+}
+
+int16_t poll_fd_revents(const Kernel::Process::Process& proc, int32_t fd, int16_t events) noexcept {
+    if (fd < 0) {
+        return 0;
+    }
+    if (static_cast<size_t>(fd) >= Kernel::Process::MAX_FDS_PER_PROCESS) {
+        return POLLNVAL;
+    }
+    const auto& desc = proc.fd_table[static_cast<size_t>(fd)];
+    if (!desc.in_use) {
+        return POLLNVAL;
+    }
+
+    int16_t revents = 0;
+    switch (desc.type) {
+    case Kernel::Process::FdType::ConsoleTty:
+        if (desc.is_readable() && tty_rx_available() > 0U) {
+            revents |= static_cast<int16_t>(events & (POLLIN | POLLRDNORM));
+        }
+        if (desc.is_writable()) {
+            revents |= static_cast<int16_t>(events & (POLLOUT | POLLWRNORM));
+        }
+        break;
+
+    case Kernel::Process::FdType::DevNull:
+    case Kernel::Process::FdType::InitrdFile:
+        if (desc.is_readable()) {
+            revents |= static_cast<int16_t>(events & (POLLIN | POLLRDNORM));
+        }
+        if (desc.is_writable()) {
+            revents |= static_cast<int16_t>(events & (POLLOUT | POLLWRNORM));
+        }
+        break;
+
+    case Kernel::Process::FdType::PipeRead:
+        if (desc.pipe == nullptr || !desc.pipe->in_use) {
+            revents |= POLLNVAL;
+        } else {
+            if (desc.pipe->count > 0U) {
+                revents |= static_cast<int16_t>(events & (POLLIN | POLLRDNORM));
+            }
+            if (desc.pipe->writers == 0U) {
+                revents |= POLLHUP;
+            }
+        }
+        break;
+
+    case Kernel::Process::FdType::PipeWrite:
+        if (desc.pipe == nullptr || !desc.pipe->in_use) {
+            revents |= POLLNVAL;
+        } else if (desc.pipe->readers == 0U) {
+            revents |= POLLERR;
+        } else if (desc.pipe->count < Kernel::FS::PIPE_BUF_SIZE) {
+            revents |= static_cast<int16_t>(events & (POLLOUT | POLLWRNORM));
+        }
+        break;
+
+    default:
+        revents |= POLLNVAL;
+        break;
+    }
+
+    return revents;
+}
+
+int64_t sys_ppoll(uintptr_t user_fds, uint64_t nfds, uintptr_t user_tmo, uintptr_t user_sigmask,
+                  uint64_t sigsetsize) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+    if (nfds > Kernel::Process::MAX_FDS_PER_PROCESS) {
+        return ERR_EINVAL;
+    }
+
+    const uintptr_t root_paddr = proc->address_space.root_paddr();
+    const auto count = static_cast<size_t>(nfds);
+    LinuxPollFd kfdfs[Kernel::Process::MAX_FDS_PER_PROCESS]{};
+
+    if (count > 0U) {
+        if (user_fds == 0U) {
+            return ERR_EFAULT;
+        }
+        if (Kernel::MM::copy_from_user(root_paddr, kfdfs, user_fds,
+                                       count * sizeof(LinuxPollFd)) < 0) {
+            return ERR_EFAULT;
+        }
+    }
+
+    bool has_timeout = false;
+    bool zero_timeout = false;
+    uint64_t deadline_ticks = 0ULL;
+    if (user_tmo != 0U) {
+        LinuxTimespec tmo{};
+        if (Kernel::MM::copy_from_user(root_paddr, &tmo, user_tmo, sizeof(tmo)) < 0) {
+            return ERR_EFAULT;
+        }
+        if (tmo.tv_sec < 0 || tmo.tv_nsec < 0 || tmo.tv_nsec >= 1000000000LL) {
+            return ERR_EINVAL;
+        }
+        has_timeout = true;
+        if (tmo.tv_sec == 0 && tmo.tv_nsec == 0) {
+            zero_timeout = true;
+        } else {
+            const uint64_t freq = HAL::QemuVirt::GenericTimer::frequency_hz();
+            deadline_ticks =
+                HAL::QemuVirt::GenericTimer::counter_ticks() + timespec_to_timer_ticks(tmo, freq);
+        }
+    }
+
+    bool swapped_mask = false;
+    const uint64_t saved_mask = proc->blocked_signals;
+    if (user_sigmask != 0U) {
+        if (sigsetsize != sizeof(uint64_t)) {
+            return ERR_EINVAL;
+        }
+        uint64_t new_mask = 0ULL;
+        if (Kernel::MM::copy_from_user(root_paddr, &new_mask, user_sigmask, sizeof(new_mask)) < 0) {
+            return ERR_EFAULT;
+        }
+        constexpr uint64_t UNMASKABLE =
+            (1ULL << (Kernel::Process::SIG_KILL - 1U)) | (1ULL << (Kernel::Process::SIG_STOP - 1U));
+        proc->blocked_signals = new_mask & ~UNMASKABLE;
+        swapped_mask = true;
+    }
+
+    auto restore_mask_normal = [&]() {
+        if (swapped_mask) {
+            proc->blocked_signals = saved_mask;
+        }
+    };
+
+    auto restore_mask_eintr = [&]() {
+        if (swapped_mask) {
+            proc->has_saved_sigmask = true;
+            proc->saved_sigmask = saved_mask;
+        }
+    };
+
+    while (true) {
+        int64_t ready_count = 0;
+        for (size_t i = 0U; i < count; ++i) {
+            kfdfs[i].revents = poll_fd_revents(*proc, kfdfs[i].fd, kfdfs[i].events);
+            if (kfdfs[i].revents != 0) {
+                ready_count++;
+            }
+        }
+
+        if (ready_count > 0 || zero_timeout ||
+            (has_timeout && HAL::QemuVirt::GenericTimer::counter_ticks() >= deadline_ticks)) {
+            if (count > 0U) {
+                if (Kernel::MM::copy_to_user(root_paddr, user_fds, kfdfs,
+                                             count * sizeof(LinuxPollFd)) < 0) {
+                    restore_mask_normal();
+                    return ERR_EFAULT;
+                }
+            }
+            restore_mask_normal();
+            return ready_count;
+        }
+
+        if (Kernel::Process::has_unblocked_pending_signal(*proc)) {
+            restore_mask_eintr();
+            return ERR_EINTR;
+        }
+
+        wait_for_event_or_tick();
+    }
+}
+
+int64_t sys_pselect6(int32_t nfds, uintptr_t user_rfds, uintptr_t user_wfds, uintptr_t user_efds,
+                     uintptr_t user_tmo, uintptr_t user_sigpack) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+    if (nfds < 0 || static_cast<size_t>(nfds) > MAX_FDSET_FDS) {
+        return ERR_EINVAL;
+    }
+
+    const uintptr_t root_paddr = proc->address_space.root_paddr();
+    const auto u_nfds = static_cast<size_t>(nfds);
+    const size_t nwords = (u_nfds + 63U) / 64U;
+    const size_t set_bytes = nwords * sizeof(uint64_t);
+
+    uint64_t rfds[MAX_FDSET_WORDS]{};
+    uint64_t wfds[MAX_FDSET_WORDS]{};
+    uint64_t efds[MAX_FDSET_WORDS]{};
+
+    if (set_bytes > 0U) {
+        if (user_rfds != 0U &&
+            Kernel::MM::copy_from_user(root_paddr, rfds, user_rfds, set_bytes) < 0) {
+            return ERR_EFAULT;
+        }
+        if (user_wfds != 0U &&
+            Kernel::MM::copy_from_user(root_paddr, wfds, user_wfds, set_bytes) < 0) {
+            return ERR_EFAULT;
+        }
+        if (user_efds != 0U &&
+            Kernel::MM::copy_from_user(root_paddr, efds, user_efds, set_bytes) < 0) {
+            return ERR_EFAULT;
+        }
+    }
+
+    // Validate all requested file descriptors are open before blocking
+    for (size_t fd = 0U; fd < u_nfds; ++fd) {
+        const size_t word = fd / 64U;
+        const uint64_t bit = 1ULL << (fd % 64U);
+        const bool want_any = ((rfds[word] & bit) != 0ULL) || ((wfds[word] & bit) != 0ULL) ||
+                              ((efds[word] & bit) != 0ULL);
+        if (want_any) {
+            if (fd >= Kernel::Process::MAX_FDS_PER_PROCESS || !proc->fd_table[fd].in_use) {
+                return ERR_EBADF;
+            }
+        }
+    }
+
+    bool has_timeout = false;
+    bool zero_timeout = false;
+    uint64_t deadline_ticks = 0ULL;
+    if (user_tmo != 0U) {
+        LinuxTimespec tmo{};
+        if (Kernel::MM::copy_from_user(root_paddr, &tmo, user_tmo, sizeof(tmo)) < 0) {
+            return ERR_EFAULT;
+        }
+        if (tmo.tv_sec < 0 || tmo.tv_nsec < 0 || tmo.tv_nsec >= 1000000000LL) {
+            return ERR_EINVAL;
+        }
+        has_timeout = true;
+        if (tmo.tv_sec == 0 && tmo.tv_nsec == 0) {
+            zero_timeout = true;
+        } else {
+            const uint64_t freq = HAL::QemuVirt::GenericTimer::frequency_hz();
+            deadline_ticks =
+                HAL::QemuVirt::GenericTimer::counter_ticks() + timespec_to_timer_ticks(tmo, freq);
+        }
+    }
+
+    bool swapped_mask = false;
+    const uint64_t saved_mask = proc->blocked_signals;
+    if (user_sigpack != 0U) {
+        LinuxSigsetArgpack pack{};
+        if (Kernel::MM::copy_from_user(root_paddr, &pack, user_sigpack, sizeof(pack)) < 0) {
+            return ERR_EFAULT;
+        }
+        if (pack.ss != 0ULL) {
+            if (pack.ss_len != sizeof(uint64_t)) {
+                return ERR_EINVAL;
+            }
+            uint64_t new_mask = 0ULL;
+            if (Kernel::MM::copy_from_user(root_paddr, &new_mask, static_cast<uintptr_t>(pack.ss),
+                                           sizeof(new_mask)) < 0) {
+                return ERR_EFAULT;
+            }
+            constexpr uint64_t UNMASKABLE = (1ULL << (Kernel::Process::SIG_KILL - 1U)) |
+                                            (1ULL << (Kernel::Process::SIG_STOP - 1U));
+            proc->blocked_signals = new_mask & ~UNMASKABLE;
+            swapped_mask = true;
+        }
+    }
+
+    auto restore_mask_normal = [&]() {
+        if (swapped_mask) {
+            proc->blocked_signals = saved_mask;
+        }
+    };
+
+    auto restore_mask_eintr = [&]() {
+        if (swapped_mask) {
+            proc->has_saved_sigmask = true;
+            proc->saved_sigmask = saved_mask;
+        }
+    };
+
+    while (true) {
+        uint64_t out_rfds[MAX_FDSET_WORDS]{};
+        uint64_t out_wfds[MAX_FDSET_WORDS]{};
+        uint64_t out_efds[MAX_FDSET_WORDS]{};
+        int64_t ready_bits = 0;
+
+        for (size_t fd = 0U; fd < u_nfds; ++fd) {
+            const size_t word = fd / 64U;
+            const uint64_t bit = 1ULL << (fd % 64U);
+
+            if ((rfds[word] & bit) != 0ULL) {
+                const int16_t rev =
+                    poll_fd_revents(*proc, static_cast<int32_t>(fd), POLLIN | POLLRDNORM);
+                if ((rev & (POLLIN | POLLRDNORM | POLLHUP | POLLERR)) != 0) {
+                    out_rfds[word] |= bit;
+                    ready_bits++;
+                }
+            }
+            if ((wfds[word] & bit) != 0ULL) {
+                const int16_t rev =
+                    poll_fd_revents(*proc, static_cast<int32_t>(fd), POLLOUT | POLLWRNORM);
+                if ((rev & (POLLOUT | POLLWRNORM | POLLERR)) != 0) {
+                    out_wfds[word] |= bit;
+                    ready_bits++;
+                }
+            }
+            if ((efds[word] & bit) != 0ULL) {
+                const int16_t rev = poll_fd_revents(*proc, static_cast<int32_t>(fd), 0);
+                if ((rev & POLLERR) != 0) {
+                    out_efds[word] |= bit;
+                    ready_bits++;
+                }
+            }
+        }
+
+        if (ready_bits > 0 || zero_timeout ||
+            (has_timeout && HAL::QemuVirt::GenericTimer::counter_ticks() >= deadline_ticks)) {
+            if (set_bytes > 0U) {
+                if (user_rfds != 0U &&
+                    Kernel::MM::copy_to_user(root_paddr, user_rfds, out_rfds, set_bytes) < 0) {
+                    restore_mask_normal();
+                    return ERR_EFAULT;
+                }
+                if (user_wfds != 0U &&
+                    Kernel::MM::copy_to_user(root_paddr, user_wfds, out_wfds, set_bytes) < 0) {
+                    restore_mask_normal();
+                    return ERR_EFAULT;
+                }
+                if (user_efds != 0U &&
+                    Kernel::MM::copy_to_user(root_paddr, user_efds, out_efds, set_bytes) < 0) {
+                    restore_mask_normal();
+                    return ERR_EFAULT;
+                }
+            }
+            restore_mask_normal();
+            return ready_bits;
+        }
+
+        if (Kernel::Process::has_unblocked_pending_signal(*proc)) {
+            restore_mask_eintr();
+            return ERR_EINTR;
+        }
+
+        wait_for_event_or_tick();
+    }
 }
 
 // ==========================================================================
@@ -1903,7 +2670,7 @@ int64_t sys_setsid() noexcept {
 }
 
 // ==========================================================================
-// Process Lifecycle, Memory Management & System Identity
+// Process Lifecycle, Memory Management, Resource Limits & System Identity
 // ==========================================================================
 
 [[noreturn]] void sys_exit(uint64_t raw_status) noexcept {
@@ -1926,6 +2693,215 @@ int64_t sys_getpid() noexcept {
 int64_t sys_getppid() noexcept {
     const auto* const proc = Kernel::Process::current_process();
     return (proc != nullptr) ? static_cast<int64_t>(proc->ppid) : 0;
+}
+
+int64_t sys_umask(uint64_t mask) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return 0022;
+    }
+    const uint32_t old_mask = proc->umask;
+    proc->umask = static_cast<uint32_t>(mask) & 0777U;
+    return static_cast<int64_t>(old_mask);
+}
+
+int64_t sys_prlimit64(int32_t pid, uint32_t resource, uintptr_t user_new_rlim,
+                      uintptr_t user_old_rlim) noexcept {
+    auto* const caller = Kernel::Process::current_process();
+    if (caller == nullptr) {
+        return ERR_EINVAL;
+    }
+    if (pid < 0 || resource >= RLIM_NLIMITS) {
+        return ERR_EINVAL;
+    }
+
+    Kernel::Process::Process* target = caller;
+    if (pid > 0 && static_cast<uint32_t>(pid) != caller->pid) {
+        target = Kernel::Process::find_process_by_pid(static_cast<uint32_t>(pid));
+        if (target == nullptr || target->state == Kernel::Process::ProcessState::Zombie) {
+            return ERR_ESRCH;
+        }
+    }
+
+    LinuxRlimit64 current_rlim{
+        .rlim_cur = RLIM64_INFINITY,
+        .rlim_max = RLIM64_INFINITY,
+    };
+
+    switch (resource) {
+    case RLIMIT_NOFILE:
+        current_rlim.rlim_cur = target->rlim_nofile_cur;
+        current_rlim.rlim_max = target->rlim_nofile_max;
+        break;
+    case RLIMIT_STACK:
+        current_rlim.rlim_cur = Kernel::Process::DEFAULT_USER_STACK_SIZE;
+        current_rlim.rlim_max = Kernel::Process::DEFAULT_USER_STACK_SIZE;
+        break;
+    case RLIMIT_NPROC:
+        current_rlim.rlim_cur = Kernel::Process::MAX_PROCESSES;
+        current_rlim.rlim_max = Kernel::Process::MAX_PROCESSES;
+        break;
+    case RLIMIT_CORE:
+        current_rlim.rlim_cur = 0ULL;
+        current_rlim.rlim_max = 0ULL;
+        break;
+    default:
+        break;
+    }
+
+    if (user_old_rlim != 0U) {
+        if (Kernel::MM::copy_to_user(caller->address_space, user_old_rlim, &current_rlim,
+                                     sizeof(current_rlim)) < 0) {
+            return ERR_EFAULT;
+        }
+    }
+
+    if (user_new_rlim != 0U) {
+        LinuxRlimit64 new_rlim{};
+        if (Kernel::MM::copy_from_user(caller->address_space, &new_rlim, user_new_rlim,
+                                       sizeof(new_rlim)) < 0) {
+            return ERR_EFAULT;
+        }
+        if (new_rlim.rlim_cur > new_rlim.rlim_max) {
+            return ERR_EINVAL;
+        }
+        if (resource == RLIMIT_NOFILE) {
+            if (new_rlim.rlim_max > Kernel::Process::MAX_FDS_PER_PROCESS) {
+                return ERR_EPERM;
+            }
+            target->rlim_nofile_cur = new_rlim.rlim_cur;
+            target->rlim_nofile_max = new_rlim.rlim_max;
+        }
+    }
+
+    return 0;
+}
+
+int64_t sys_getrusage(int32_t who, uintptr_t user_usage) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+    if (who != RUSAGE_SELF && who != RUSAGE_CHILDREN && who != RUSAGE_THREAD) {
+        return ERR_EINVAL;
+    }
+
+    const uint64_t ticks =
+        (who == RUSAGE_CHILDREN) ? proc->children_cpu_ticks : proc->cpu_ticks;
+    // Timer runs at 100 Hz (10,000 microseconds per tick)
+    const uint64_t total_usec = ticks * 10000ULL;
+
+    LinuxRusage usage{};
+    usage.ru_utime.tv_sec = static_cast<int64_t>(total_usec / 1000000ULL);
+    usage.ru_utime.tv_usec = static_cast<int64_t>(total_usec % 1000000ULL);
+
+    return Kernel::MM::copy_to_user(proc->address_space, user_usage, &usage, sizeof(usage));
+}
+
+int64_t sys_getrandom(uintptr_t user_buf, uint64_t raw_buflen, uint64_t flags) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+    if ((flags & ~(GRND_NONBLOCK | GRND_RANDOM | GRND_INSECURE)) != 0ULL) {
+        return ERR_EINVAL;
+    }
+    if (raw_buflen > Kernel::MM::user_addr_space_limit()) {
+        return ERR_EFAULT;
+    }
+
+    const auto buflen = static_cast<size_t>(raw_buflen);
+    const uintptr_t root_paddr = proc->address_space.root_paddr();
+    if (!validate_user_write_range(root_paddr, user_buf, buflen)) {
+        return ERR_EFAULT;
+    }
+    if (buflen == 0U) {
+        return 0;
+    }
+
+    static uint64_t entropy_state = 0x243F6A8885A308D3ULL;
+    entropy_state ^= HAL::QemuVirt::GenericTimer::counter_ticks();
+    entropy_state ^= static_cast<uint64_t>(proc->pid) << 32U;
+
+    uint8_t kbuf[256]{};
+    size_t written = 0U;
+
+    while (written < buflen) {
+        const size_t chunk = ((buflen - written) < sizeof(kbuf)) ? (buflen - written) : sizeof(kbuf);
+        for (size_t i = 0U; i < chunk; i += 8U) {
+            entropy_state += 0x9E3779B97F4A7C15ULL;
+            uint64_t z = entropy_state;
+            z = (z ^ (z >> 30U)) * 0xBF58476D1CE4E5B9ULL;
+            z = (z ^ (z >> 27U)) * 0x94D049BB133111EBULL;
+            z = z ^ (z >> 31U);
+
+            const size_t rem = chunk - i;
+            const size_t bytes = (rem < 8U) ? rem : 8U;
+            for (size_t b = 0U; b < bytes; ++b) {
+                kbuf[i + b] = static_cast<uint8_t>((z >> (b * 8U)) & 0xFFULL);
+            }
+        }
+
+        if (Kernel::MM::copy_to_user(root_paddr, user_buf + written, kbuf, chunk) < 0) {
+            return (written > 0U) ? static_cast<int64_t>(written) : ERR_EFAULT;
+        }
+        written += chunk;
+    }
+
+    return static_cast<int64_t>(written);
+}
+
+int64_t sys_nanosleep(uintptr_t user_req, uintptr_t user_rem) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+
+    LinuxTimespec req{};
+    if (Kernel::MM::copy_from_user(proc->address_space, &req, user_req, sizeof(req)) < 0) {
+        return ERR_EFAULT;
+    }
+    if (req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= 1000000000LL) {
+        return ERR_EINVAL;
+    }
+
+    const uint64_t freq = HAL::QemuVirt::GenericTimer::frequency_hz();
+    const uint64_t start_ticks = HAL::QemuVirt::GenericTimer::counter_ticks();
+    const uint64_t wait_ticks = timespec_to_timer_ticks(req, freq);
+
+    while (true) {
+        const uint64_t now_ticks = HAL::QemuVirt::GenericTimer::counter_ticks();
+        const uint64_t elapsed = now_ticks - start_ticks;
+        if (elapsed >= wait_ticks) {
+            break;
+        }
+
+        if (Kernel::Process::has_unblocked_pending_signal(*proc)) {
+            if (user_rem != 0U && freq > 0ULL) {
+                const uint64_t rem_ticks = wait_ticks - elapsed;
+                const LinuxTimespec rem{
+                    .tv_sec = static_cast<int64_t>(rem_ticks / freq),
+                    .tv_nsec = static_cast<int64_t>(((rem_ticks % freq) * 1000000000ULL) / freq),
+                };
+                if (Kernel::MM::copy_to_user(proc->address_space, user_rem, &rem, sizeof(rem)) < 0) {
+                    return ERR_EFAULT;
+                }
+            }
+            return ERR_EINTR;
+        }
+
+        wait_for_event_or_tick();
+    }
+
+    if (user_rem != 0U) {
+        constexpr LinuxTimespec zero_rem{.tv_sec = 0, .tv_nsec = 0};
+        if (Kernel::MM::copy_to_user(proc->address_space, user_rem, &zero_rem, sizeof(zero_rem)) <
+            0) {
+            return ERR_EFAULT;
+        }
+    }
+
+    return 0;
 }
 
 int64_t sys_brk(uintptr_t addr) noexcept {
@@ -2032,11 +3008,9 @@ int64_t sys_mmap(uintptr_t addr, uint64_t length, uint64_t prot, uint64_t flags,
         if (map_end > stack_floor) {
             return ERR_ENOMEM;
         }
-        // MAP_FIXED replaces existing mappings in [map_start, map_end)
         unmap_and_free_range(proc->address_space, map_start, map_end, page_size);
     } else if (addr != 0U && (addr & page_mask) == 0U && addr < stack_floor &&
                length <= (stack_floor - addr) && addr >= MMAP_ARENA_FLOOR) {
-        // Check if requested hint range is completely unmapped
         bool hint_free = true;
         for (uintptr_t page = addr; page < addr + static_cast<uintptr_t>(length);
              page += page_size) {
@@ -2185,6 +3159,9 @@ int64_t sys_clone(HAL::CpuContext& parent_ctx, uint64_t flags, uintptr_t child_s
     child->address_space = static_cast<Kernel::MM::AddressSpace&&>(clone_as_res.value());
     child->pgid = parent->pgid;
     child->sid = parent->sid;
+    child->umask = parent->umask;
+    child->rlim_nofile_cur = parent->rlim_nofile_cur;
+    child->rlim_nofile_max = parent->rlim_nofile_max;
     child->entry_point = parent->entry_point;
     child->brk_start = parent->brk_start;
     child->brk_current = parent->brk_current;
@@ -2192,6 +3169,7 @@ int64_t sys_clone(HAL::CpuContext& parent_ctx, uint64_t flags, uintptr_t child_s
     child->user_stack = Kernel::Process::UserStack{};
     child->blocked_signals = parent->blocked_signals;
     cstr_copy(child->cwd, parent->cwd, sizeof(child->cwd));
+    cstr_copy(child->exe_path, parent->exe_path, sizeof(child->exe_path));
 
     for (size_t i = 0U; i < Kernel::Process::MAX_SIGNALS; ++i) {
         child->sigactions[i] = parent->sigactions[i];
@@ -2250,7 +3228,7 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
     char* const string_pool = scratch_kva + EXEC_MAX_PATH_LEN;
     const size_t string_pool_cap = page_size - EXEC_MAX_PATH_LEN;
 
-    const char* argv_kptrs[EXEC_MAX_ARGS + 1U]{};
+    const char* argv_kptrs[EXEC_MAX_ARGS + 3U]{};
     const char* envp_kptrs[EXEC_MAX_ENVS + 1U]{};
 
     const uintptr_t caller_root = proc->address_space.root_paddr();
@@ -2298,6 +3276,78 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
         return ERR_ENOEXEC;
     }
 
+    // Handle '#!' shebang scripts (e.g., #!/bin/bash or #!/bin/sh)
+    char shebang_interp[Kernel::Process::MAX_PATH_LEN]{};
+    char shebang_arg[Kernel::Process::MAX_PATH_LEN]{};
+    bool has_shebang_arg = false;
+    char exec_binary_path[Kernel::Process::MAX_PATH_LEN]{};
+    cstr_copy(exec_binary_path, canon_path, sizeof(exec_binary_path));
+
+    if (entry.size >= 2U && entry.data[0] == '#' && entry.data[1] == '!') {
+        size_t pos = 2U;
+        while (pos < entry.size && (entry.data[pos] == ' ' || entry.data[pos] == '\t')) {
+            pos++;
+        }
+        size_t interp_len = 0U;
+        while (pos < entry.size && entry.data[pos] != ' ' && entry.data[pos] != '\t' &&
+               entry.data[pos] != '\n' && entry.data[pos] != '\r') {
+            if (interp_len + 1U >= sizeof(shebang_interp)) {
+                free_frame(scratch_paddr);
+                return ERR_ENOEXEC;
+            }
+            shebang_interp[interp_len++] = static_cast<char>(entry.data[pos++]);
+        }
+        shebang_interp[interp_len] = '\0';
+        if (interp_len == 0U) {
+            free_frame(scratch_paddr);
+            return ERR_ENOEXEC;
+        }
+
+        while (pos < entry.size && (entry.data[pos] == ' ' || entry.data[pos] == '\t')) {
+            pos++;
+        }
+        size_t arg_len = 0U;
+        while (pos < entry.size && entry.data[pos] != '\n' && entry.data[pos] != '\r') {
+            if (arg_len + 1U < sizeof(shebang_arg)) {
+                shebang_arg[arg_len++] = static_cast<char>(entry.data[pos]);
+            }
+            pos++;
+        }
+        while (arg_len > 0U &&
+               (shebang_arg[arg_len - 1U] == ' ' || shebang_arg[arg_len - 1U] == '\t')) {
+            arg_len--;
+        }
+        shebang_arg[arg_len] = '\0';
+        has_shebang_arg = (arg_len > 0U);
+
+        if (!normalize_vfs_path("/", shebang_interp, exec_binary_path, sizeof(exec_binary_path))) {
+            free_frame(scratch_paddr);
+            return ERR_ENOENT;
+        }
+        if (!resolve_initrd_path(exec_binary_path, entry) || !entry.is_regular_file ||
+            entry.data == nullptr || entry.size == 0U) {
+            free_frame(scratch_paddr);
+            return ERR_ENOENT;
+        }
+
+        const int extra = has_shebang_arg ? 2 : 1;
+        if (static_cast<size_t>(argc + extra) > EXEC_MAX_ARGS) {
+            free_frame(scratch_paddr);
+            return ERR_E2BIG;
+        }
+        for (int idx = argc; idx >= 1; --idx) {
+            argv_kptrs[idx + extra] = argv_kptrs[idx];
+        }
+        argv_kptrs[0] = exec_binary_path;
+        if (has_shebang_arg) {
+            argv_kptrs[1] = shebang_arg;
+            argv_kptrs[2] = canon_path;
+        } else {
+            argv_kptrs[1] = canon_path;
+        }
+        argc += extra;
+    }
+
     auto load_res = Kernel::Loader::load_elf(entry.data, entry.size);
     if (!load_res.is_ok()) {
         free_frame(scratch_paddr);
@@ -2333,8 +3383,8 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
         free_frames(proc->user_stack.phys_base, proc->user_stack.num_pages);
     }
     proc->address_space = static_cast<Kernel::MM::AddressSpace&&>(loaded.address_space);
+    cstr_copy(proc->exe_path, exec_binary_path, sizeof(proc->exe_path));
 
-    // Close FD_CLOEXEC files and reset custom signal handlers on execve
     Kernel::Process::close_cloexec_fds(*proc);
     for (size_t i = 0U; i < Kernel::Process::MAX_SIGNALS; ++i) {
         if (proc->sigactions[i].handler != Kernel::Process::KERNEL_SIG_IGN) {
@@ -2369,17 +3419,15 @@ int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
         return ERR_EINVAL;
     }
 
-    if (target_pid < -1) {
-        // Wait for any child in process group (-target_pid)
-    }
-
     Kernel::Process::Process* target_child = nullptr;
+    int32_t encoded_wstatus = 0;
+    bool reap_child = false;
 
     while (true) {
         HAL::get_cpu().disable_interrupts();
 
         bool has_matching_child = false;
-        Kernel::Process::Process* zombie_child = nullptr;
+        Kernel::Process::Process* ready_child = nullptr;
 
         for (size_t idx = 0U; idx < Kernel::Process::MAX_PROCESSES; ++idx) {
             auto* const candidate = Kernel::Process::process_at(idx);
@@ -2401,7 +3449,27 @@ int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
 
             has_matching_child = true;
             if (candidate->state == Kernel::Process::ProcessState::Zombie) {
-                zombie_child = candidate;
+                ready_child = candidate;
+                encoded_wstatus = static_cast<int32_t>(
+                    (static_cast<uint32_t>(candidate->exit_status) & 0xFFU) << 8U);
+                reap_child = true;
+                break;
+            }
+            if ((options & WAIT_WUNTRACED) != 0ULL &&
+                candidate->state == Kernel::Process::ProcessState::Stopped &&
+                !candidate->stop_reported) {
+                ready_child = candidate;
+                encoded_wstatus = static_cast<int32_t>(
+                    ((candidate->stop_signal & 0xFFU) << 8U) | 0x7FU);
+                candidate->stop_reported = true;
+                reap_child = false;
+                break;
+            }
+            if ((options & WAIT_WCONTINUED) != 0ULL && candidate->continued) {
+                ready_child = candidate;
+                encoded_wstatus = 0xFFFF;
+                candidate->continued = false;
+                reap_child = false;
                 break;
             }
         }
@@ -2410,8 +3478,8 @@ int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
             return ERR_ECHILD;
         }
 
-        if (zombie_child != nullptr) {
-            target_child = zombie_child;
+        if (ready_child != nullptr) {
+            target_child = ready_child;
             break;
         }
 
@@ -2419,12 +3487,14 @@ int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
             return 0;
         }
 
+        if (Kernel::Process::has_unblocked_pending_signal(*parent)) {
+            return ERR_EINTR;
+        }
+
         parent->child_wait_queue.sleep();
     }
 
     if (user_wstatus != 0U) {
-        const auto encoded_wstatus =
-            static_cast<int32_t>((static_cast<uint32_t>(target_child->exit_status) & 0xFFU) << 8U);
         const int64_t status_res = Kernel::MM::copy_to_user(
             parent->address_space, user_wstatus, &encoded_wstatus, sizeof(encoded_wstatus));
         if (status_res < 0) {
@@ -2433,17 +3503,23 @@ int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
     }
 
     if (user_rusage != 0U) {
-        uint8_t zero_rusage[LINUX_RUSAGE_SIZE]{};
+        LinuxRusage rusage{};
+        const uint64_t child_usec = target_child->cpu_ticks * 10000ULL;
+        rusage.ru_utime.tv_sec = static_cast<int64_t>(child_usec / 1000000ULL);
+        rusage.ru_utime.tv_usec = static_cast<int64_t>(child_usec % 1000000ULL);
         const int64_t rusage_res = Kernel::MM::copy_to_user(parent->address_space, user_rusage,
-                                                            zero_rusage, sizeof(zero_rusage));
+                                                            &rusage, sizeof(rusage));
         if (rusage_res < 0) {
             return ERR_EFAULT;
         }
     }
 
-    const uint32_t reaped_pid = target_child->pid;
-    Kernel::Process::release_process(*target_child);
-    return static_cast<int64_t>(reaped_pid);
+    const uint32_t reported_pid = target_child->pid;
+    if (reap_child) {
+        parent->children_cpu_ticks += target_child->cpu_ticks;
+        Kernel::Process::release_process(*target_child);
+    }
+    return static_cast<int64_t>(reported_pid);
 }
 
 int64_t sys_set_tid_address(uintptr_t tidptr) noexcept {
@@ -2572,6 +3648,35 @@ int64_t sys_sysinfo(uintptr_t user_info) noexcept {
 
 } // namespace
 
+namespace Kernel::Process {
+
+void poll_console_tty() noexcept {
+    if (!has_runnable_processes()) {
+        return;
+    }
+    auto& cpu = HAL::get_cpu();
+    const bool irq_was_enabled = cpu.interrupts_enabled();
+    cpu.disable_interrupts();
+
+    tty_pump_uart_unlocked();
+
+    if (irq_was_enabled) {
+        cpu.enable_interrupts();
+    }
+}
+
+void set_foreground_pgid(uint32_t pgid) noexcept {
+    if (pgid > 0U) {
+        g_foreground_pgid = pgid;
+    }
+}
+
+uint32_t get_foreground_pgid() noexcept {
+    return g_foreground_pgid;
+}
+
+} // namespace Kernel::Process
+
 namespace Kernel {
 
 class SyscallDispatcher : public HAL::TrapHandler {
@@ -2615,6 +3720,13 @@ class SyscallDispatcher : public HAL::TrapHandler {
 
         case SYS_FACCESSAT:
             ret_val = sys_faccessat(
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)), cpu.get_syscall_arg(ctx, 2U),
+                cpu.get_syscall_arg(ctx, 3U));
+            break;
+
+        case SYS_FACCESSAT2:
+            ret_val = sys_faccessat2(
                 static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)), cpu.get_syscall_arg(ctx, 2U),
                 cpu.get_syscall_arg(ctx, 3U));
@@ -2670,6 +3782,24 @@ class SyscallDispatcher : public HAL::TrapHandler {
                                  cpu.get_syscall_arg(ctx, 2U));
             break;
 
+        case SYS_PSELECT6:
+            ret_val = sys_pselect6(
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 2U)),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 3U)),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 4U)),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 5U)));
+            break;
+
+        case SYS_PPOLL:
+            ret_val = sys_ppoll(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)),
+                                cpu.get_syscall_arg(ctx, 1U),
+                                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 2U)),
+                                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 3U)),
+                                cpu.get_syscall_arg(ctx, 4U));
+            break;
+
         case SYS_READLINKAT:
             ret_val = sys_readlinkat(
                 static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
@@ -2695,6 +3825,11 @@ class SyscallDispatcher : public HAL::TrapHandler {
 
         case SYS_SET_TID_ADDRESS:
             ret_val = sys_set_tid_address(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)));
+            break;
+
+        case SYS_NANOSLEEP:
+            ret_val = sys_nanosleep(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)),
+                                    static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)));
             break;
 
         case SYS_CLOCK_GETTIME:
@@ -2751,6 +3886,16 @@ class SyscallDispatcher : public HAL::TrapHandler {
 
         case SYS_UNAME:
             ret_val = sys_uname(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)));
+            break;
+
+        case SYS_GETRUSAGE:
+            ret_val = sys_getrusage(
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)));
+            break;
+
+        case SYS_UMASK:
+            ret_val = sys_umask(cpu.get_syscall_arg(ctx, 0U));
             break;
 
         case SYS_GETPID:
@@ -2815,6 +3960,19 @@ class SyscallDispatcher : public HAL::TrapHandler {
                 static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)), cpu.get_syscall_arg(ctx, 2U),
                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 3U)));
+            break;
+
+        case SYS_PRLIMIT64:
+            ret_val = sys_prlimit64(
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
+                static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 1U)),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 2U)),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 3U)));
+            break;
+
+        case SYS_GETRANDOM:
+            ret_val = sys_getrandom(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)),
+                                    cpu.get_syscall_arg(ctx, 1U), cpu.get_syscall_arg(ctx, 2U));
             break;
 
         default:

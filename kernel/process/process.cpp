@@ -33,6 +33,8 @@ constexpr uint64_t RT_SIGFRAME_MAGIC = 0x5349474652414D45ULL;
 void reset_sigactions(Kernel::Process::Process& proc) noexcept {
     proc.pending_signals = 0ULL;
     proc.blocked_signals = 0ULL;
+    proc.has_saved_sigmask = false;
+    proc.saved_sigmask = 0ULL;
     for (size_t i = 0U; i < Kernel::Process::MAX_SIGNALS; ++i) {
         proc.sigactions[i] = Kernel::Process::SigAction{};
     }
@@ -60,6 +62,11 @@ void init_standard_fds(Kernel::Process::Process& proc) noexcept {
         .offset = 0U,
         .in_use = true,
     };
+}
+
+bool is_stop_signal(uint32_t sig) noexcept {
+    return sig == Kernel::Process::SIG_STOP || sig == Kernel::Process::SIG_TSTP ||
+           sig == Kernel::Process::SIG_TTIN || sig == Kernel::Process::SIG_TTOU;
 }
 
 } // namespace
@@ -136,10 +143,19 @@ Process* allocate_process(uint32_t ppid) noexcept {
             slot.ppid = ppid;
             slot.pgid = candidate_pid;
             slot.sid = candidate_pid;
+            slot.umask = 0022U;
             slot.state = ProcessState::Ready;
             slot.exit_status = 0;
             slot.timeslice = Scheduler::DEFAULT_TIMESLICE_TICKS;
             slot.cpu_ticks = 0ULL;
+            slot.children_cpu_ticks = 0ULL;
+            slot.rlim_nofile_cur = MAX_FDS_PER_PROCESS;
+            slot.rlim_nofile_max = MAX_FDS_PER_PROCESS;
+            slot.stop_signal = 0U;
+            slot.stop_reported = false;
+            slot.continued = false;
+            slot.has_saved_sigmask = false;
+            slot.saved_sigmask = 0ULL;
             slot.address_space = MM::AddressSpace{};
             slot.context = HAL::CpuContext{};
             slot.kctx = HAL::KernelContext{};
@@ -155,6 +171,7 @@ Process* allocate_process(uint32_t ppid) noexcept {
             slot.child_wait_queue = WaitQueue{};
             for (size_t i = 0U; i < MAX_PATH_LEN; ++i) {
                 slot.cwd[i] = '\0';
+                slot.exe_path[i] = '\0';
             }
             slot.cwd[0] = '/';
             reset_sigactions(slot);
@@ -188,10 +205,19 @@ void release_process(Process& proc) noexcept {
     proc.ppid = 0U;
     proc.pgid = 0U;
     proc.sid = 0U;
+    proc.umask = 0022U;
     proc.state = ProcessState::Unused;
     proc.exit_status = 0;
     proc.timeslice = 0U;
     proc.cpu_ticks = 0ULL;
+    proc.children_cpu_ticks = 0ULL;
+    proc.rlim_nofile_cur = MAX_FDS_PER_PROCESS;
+    proc.rlim_nofile_max = MAX_FDS_PER_PROCESS;
+    proc.stop_signal = 0U;
+    proc.stop_reported = false;
+    proc.continued = false;
+    proc.has_saved_sigmask = false;
+    proc.saved_sigmask = 0ULL;
     proc.context = HAL::CpuContext{};
     proc.kctx = HAL::KernelContext{};
     proc.kstack_paddr = 0U;
@@ -204,6 +230,10 @@ void release_process(Process& proc) noexcept {
     proc.mmap_next_vaddr = 0U;
     proc.clear_child_tid = 0U;
     proc.child_wait_queue = WaitQueue{};
+    for (size_t i = 0U; i < MAX_PATH_LEN; ++i) {
+        proc.cwd[i] = '\0';
+        proc.exe_path[i] = '\0';
+    }
     reset_sigactions(proc);
 }
 
@@ -253,21 +283,100 @@ void send_signal(Process& target, uint32_t sig) noexcept {
         target.state == ProcessState::Zombie) {
         return;
     }
-    target.pending_signals |= (1ULL << (sig - 1U));
-    if (target.state == ProcessState::Blocked && sig == SIG_KILL) {
-        Scheduler::enqueue(&target);
+
+    if (sig == SIG_CONT) {
+        target.pending_signals &= ~((1ULL << (SIG_STOP - 1U)) | (1ULL << (SIG_TSTP - 1U)) |
+                                    (1ULL << (SIG_TTIN - 1U)) | (1ULL << (SIG_TTOU - 1U)));
+        if (target.state == ProcessState::Stopped) {
+            target.stop_signal = 0U;
+            target.stop_reported = false;
+            target.continued = true;
+            Scheduler::enqueue(&target);
+            if (target.ppid != 0U) {
+                auto* const parent = find_process_by_pid(target.ppid);
+                if (parent != nullptr) {
+                    parent->child_wait_queue.wake_all();
+                }
+            }
+        }
     }
+
+    target.pending_signals |= (1ULL << (sig - 1U));
+
+    if (target.state == ProcessState::Blocked) {
+        const uint64_t bit = 1ULL << (sig - 1U);
+        const bool is_unmaskable = (sig == SIG_KILL || sig == SIG_STOP);
+        const bool is_blocked = ((target.blocked_signals & bit) != 0ULL) && !is_unmaskable;
+        const uint64_t handler = target.sigactions[sig - 1U].handler;
+        const bool is_ignored =
+            !is_unmaskable && (handler == KERNEL_SIG_IGN ||
+                               (handler == KERNEL_SIG_DFL && (sig == SIG_CHLD || sig == SIG_CONT)));
+        if (!is_blocked && !is_ignored) {
+            Scheduler::enqueue(&target);
+        }
+    }
+}
+
+void signal_process_group(uint32_t pgid, uint32_t sig) noexcept {
+    if (pgid == 0U || sig == 0U || sig > MAX_SIGNALS) {
+        return;
+    }
+    for (size_t idx = 0U; idx < MAX_PROCESSES; ++idx) {
+        auto& proc = g_process_table[idx];
+        if (proc.state != ProcessState::Unused && proc.state != ProcessState::Zombie &&
+            proc.pgid == pgid) {
+            send_signal(proc, sig);
+        }
+    }
+}
+
+bool has_unblocked_pending_signal(const Process& proc) noexcept {
+    const uint64_t unmaskable = (1ULL << (SIG_KILL - 1U)) | (1ULL << (SIG_STOP - 1U));
+    const uint64_t deliverable = proc.pending_signals & (~proc.blocked_signals | unmaskable);
+    if (deliverable == 0ULL) {
+        return false;
+    }
+
+    for (uint32_t sig = 1U; sig <= MAX_SIGNALS; ++sig) {
+        if ((deliverable & (1ULL << (sig - 1U))) == 0ULL) {
+            continue;
+        }
+        if (sig == SIG_KILL || sig == SIG_STOP) {
+            return true;
+        }
+        const uint64_t handler = proc.sigactions[sig - 1U].handler;
+        if (handler == KERNEL_SIG_IGN) {
+            continue;
+        }
+        if (handler == KERNEL_SIG_DFL && (sig == SIG_CHLD || sig == SIG_CONT)) {
+            continue;
+        }
+        return true;
+    }
+    return false;
 }
 
 void deliver_pending_signals(HAL::CpuContext& ctx) noexcept {
     auto* const proc = g_current_process;
-    if (proc == nullptr || proc->pending_signals == 0ULL) {
+    if (proc == nullptr) {
+        return;
+    }
+
+    if (proc->pending_signals == 0ULL) {
+        if (proc->has_saved_sigmask) {
+            proc->blocked_signals = proc->saved_sigmask;
+            proc->has_saved_sigmask = false;
+        }
         return;
     }
 
     const uint64_t unmaskable = (1ULL << (SIG_KILL - 1U)) | (1ULL << (SIG_STOP - 1U));
     const uint64_t deliverable = proc->pending_signals & (~proc->blocked_signals | unmaskable);
     if (deliverable == 0ULL) {
+        if (proc->has_saved_sigmask) {
+            proc->blocked_signals = proc->saved_sigmask;
+            proc->has_saved_sigmask = false;
+        }
         return;
     }
 
@@ -290,11 +399,38 @@ void deliver_pending_signals(HAL::CpuContext& ctx) noexcept {
 
     const SigAction& act = proc->sigactions[sig - 1U];
     if (act.handler == KERNEL_SIG_IGN) {
+        if (proc->has_saved_sigmask) {
+            proc->blocked_signals = proc->saved_sigmask;
+            proc->has_saved_sigmask = false;
+        }
         return;
     }
 
     if (act.handler == KERNEL_SIG_DFL) {
         if (sig == SIG_CHLD || sig == SIG_CONT) {
+            if (proc->has_saved_sigmask) {
+                proc->blocked_signals = proc->saved_sigmask;
+                proc->has_saved_sigmask = false;
+            }
+            return;
+        }
+        if (is_stop_signal(sig)) {
+            if (proc->has_saved_sigmask) {
+                proc->blocked_signals = proc->saved_sigmask;
+                proc->has_saved_sigmask = false;
+            }
+            HAL::get_cpu().disable_interrupts();
+            proc->state = ProcessState::Stopped;
+            proc->stop_signal = sig;
+            proc->stop_reported = false;
+            if (proc->ppid != 0U) {
+                auto* const parent = find_process_by_pid(proc->ppid);
+                if (parent != nullptr) {
+                    send_signal(*parent, SIG_CHLD);
+                    parent->child_wait_queue.wake_all();
+                }
+            }
+            Scheduler::schedule();
             return;
         }
         // Default termination action
@@ -311,7 +447,9 @@ void deliver_pending_signals(HAL::CpuContext& ctx) noexcept {
     const uintptr_t frame_vaddr = (old_sp - sizeof(RtSigFrame)) & ~0xFULL;
     RtSigFrame frame{};
     frame.magic = RT_SIGFRAME_MAGIC;
-    frame.saved_mask = proc->blocked_signals;
+    frame.saved_mask = proc->has_saved_sigmask ? proc->saved_sigmask : proc->blocked_signals;
+    proc->has_saved_sigmask = false;
+
     for (size_t i = 0U; i < 31U; ++i) {
         frame.regs[i] = cpu.get_reg(ctx, i);
     }

@@ -8,6 +8,7 @@ class Console {
     virtual void init() = 0;
     virtual void putc(char chr) = 0;
     virtual uint8_t getc() = 0;
+    virtual bool has_input() const noexcept { return false; }
 
     // Non-virtual inline helper calling abstract putc
     void write(const char* str, size_t len) {

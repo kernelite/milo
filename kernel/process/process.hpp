@@ -13,8 +13,8 @@
 
 namespace Kernel::Process {
 
-constexpr size_t MAX_PROCESSES = 16U;
-constexpr size_t MAX_FDS_PER_PROCESS = 16U;
+constexpr size_t MAX_PROCESSES = 64U;
+constexpr size_t MAX_FDS_PER_PROCESS = 64U;
 constexpr size_t KERNEL_STACK_PAGES = 4U; // 16 KiB per-process kernel stack
 constexpr size_t MAX_PATH_LEN = 256U;
 constexpr size_t MAX_SIGNALS = 64U;
@@ -50,9 +50,9 @@ struct SigAction {
     uint64_t mask{0ULL};
 };
 
-enum class ProcessState : uint8_t { Unused = 0, Ready, Running, Blocked, Zombie };
+enum class ProcessState : uint8_t { Unused = 0, Ready, Running, Blocked, Stopped, Zombie };
 
-enum class FdType : uint8_t { None = 0, ConsoleTty, InitrdFile, PipeRead, PipeWrite };
+enum class FdType : uint8_t { None = 0, ConsoleTty, DevNull, InitrdFile, PipeRead, PipeWrite };
 
 struct FileDescriptor {
     FdType type{FdType::None};
@@ -81,10 +81,19 @@ struct Process {
     uint32_t ppid{0U};
     uint32_t pgid{0U};
     uint32_t sid{0U};
+    uint32_t umask{0022U};
     ProcessState state{ProcessState::Unused};
     int64_t exit_status{0};
     uint32_t timeslice{0U};
     uint64_t cpu_ticks{0U};
+    uint64_t children_cpu_ticks{0U};
+    uint64_t rlim_nofile_cur{MAX_FDS_PER_PROCESS};
+    uint64_t rlim_nofile_max{MAX_FDS_PER_PROCESS};
+    uint32_t stop_signal{0U};
+    bool stop_reported{false};
+    bool continued{false};
+    bool has_saved_sigmask{false};
+    uint64_t saved_sigmask{0ULL};
     MM::AddressSpace address_space{};
     HAL::CpuContext context{};
     HAL::KernelContext kctx{};
@@ -99,6 +108,7 @@ struct Process {
     uintptr_t clear_child_tid{0U};
     WaitQueue child_wait_queue{};
     char cwd[MAX_PATH_LEN]{};
+    char exe_path[MAX_PATH_LEN]{};
     uint64_t pending_signals{0ULL};
     uint64_t blocked_signals{0ULL};
     SigAction sigactions[MAX_SIGNALS]{};
@@ -125,8 +135,15 @@ void close_cloexec_fds(Process& proc) noexcept;
 
 // Signal delivery & sigreturn unwinding
 void send_signal(Process& target, uint32_t sig) noexcept;
+void signal_process_group(uint32_t pgid, uint32_t sig) noexcept;
+[[nodiscard]] bool has_unblocked_pending_signal(const Process& proc) noexcept;
 void deliver_pending_signals(HAL::CpuContext& ctx) noexcept;
 int64_t restore_signal_frame(HAL::CpuContext& ctx) noexcept;
+
+// Console TTY polling & foreground job-control group helpers
+void poll_console_tty() noexcept;
+void set_foreground_pgid(uint32_t pgid) noexcept;
+[[nodiscard]] uint32_t get_foreground_pgid() noexcept;
 
 void init_user_cpu_context(HAL::CpuContext& ctx, uintptr_t entry_point, uintptr_t sp_el0,
                            uint64_t argc, uintptr_t argv_vaddr) noexcept;
