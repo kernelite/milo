@@ -1,5 +1,4 @@
 Checks: >
-  -*,
   bugprone-*,
   -bugprone-easily-swappable-parameters,
   cert-*,
@@ -12,8 +11,11 @@ Checks: >
   -readability-function-cognitive-complexity
 
 WarningsAsErrors: ''
-HeaderFilterRegex: '(kernel|arch)/.*'
+HeaderFilterRegex: '(kernel|arch|tests)/.*'
 FormatStyle: 'file'
+SystemHeaders: false
+ExtraArgs:
+  - -D_GLIBCXX_HOSTED=1
 
 # Fixed: CheckOptions formatted as a YAML sequence with 'key' and 'value'
 CheckOptions:

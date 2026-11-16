@@ -159,8 +159,10 @@ InitrdLocation find_initrd(uintptr_t fdt_paddr) noexcept {
         } else if (token == FDT_NOP) {
             // No payload
             continue;
+        } else if (token == FDT_END) {
+            break;
         } else {
-            // Malformed token or FDT_ENMD encountered; abort parse
+            // Malformed token encountered; abort parse
             break;
         }
     }
