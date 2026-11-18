@@ -1,215 +1,241 @@
 #include "boot/fdt.hpp"
+#include "memory_config.hpp"
 #include "test_framework.hpp"
 
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
-#include <string>
 #include <vector>
 
 namespace {
 
-constexpr uint32_t TOKEN_BEGIN_NODE = 0x00000001U;
-constexpr uint32_t TOKEN_END_NODE = 0x00000002U;
-constexpr uint32_t TOKEN_PROP = 0x00000003U;
-constexpr uint32_t TOKEN_NOP = 0x00000004U;
-constexpr uint32_t TOKEN_END = 0x00000009U;
-
-void push_be32(std::vector<uint8_t>& out, uint32_t val) {
-    out.push_back(static_cast<uint8_t>((val >> 24U) & 0xFFU));
-    out.push_back(static_cast<uint8_t>((val >> 16U) & 0xFFU));
-    out.push_back(static_cast<uint8_t>((val >> 8U) & 0xFFU));
-    out.push_back(static_cast<uint8_t>(val & 0xFFU));
-}
-
-void push_be64(std::vector<uint8_t>& out, uint64_t val) {
-    push_be32(out, static_cast<uint32_t>(val >> 32U));
-    push_be32(out, static_cast<uint32_t>(val & 0xFFFFFFFFULL));
-}
-
-uint32_t add_string(std::vector<uint8_t>& strings, const std::string& str) {
-    const auto offset = static_cast<uint32_t>(strings.size());
-    strings.insert(strings.end(), str.begin(), str.end());
-    strings.push_back(0U);
-    return offset;
-}
-
-void begin_node(std::vector<uint8_t>& dt_struct, const std::string& name) {
-    push_be32(dt_struct, TOKEN_BEGIN_NODE);
-    dt_struct.insert(dt_struct.end(), name.begin(), name.end());
-    dt_struct.push_back(0U);
-    while ((dt_struct.size() % 4U) != 0U) {
-        dt_struct.push_back(0U);
+class DtbBuilder {
+  public:
+    void add_memreserve(uint64_t addr, uint64_t size) {
+        append_be64(rsvmap_, addr);
+        append_be64(rsvmap_, size);
     }
-}
 
-void end_node(std::vector<uint8_t>& dt_struct) {
-    push_be32(dt_struct, TOKEN_END_NODE);
-}
+    void begin_node(const char* name) {
+        append_be32(struct_blk_, 0x00000001U);
+        const size_t len = std::strlen(name) + 1U;
+        struct_blk_.insert(struct_blk_.end(), reinterpret_cast<const uint8_t*>(name),
+                           reinterpret_cast<const uint8_t*>(name) + len);
+        while ((struct_blk_.size() % 4U) != 0U) {
+            struct_blk_.push_back(0U);
+        }
+    }
 
-void add_prop_u32(std::vector<uint8_t>& dt_struct, std::vector<uint8_t>& strings,
-                  const std::string& name, uint32_t val) {
-    push_be32(dt_struct, TOKEN_PROP);
-    push_be32(dt_struct, 4U);
-    push_be32(dt_struct, add_string(strings, name));
-    push_be32(dt_struct, val);
-}
+    void end_node() { append_be32(struct_blk_, 0x00000002U); }
 
-void add_prop_u64(std::vector<uint8_t>& dt_struct, std::vector<uint8_t>& strings,
-                  const std::string& name, uint64_t val) {
-    push_be32(dt_struct, TOKEN_PROP);
-    push_be32(dt_struct, 8U);
-    push_be32(dt_struct, add_string(strings, name));
-    push_be64(dt_struct, val);
-}
+    void add_prop_u32(const char* name, uint32_t val) {
+        std::vector<uint8_t> data;
+        append_be32(data, val);
+        add_prop_raw(name, data.data(), data.size());
+    }
 
-struct AlignedDtb {
-    alignas(8) std::vector<uint8_t> storage;
-    uintptr_t paddr() const noexcept { return reinterpret_cast<uintptr_t>(storage.data()); }
+    void add_prop_str(const char* name, const char* val) {
+        add_prop_raw(name, reinterpret_cast<const uint8_t*>(val), std::strlen(val) + 1U);
+    }
+
+    void add_prop_raw(const char* name, const uint8_t* data, size_t len) {
+        const uint32_t nameoff = add_string(name);
+        append_be32(struct_blk_, 0x00000003U);
+        append_be32(struct_blk_, static_cast<uint32_t>(len));
+        append_be32(struct_blk_, nameoff);
+        if (len > 0U) {
+            struct_blk_.insert(struct_blk_.end(), data, data + len);
+        }
+        while ((struct_blk_.size() % 4U) != 0U) {
+            struct_blk_.push_back(0U);
+        }
+    }
+
+    std::vector<uint8_t> finalize() const {
+        std::vector<uint8_t> rsv = rsvmap_;
+        append_be64(rsv, 0ULL);
+        append_be64(rsv, 0ULL);
+
+        std::vector<uint8_t> st = struct_blk_;
+        append_be32(st, 0x00000009U); // FDT_END
+
+        const uint32_t off_rsv = 40U;
+        const uint32_t off_struct = off_rsv + static_cast<uint32_t>(rsv.size());
+        const uint32_t off_strings = off_struct + static_cast<uint32_t>(st.size());
+        const uint32_t totalsize = off_strings + static_cast<uint32_t>(strings_blk_.size());
+
+        std::vector<uint8_t> blob;
+        blob.reserve(totalsize);
+        append_be32(blob, 0xD00DFEEDU);
+        append_be32(blob, totalsize);
+        append_be32(blob, off_struct);
+        append_be32(blob, off_strings);
+        append_be32(blob, off_rsv);
+        append_be32(blob, 17U);
+        append_be32(blob, 16U);
+        append_be32(blob, 0U);
+        append_be32(blob, static_cast<uint32_t>(strings_blk_.size()));
+        append_be32(blob, static_cast<uint32_t>(st.size()));
+
+        blob.insert(blob.end(), rsv.begin(), rsv.end());
+        blob.insert(blob.end(), st.begin(), st.end());
+        blob.insert(blob.end(), strings_blk_.begin(), strings_blk_.end());
+        return blob;
+    }
+
+    static void append_be32(std::vector<uint8_t>& buf, uint32_t val) {
+        buf.push_back(static_cast<uint8_t>((val >> 24U) & 0xFFU));
+        buf.push_back(static_cast<uint8_t>((val >> 16U) & 0xFFU));
+        buf.push_back(static_cast<uint8_t>((val >> 8U) & 0xFFU));
+        buf.push_back(static_cast<uint8_t>(val & 0xFFU));
+    }
+
+    static void append_be64(std::vector<uint8_t>& buf, uint64_t val) {
+        append_be32(buf, static_cast<uint32_t>((val >> 32U) & 0xFFFFFFFFULL));
+        append_be32(buf, static_cast<uint32_t>(val & 0xFFFFFFFFULL));
+    }
+
+  private:
+    uint32_t add_string(const char* name) {
+        const auto off = static_cast<uint32_t>(strings_blk_.size());
+        const size_t len = std::strlen(name) + 1U;
+        strings_blk_.insert(strings_blk_.end(), reinterpret_cast<const uint8_t*>(name),
+                            reinterpret_cast<const uint8_t*>(name) + len);
+        return off;
+    }
+
+    std::vector<uint8_t> rsvmap_;
+    std::vector<uint8_t> struct_blk_;
+    std::vector<uint8_t> strings_blk_;
 };
-
-AlignedDtb build_test_dtb(bool include_chosen, bool include_start, bool include_end,
-                          bool use_64bit_addrs, uint64_t initrd_start, uint64_t initrd_end) {
-    std::vector<uint8_t> dt_struct;
-    std::vector<uint8_t> dt_strings;
-
-    // Root node "/"
-    begin_node(dt_struct, "");
-    push_be32(dt_struct, TOKEN_NOP);
-
-    // Sibling node "/memory@40000000"
-    begin_node(dt_struct, "memory@40000000");
-    add_prop_u32(dt_struct, dt_strings, "#address-cells", 2U);
-    end_node(dt_struct);
-
-    if (include_chosen) {
-        begin_node(dt_struct, "chosen");
-        if (include_start) {
-            if (use_64bit_addrs) {
-                add_prop_u64(dt_struct, dt_strings, "linux,initrd-start", initrd_start);
-            } else {
-                add_prop_u32(dt_struct, dt_strings, "linux,initrd-start",
-                             static_cast<uint32_t>(initrd_start));
-            }
-        }
-        if (include_end) {
-            if (use_64bit_addrs) {
-                add_prop_u64(dt_struct, dt_strings, "linux,initrd-end", initrd_end);
-            } else {
-                add_prop_u32(dt_struct, dt_strings, "linux,initrd-end",
-                             static_cast<uint32_t>(initrd_end));
-            }
-        }
-        end_node(dt_struct);
-    }
-
-    end_node(dt_struct); // end root
-    push_be32(dt_struct, TOKEN_END);
-
-    // Header (40 bytes) + 16-byte empty mem_rsvmap + dt_struct + dt_strings
-    constexpr uint32_t header_size = sizeof(FDT::Header);
-    constexpr uint32_t rsvmap_size = 16U;
-    const uint32_t off_mem_rsvmap = header_size;
-    const uint32_t off_dt_struct = off_mem_rsvmap + rsvmap_size;
-    const auto size_dt_struct = static_cast<uint32_t>(dt_struct.size());
-    const uint32_t off_dt_strings = off_dt_struct + size_dt_struct;
-    const auto size_dt_strings = static_cast<uint32_t>(dt_strings.size());
-    const uint32_t totalsize = off_dt_strings + size_dt_strings;
-
-    AlignedDtb dtb{};
-    dtb.storage.reserve(totalsize);
-    push_be32(dtb.storage, FDT::FDT_MAGIC);
-    push_be32(dtb.storage, totalsize);
-    push_be32(dtb.storage, off_dt_struct);
-    push_be32(dtb.storage, off_dt_strings);
-    push_be32(dtb.storage, off_mem_rsvmap);
-    push_be32(dtb.storage, 17U); // version
-    push_be32(dtb.storage, 16U); // last_comp_version
-    push_be32(dtb.storage, 0U);  // boot_cpuid_phys
-    push_be32(dtb.storage, size_dt_strings);
-    push_be32(dtb.storage, size_dt_struct);
-
-    // Empty mem_rsvmap terminator (address = 0, size = 0)
-    push_be64(dtb.storage, 0ULL);
-    push_be64(dtb.storage, 0ULL);
-
-    dtb.storage.insert(dtb.storage.end(), dt_struct.begin(), dt_struct.end());
-    dtb.storage.insert(dtb.storage.end(), dt_strings.begin(), dt_strings.end());
-    return dtb;
-}
 
 } // namespace
 
-TEST_CASE("FDT", "Header Magic, Alignment & Total Size Validation") {
-    const auto dtb = build_test_dtb(true, true, true, true, 0x44000000ULL, 0x44100000ULL);
-    EXPECT_TRUE(FDT::is_valid(dtb.paddr()));
-    EXPECT_EQ(FDT::get_total_size(dtb.paddr()), static_cast<uint32_t>(dtb.storage.size()));
+TEST_CASE("FDT", "Single-Bank 1 GiB Memory Node Parsing") {
+    DtbBuilder b;
+    b.begin_node("");
+    b.add_prop_u32("#address-cells", 2U);
+    b.add_prop_u32("#size-cells", 2U);
 
-    // Null & unaligned pointers
-    EXPECT_FALSE(FDT::is_valid(0U));
-    EXPECT_EQ(FDT::get_total_size(0U), 0U);
-    EXPECT_FALSE(FDT::is_valid(dtb.paddr() + 1U));
-    EXPECT_FALSE(FDT::is_valid(dtb.paddr() + 2U));
-    EXPECT_FALSE(FDT::is_valid(dtb.paddr() + 3U));
+    b.begin_node("memory@40000000");
+    b.add_prop_str("device_type", "memory");
+    std::vector<uint8_t> reg;
+    DtbBuilder::append_be64(reg, 0x40000000ULL);
+    DtbBuilder::append_be64(reg, 0x40000000ULL); // 1 GiB
+    b.add_prop_raw("reg", reg.data(), reg.size());
+    b.end_node();
 
-    // Corrupted magic
-    auto bad_dtb = dtb;
-    bad_dtb.storage[0] = 0x00U;
-    EXPECT_FALSE(FDT::is_valid(bad_dtb.paddr()));
-    EXPECT_EQ(FDT::get_total_size(bad_dtb.paddr()), 0U);
+    b.end_node();
+
+    const auto blob = b.finalize();
+    const FDT::MemoryMap map = FDT::find_memory_regions(reinterpret_cast<uintptr_t>(blob.data()));
+    EXPECT_EQ(map.count, 1U);
+    EXPECT_EQ(map.min_paddr, static_cast<uintptr_t>(0x40000000ULL));
+    EXPECT_EQ(map.max_paddr, static_cast<uintptr_t>(0x80000000ULL));
+    EXPECT_EQ(map.total_usable_bytes, static_cast<size_t>(0x40000000ULL));
 }
 
-TEST_CASE("FDT", "Big-Endian Reader Alignment Safety on Arbitrary Offsets") {
-    // Exercise 64-bit property values that are 4-byte aligned (NOT 8-byte aligned) inside DTB
-    // under UBSan (-fsanitize=undefined) to guarantee zero unaligned load traps.
-    const auto dtb64 = build_test_dtb(true, true, true, true, 0x48123000ULL, 0x489ABC00ULL);
-    const auto loc64 = FDT::find_initrd(dtb64.paddr());
-    EXPECT_TRUE(loc64.valid);
-    EXPECT_EQ(loc64.start_paddr, 0x48123000ULL);
-    EXPECT_EQ(loc64.end_paddr, 0x489ABC00ULL);
-    EXPECT_EQ(loc64.size, 0x00888C00ULL);
+TEST_CASE("FDT", "Multi-Bank Discontiguous Regions, Sorting & Merging") {
+    DtbBuilder b;
+    b.begin_node("");
+    b.add_prop_u32("#address-cells", 2U);
+    b.add_prop_u32("#size-cells", 2U);
 
-    // 32-bit cell properties
-    const auto dtb32 = build_test_dtb(true, true, true, false, 0x42000000ULL, 0x42080000ULL);
-    const auto loc32 = FDT::find_initrd(dtb32.paddr());
-    EXPECT_TRUE(loc32.valid);
-    EXPECT_EQ(loc32.start_paddr, 0x42000000ULL);
-    EXPECT_EQ(loc32.end_paddr, 0x42080000ULL);
-    EXPECT_EQ(loc32.size, 0x00080000ULL);
+    b.begin_node("memory@100000000");
+    std::vector<uint8_t> reg2;
+    DtbBuilder::append_be64(reg2, 0x100000000ULL);
+    DtbBuilder::append_be64(reg2, 0x80000000ULL); // 2 GiB @ 4 GiB
+    b.add_prop_raw("reg", reg2.data(), reg2.size());
+    b.end_node();
+
+    b.begin_node("memory@40000000");
+    std::vector<uint8_t> reg1;
+    DtbBuilder::append_be64(reg1, 0x40000000ULL);
+    DtbBuilder::append_be64(reg1, 0x20000000ULL);
+    DtbBuilder::append_be64(reg1, 0x60000000ULL);
+    DtbBuilder::append_be64(reg1, 0x20000000ULL);
+    b.add_prop_raw("reg", reg1.data(), reg1.size());
+    b.end_node();
+
+    b.end_node();
+
+    const auto blob = b.finalize();
+    const FDT::MemoryMap map = FDT::find_memory_regions(reinterpret_cast<uintptr_t>(blob.data()));
+    EXPECT_EQ(map.count, 2U);
+    EXPECT_EQ(map.regions[0].base_paddr, static_cast<uintptr_t>(0x40000000ULL));
+    EXPECT_EQ(map.regions[0].size, static_cast<size_t>(0x40000000ULL));
+    EXPECT_EQ(map.regions[1].base_paddr, static_cast<uintptr_t>(0x100000000ULL));
+    EXPECT_EQ(map.regions[1].size, static_cast<size_t>(0x80000000ULL));
+    EXPECT_EQ(map.min_paddr, static_cast<uintptr_t>(0x40000000ULL));
+    EXPECT_EQ(map.max_paddr, static_cast<uintptr_t>(0x180000000ULL));
+    EXPECT_EQ(map.total_usable_bytes, static_cast<size_t>(0xC0000000ULL));
 }
 
-TEST_CASE("FDT", "Chosen Node Scanner Presence & Missing Property Edge Cases") {
-    // /chosen missing completely
-    {
-        const auto dtb = build_test_dtb(false, false, false, true, 0ULL, 0ULL);
-        const auto loc = FDT::find_initrd(dtb.paddr());
-        EXPECT_FALSE(loc.valid);
-        EXPECT_EQ(loc.size, 0U);
-    }
+TEST_CASE("FDT", "1-Cell Encoding, Page Alignment, /memreserve/ & /chosen Initrd") {
+    DtbBuilder b;
+    b.add_memreserve(0x40000000ULL, 0x10000ULL);
+    b.add_memreserve(0x47F00000ULL, 0x100000ULL);
 
-    // /chosen present, but both properties missing
-    {
-        const auto dtb = build_test_dtb(true, false, false, true, 0ULL, 0ULL);
-        const auto loc = FDT::find_initrd(dtb.paddr());
-        EXPECT_FALSE(loc.valid);
-    }
+    b.begin_node("");
+    b.add_prop_u32("#address-cells", 1U);
+    b.add_prop_u32("#size-cells", 1U);
 
-    // /chosen present with only linux,initrd-start
-    {
-        const auto dtb = build_test_dtb(true, true, false, true, 0x44000000ULL, 0ULL);
-        const auto loc = FDT::find_initrd(dtb.paddr());
-        EXPECT_FALSE(loc.valid);
-    }
+    b.begin_node("memory");
+    std::vector<uint8_t> reg;
+    DtbBuilder::append_be32(reg, 0x40000100U); // Aligns up to 0x40001000
+    DtbBuilder::append_be32(reg, 0x10000000U); // End 0x50000100 aligns down to 0x50000000
+    b.add_prop_raw("reg", reg.data(), reg.size());
+    b.end_node();
 
-    // /chosen present with only linux,initrd-end
-    {
-        const auto dtb = build_test_dtb(true, false, true, true, 0ULL, 0x44100000ULL);
-        const auto loc = FDT::find_initrd(dtb.paddr());
-        EXPECT_FALSE(loc.valid);
-    }
+    b.begin_node("chosen");
+    b.add_prop_u32("linux,initrd-start", 0x44000000U);
+    b.add_prop_u32("linux,initrd-end", 0x44250000U);
+    b.end_node();
 
-    // Inverted range (end < start)
-    {
-        const auto dtb = build_test_dtb(true, true, true, true, 0x45000000ULL, 0x44000000ULL);
-        const auto loc = FDT::find_initrd(dtb.paddr());
-        EXPECT_FALSE(loc.valid);
-    }
+    b.end_node();
+
+    const auto blob = b.finalize();
+    const auto dtb_addr = reinterpret_cast<uintptr_t>(blob.data());
+
+    const FDT::MemoryMap map = FDT::find_memory_regions(dtb_addr);
+    EXPECT_EQ(map.count, 1U);
+    EXPECT_EQ(map.regions[0].base_paddr, static_cast<uintptr_t>(0x40001000ULL));
+    EXPECT_EQ(map.regions[0].size, static_cast<size_t>(0x50000000ULL - 0x40001000ULL));
+
+    const FDT::ReserveMap rsv = FDT::find_memory_reservations(dtb_addr);
+    EXPECT_EQ(rsv.count, 2U);
+    EXPECT_EQ(rsv.entries[0].base_paddr, static_cast<uintptr_t>(0x40000000ULL));
+    EXPECT_EQ(rsv.entries[0].size, static_cast<size_t>(0x10000ULL));
+    EXPECT_EQ(rsv.entries[1].base_paddr, static_cast<uintptr_t>(0x47F00000ULL));
+    EXPECT_EQ(rsv.entries[1].size, static_cast<size_t>(0x100000ULL));
+
+    const FDT::InitrdLocation initrd = FDT::find_initrd(dtb_addr);
+    EXPECT_TRUE(initrd.valid);
+    EXPECT_EQ(initrd.start_paddr, static_cast<uintptr_t>(0x44000000ULL));
+    EXPECT_EQ(initrd.end_paddr, static_cast<uintptr_t>(0x44250000ULL));
+    EXPECT_EQ(initrd.size, static_cast<size_t>(0x250000ULL));
+}
+
+TEST_CASE("FDT", "Missing /memory Fallback & Corrupted Header Rejection") {
+    DtbBuilder b;
+    b.begin_node("");
+    b.begin_node("chosen");
+    b.end_node();
+    b.end_node();
+
+    const auto blob = b.finalize();
+    const FDT::MemoryMap fallback =
+        FDT::find_memory_regions(reinterpret_cast<uintptr_t>(blob.data()));
+    EXPECT_EQ(fallback.count, 1U);
+    EXPECT_EQ(fallback.min_paddr, Arch::RAM_BASE);
+    EXPECT_EQ(fallback.max_paddr, Arch::RAM_BASE + (256UL * 1024UL * 1024UL));
+
+    std::vector<uint8_t> bad = blob;
+    bad[0] = 0xDE;
+    bad[1] = 0xAD;
+    bad[2] = 0xBE;
+    bad[3] = 0xEF;
+    FDT::MemoryMap out{};
+    EXPECT_FALSE(FDT::validate_header(reinterpret_cast<uintptr_t>(bad.data())));
+    EXPECT_FALSE(FDT::find_memory_regions(reinterpret_cast<uintptr_t>(bad.data()), out));
 }

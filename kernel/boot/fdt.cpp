@@ -1,180 +1,555 @@
 #include "boot/fdt.hpp"
 
+#include "hal/console.hpp"
+#include "memory_config.hpp"
+
+#include <cstddef>
+#include <cstdint>
+
 namespace {
 
-// Token definitions from devicetree specification
-constexpr uint32_t FDT_BEGIN_NODE = 0x00000001;
-constexpr uint32_t FDT_END_NODE = 0x00000002;
-constexpr uint32_t FDT_PROP = 0x00000003;
-constexpr uint32_t FDT_NOP = 0x00000004;
-constexpr uint32_t FDT_END = 0x00000009;
+constexpr uint32_t FDT_MAGIC = 0xD00DFEEDU;
+constexpr size_t FDT_HEADER_SIZE = 40U;
+constexpr size_t FDT_MAX_SANE_SIZE = 256UL * 1024UL * 1024UL;
 
-// Safe Big-Endian readers that prevent alignment faults
-inline uint32_t read_be32(const void* ptr) noexcept {
-    const auto* uint8_ptr = static_cast<const uint8_t*>(ptr);
-    return (static_cast<uint32_t>(uint8_ptr[0]) << 24U) |
-           (static_cast<uint32_t>(uint8_ptr[1]) << 16U) |
-           (static_cast<uint32_t>(uint8_ptr[2]) << 8U) |
-           (static_cast<uint32_t>(uint8_ptr[3]) << 0U);
-}
+constexpr uint32_t FDT_BEGIN_NODE = 0x00000001U;
+constexpr uint32_t FDT_END_NODE = 0x00000002U;
+constexpr uint32_t FDT_PROP = 0x00000003U;
+constexpr uint32_t FDT_NOP = 0x00000004U;
+constexpr uint32_t FDT_END = 0x00000009U;
 
-inline uint64_t read_be64(const void* ptr) noexcept {
-    const auto* uint8_ptr = static_cast<const uint8_t*>(ptr);
-    return (static_cast<uint64_t>(read_be32(uint8_ptr)) << 32U) |
-           static_cast<uint64_t>(read_be32(uint8_ptr + 4));
-}
+constexpr size_t FALLBACK_RAM_SIZE = 256UL * 1024UL * 1024UL;
 
-inline size_t str_len(const char* str) noexcept {
-    size_t len = 0;
+void fdt_print(const char* str) noexcept {
+    size_t len = 0U;
     while (str[len] != '\0') {
-        len++;
+        ++len;
     }
-    return len;
+    HAL::get_console().write(str, len);
 }
 
-inline bool str_eq(const char* str1, const char* str2) noexcept {
-    if (str1 == nullptr || str2 == nullptr) {
-        return str1 == str2;
-    }
-    while (*str1 != '\0' && (*str1 == *str2)) {
-        str1++;
-        str2++;
-    }
-    return *str1 == *str2;
+inline uint32_t read_be32(const uint8_t* ptr) noexcept {
+    return (static_cast<uint32_t>(ptr[0]) << 24U) | (static_cast<uint32_t>(ptr[1]) << 16U) |
+           (static_cast<uint32_t>(ptr[2]) << 8U) | static_cast<uint32_t>(ptr[3]);
 }
 
-inline uintptr_t align_up(uintptr_t val, uintptr_t alignment) noexcept {
-    return (val + alignment - 1U) & ~(alignment - 1U);
+inline uint64_t read_be64(const uint8_t* ptr) noexcept {
+    return (static_cast<uint64_t>(read_be32(ptr)) << 32U) |
+           static_cast<uint64_t>(read_be32(ptr + 4U));
+}
+
+constexpr size_t align_up_4(size_t val) noexcept {
+    return (val + 3U) & ~size_t{3U};
+}
+
+bool str_eq(const char* lhs, const char* rhs) noexcept {
+    size_t idx = 0U;
+    while (lhs[idx] != '\0' && rhs[idx] != '\0') {
+        if (lhs[idx] != rhs[idx]) {
+            return false;
+        }
+        ++idx;
+    }
+    return lhs[idx] == rhs[idx];
+}
+
+bool str_starts_with(const char* str, const char* prefix) noexcept {
+    size_t idx = 0U;
+    while (prefix[idx] != '\0') {
+        if (str[idx] != prefix[idx]) {
+            return false;
+        }
+        ++idx;
+    }
+    return true;
+}
+
+bool prop_str_eq(const uint8_t* data, uint32_t len, const char* target) noexcept {
+    if (data == nullptr || len == 0U) {
+        return false;
+    }
+    size_t idx = 0U;
+    while (idx < len && data[idx] != 0U && target[idx] != '\0') {
+        if (static_cast<char>(data[idx]) != target[idx]) {
+            return false;
+        }
+        ++idx;
+    }
+    return target[idx] == '\0' && (idx == len || data[idx] == 0U);
+}
+
+struct FdtHeader {
+    uint32_t magic{0U};
+    uint32_t totalsize{0U};
+    uint32_t off_dt_struct{0U};
+    uint32_t off_dt_strings{0U};
+    uint32_t off_mem_rsvmap{0U};
+    uint32_t version{0U};
+    uint32_t last_comp_version{0U};
+    uint32_t boot_cpuid_phys{0U};
+    uint32_t size_dt_strings{0U};
+    uint32_t size_dt_struct{0U};
+};
+
+bool parse_header(uintptr_t dtb_paddr, FdtHeader& hdr, bool log_errors) noexcept {
+    if (dtb_paddr == 0U) {
+        if (log_errors) {
+            fdt_print("[FDT ERROR] Invalid DTB magic!\r\n");
+        }
+        return false;
+    }
+
+    const auto* const base = reinterpret_cast<const uint8_t*>(dtb_paddr);
+    hdr.magic = read_be32(base + 0U);
+    if (hdr.magic != FDT_MAGIC) {
+        if (log_errors) {
+            fdt_print("[FDT ERROR] Invalid DTB magic!\r\n");
+        }
+        return false;
+    }
+
+    hdr.totalsize = read_be32(base + 4U);
+    hdr.off_dt_struct = read_be32(base + 8U);
+    hdr.off_dt_strings = read_be32(base + 12U);
+    hdr.off_mem_rsvmap = read_be32(base + 16U);
+    hdr.version = read_be32(base + 20U);
+    hdr.last_comp_version = read_be32(base + 24U);
+    hdr.boot_cpuid_phys = read_be32(base + 28U);
+    hdr.size_dt_strings = read_be32(base + 32U);
+    hdr.size_dt_struct = read_be32(base + 36U);
+
+    if (hdr.totalsize < FDT_HEADER_SIZE || hdr.totalsize > FDT_MAX_SANE_SIZE) {
+        return false;
+    }
+
+    if (hdr.off_dt_struct < FDT_HEADER_SIZE || hdr.off_dt_struct > hdr.totalsize ||
+        hdr.size_dt_struct > hdr.totalsize - hdr.off_dt_struct) {
+        return false;
+    }
+
+    if (hdr.off_dt_strings < FDT_HEADER_SIZE || hdr.off_dt_strings > hdr.totalsize ||
+        hdr.size_dt_strings > hdr.totalsize - hdr.off_dt_strings) {
+        return false;
+    }
+
+    if (hdr.off_mem_rsvmap < FDT_HEADER_SIZE || hdr.off_mem_rsvmap > hdr.totalsize) {
+        return false;
+    }
+
+    return true;
+}
+
+const char* lookup_string(const uint8_t* strings_base, uint32_t strings_size,
+                          uint32_t nameoff) noexcept {
+    if (nameoff >= strings_size) {
+        return nullptr;
+    }
+    for (uint32_t idx = nameoff; idx < strings_size; ++idx) {
+        if (strings_base[idx] == 0U) {
+            return reinterpret_cast<const char*>(strings_base + nameoff);
+        }
+    }
+    return nullptr;
+}
+
+void add_aligned_region(FDT::MemoryMap& map, uint64_t raw_base, uint64_t raw_size) noexcept {
+    if (raw_size == 0ULL || map.count >= FDT::MemoryMap::MAX_REGIONS) {
+        return;
+    }
+
+    const uint64_t page_mask = static_cast<uint64_t>(Arch::PAGE_SIZE) - 1ULL;
+    if (raw_base > UINT64_MAX - page_mask) {
+        return;
+    }
+
+    const uint64_t raw_end =
+        (UINT64_MAX - raw_base < raw_size) ? UINT64_MAX : (raw_base + raw_size);
+    const uint64_t aligned_start = (raw_base + page_mask) & ~page_mask;
+    const uint64_t aligned_end = raw_end & ~page_mask;
+
+    if (aligned_end <= aligned_start) {
+        return;
+    }
+
+    map.regions[map.count].base_paddr = static_cast<uintptr_t>(aligned_start);
+    map.regions[map.count].size = static_cast<size_t>(aligned_end - aligned_start);
+    ++map.count;
+}
+
+void decode_reg_property(FDT::MemoryMap& map, const uint8_t* reg_data, uint32_t reg_len,
+                         uint32_t address_cells, uint32_t size_cells) noexcept {
+    if (reg_data == nullptr || (address_cells != 1U && address_cells != 2U) ||
+        (size_cells != 1U && size_cells != 2U)) {
+        return;
+    }
+
+    const uint32_t addr_bytes = address_cells * 4U;
+    const uint32_t size_bytes = size_cells * 4U;
+    const uint32_t tuple_bytes = addr_bytes + size_bytes;
+
+    for (uint32_t offset = 0U; offset + tuple_bytes <= reg_len; offset += tuple_bytes) {
+        const uint64_t base =
+            (address_cells == 2U) ? read_be64(reg_data + offset) : read_be32(reg_data + offset);
+        const uint64_t size = (size_cells == 2U) ? read_be64(reg_data + offset + addr_bytes)
+                                                 : read_be32(reg_data + offset + addr_bytes);
+        add_aligned_region(map, base, size);
+    }
+}
+
+void sort_and_merge_regions(FDT::MemoryMap& map) noexcept {
+    if (map.count == 0U) {
+        return;
+    }
+
+    // Sort regions in ascending order of physical base address
+    for (size_t i = 1U; i < map.count; ++i) {
+        const FDT::MemoryRegion key = map.regions[i];
+        size_t j = i;
+        while (j > 0U && map.regions[j - 1U].base_paddr > key.base_paddr) {
+            map.regions[j] = map.regions[j - 1U];
+            --j;
+        }
+        map.regions[j] = key;
+    }
+
+    // Merge adjacent or overlapping spans
+    size_t write_idx = 0U;
+    for (size_t read_idx = 1U; read_idx < map.count; ++read_idx) {
+        FDT::MemoryRegion& curr = map.regions[write_idx];
+        const FDT::MemoryRegion& next = map.regions[read_idx];
+        const uintptr_t curr_end = curr.base_paddr + curr.size;
+
+        if (next.base_paddr <= curr_end) {
+            const uintptr_t next_end = next.base_paddr + next.size;
+            if (next_end > curr_end) {
+                curr.size = static_cast<size_t>(next_end - curr.base_paddr);
+            }
+        } else {
+            ++write_idx;
+            map.regions[write_idx] = next;
+        }
+    }
+    map.count = write_idx + 1U;
+}
+
+void finalize_memory_map(FDT::MemoryMap& map) noexcept {
+    if (map.count == 0U) {
+        map.regions[0] = FDT::MemoryRegion{.base_paddr = Arch::RAM_BASE, .size = FALLBACK_RAM_SIZE};
+        map.count = 1U;
+    }
+
+    map.min_paddr = map.regions[0].base_paddr;
+    const FDT::MemoryRegion& last = map.regions[map.count - 1U];
+    map.max_paddr = last.base_paddr + last.size;
+
+    size_t total = 0U;
+    for (size_t idx = 0U; idx < map.count; ++idx) {
+        total += map.regions[idx].size;
+    }
+    map.total_usable_bytes = total;
 }
 
 } // namespace
 
 namespace FDT {
 
-bool is_valid(uintptr_t fdt_paddr) noexcept {
-    if (fdt_paddr == 0 || (fdt_paddr & 0x3U) != 0) {
+bool validate_header(uintptr_t dtb_paddr, size_t* out_totalsize) noexcept {
+    FdtHeader hdr{};
+    if (!parse_header(dtb_paddr, hdr, true)) {
         return false;
     }
-    const auto* raw_ptr = reinterpret_cast<const void*>(fdt_paddr);
-    return read_be32(raw_ptr) == FDT_MAGIC;
+    if (out_totalsize != nullptr) {
+        *out_totalsize = static_cast<size_t>(hdr.totalsize);
+    }
+    return true;
 }
 
-uint32_t get_total_size(uintptr_t fdt_paddr) noexcept {
-    if (!is_valid(fdt_paddr)) {
-        return 0;
-    }
-    const auto* hdr = reinterpret_cast<const Header*>(fdt_paddr);
-    return read_be32(&hdr->totalsize);
-}
+bool find_memory_regions(uintptr_t dtb_paddr, MemoryMap& out_map) noexcept {
+    out_map = MemoryMap{};
 
-InitrdLocation find_initrd(uintptr_t fdt_paddr) noexcept {
-    InitrdLocation loc{};
-    if (!is_valid(fdt_paddr)) {
-        return loc;
+    FdtHeader hdr{};
+    if (!parse_header(dtb_paddr, hdr, true)) {
+        return false;
     }
 
-    const auto* hdr = reinterpret_cast<const Header*>(fdt_paddr);
-    const uint32_t totalsize = read_be32(&hdr->totalsize);
-    const uint32_t off_struct = read_be32(&hdr->off_dt_struct);
-    const uint32_t off_strings = read_be32(&hdr->off_dt_strings);
-    const uint32_t size_struct = read_be32(&hdr->size_dt_struct);
+    const auto* const base = reinterpret_cast<const uint8_t*>(dtb_paddr);
+    const auto* const struct_base = base + hdr.off_dt_struct;
+    const auto* const strings_base = base + hdr.off_dt_strings;
+    const uint32_t struct_size = hdr.size_dt_struct;
+    const uint32_t strings_size = hdr.size_dt_strings;
 
-    if (off_struct >= totalsize || off_strings >= totalsize) {
-        return loc;
-    }
+    uint32_t address_cells = 2U;
+    uint32_t size_cells = 2U;
+    uint32_t depth = 0U;
 
-    const auto* base = reinterpret_cast<const uint8_t*>(fdt_paddr);
-    const char* strings_block = reinterpret_cast<const char*>(base + off_strings);
+    bool node_is_memory_name = false;
+    bool node_has_device_type_memory = false;
+    bool node_is_disabled = false;
+    const uint8_t* node_reg_data = nullptr;
+    uint32_t node_reg_len = 0U;
 
-    const uint8_t* ptr = base + off_struct;
-    const uint8_t* struct_end = ptr + size_struct;
+    uint32_t offset = 0U;
+    while (offset + 4U <= struct_size) {
+        const uint32_t token = read_be32(struct_base + offset);
+        offset += 4U;
 
-    int depth = 0;
-    bool in_chosen = false;
-    int chosen_depth = -1;
+        if (token == FDT_NOP) {
+            continue;
+        }
 
-    uintptr_t initrd_start = 0;
-    uintptr_t initrd_end = 0;
-    bool has_start = false;
-    bool has_end = false;
-
-    while (ptr + sizeof(uint32_t) <= struct_end) {
-        const uint32_t token = read_be32(ptr);
-        ptr += sizeof(uint32_t);
+        if (token == FDT_END) {
+            break;
+        }
 
         if (token == FDT_BEGIN_NODE) {
-            depth++;
-            const char* node_name = reinterpret_cast<const char*>(ptr);
-            const size_t name_len = str_len(node_name);
-
-            // Node name is null-terminated and padded to 4 bytes
-            ptr = reinterpret_cast<const uint8_t*>(
-                align_up(reinterpret_cast<uintptr_t>(ptr + name_len + 1), 4));
-
-            // In FDT, root node is at depth 1 with name ""
-            // /chosen is a direct child of root (depth 2)
-            if (depth == 2 && str_eq(node_name, "chosen")) {
-                in_chosen = true;
-                chosen_depth = depth;
+            uint32_t name_end = offset;
+            while (name_end < struct_size && struct_base[name_end] != 0U) {
+                ++name_end;
             }
-        } else if (token == FDT_END_NODE) {
-            if (in_chosen && depth == chosen_depth) {
-                in_chosen = false;
-                chosen_depth = -1;
-            }
-            depth--;
-        } else if (token == FDT_PROP) {
-            if (ptr + 2 * sizeof(uint32_t) > struct_end) {
+            if (name_end >= struct_size) {
                 break;
             }
 
-            const uint32_t prop_len = read_be32(ptr);
-            const uint32_t nameoff = read_be32(ptr + 4);
-            ptr += 8;
+            const auto* const node_name = reinterpret_cast<const char*>(struct_base + offset);
+            const size_t name_with_nul = static_cast<size_t>(name_end - offset) + 1U;
+            const size_t padded_len = align_up_4(name_with_nul);
+            if (padded_len > struct_size - offset) {
+                break;
+            }
+            offset += static_cast<uint32_t>(padded_len);
+            ++depth;
 
-            const char* prop_name = strings_block + nameoff;
-            const uint8_t* prop_val = ptr;
+            if (depth == 2U) {
+                node_is_memory_name =
+                    str_eq(node_name, "memory") || str_starts_with(node_name, "memory@");
+                node_has_device_type_memory = false;
+                node_is_disabled = false;
+                node_reg_data = nullptr;
+                node_reg_len = 0U;
+            }
+            continue;
+        }
 
-            // Property value payload is padded to 4 bytes
-            ptr = reinterpret_cast<const uint8_t*>(
-                align_up(reinterpret_cast<uintptr_t>(ptr + prop_len), 4));
+        if (token == FDT_END_NODE) {
+            if (depth == 2U) {
+                if ((node_is_memory_name || node_has_device_type_memory) && !node_is_disabled &&
+                    node_reg_data != nullptr && node_reg_len > 0U) {
+                    decode_reg_property(out_map, node_reg_data, node_reg_len, address_cells,
+                                        size_cells);
+                }
+                node_is_memory_name = false;
+                node_has_device_type_memory = false;
+                node_is_disabled = false;
+                node_reg_data = nullptr;
+                node_reg_len = 0U;
+            }
+            if (depth > 0U) {
+                --depth;
+            }
+            continue;
+        }
 
-            if (in_chosen) {
-                if (str_eq(prop_name, "linux,initrd-start")) {
-                    if (prop_len == 4) {
-                        initrd_start = static_cast<uintptr_t>(read_be32(prop_val));
-                    } else if (prop_len == 8) {
-                        initrd_start = static_cast<uintptr_t>(read_be64(prop_val));
-                    }
-                    has_start = true;
-                } else if (str_eq(prop_name, "linux,initrd-end")) {
-                    if (prop_len == 4) {
-                        initrd_end = static_cast<uintptr_t>(read_be32(prop_val));
-                    } else if (prop_len == 8) {
-                        initrd_end = static_cast<uintptr_t>(read_be64(prop_val));
-                    }
-                    has_end = true;
+        if (token == FDT_PROP) {
+            if (offset + 8U > struct_size) {
+                break;
+            }
+            const uint32_t prop_len = read_be32(struct_base + offset);
+            const uint32_t nameoff = read_be32(struct_base + offset + 4U);
+            offset += 8U;
+
+            const size_t padded_len = align_up_4(prop_len);
+            if (padded_len > struct_size - offset) {
+                break;
+            }
+
+            const auto* const prop_data = struct_base + offset;
+            offset += static_cast<uint32_t>(padded_len);
+
+            const char* const prop_name = lookup_string(strings_base, strings_size, nameoff);
+            if (prop_name == nullptr) {
+                continue;
+            }
+
+            if (depth == 1U) {
+                if (str_eq(prop_name, "#address-cells") && prop_len == 4U) {
+                    address_cells = read_be32(prop_data);
+                } else if (str_eq(prop_name, "#size-cells") && prop_len == 4U) {
+                    size_cells = read_be32(prop_data);
+                }
+            } else if (depth == 2U) {
+                if (str_eq(prop_name, "reg")) {
+                    node_reg_data = prop_data;
+                    node_reg_len = prop_len;
+                } else if (str_eq(prop_name, "device_type")) {
+                    node_has_device_type_memory = prop_str_eq(prop_data, prop_len, "memory");
+                } else if (str_eq(prop_name, "status")) {
+                    node_is_disabled = prop_str_eq(prop_data, prop_len, "disabled") ||
+                                       prop_str_eq(prop_data, prop_len, "fail");
                 }
             }
-        } else if (token == FDT_NOP) {
-            // No payload
             continue;
-        } else if (token == FDT_END) {
+        }
+
+        // Unknown token
+        break;
+    }
+
+    sort_and_merge_regions(out_map);
+    finalize_memory_map(out_map);
+    return true;
+}
+
+MemoryMap find_memory_regions(uintptr_t dtb_paddr) noexcept {
+    MemoryMap map{};
+    if (!find_memory_regions(dtb_paddr, map)) {
+        finalize_memory_map(map);
+    }
+    return map;
+}
+
+ReserveMap find_memory_reservations(uintptr_t dtb_paddr) noexcept {
+    ReserveMap rsv{};
+
+    FdtHeader hdr{};
+    if (!parse_header(dtb_paddr, hdr, false)) {
+        return rsv;
+    }
+
+    const auto* const base = reinterpret_cast<const uint8_t*>(dtb_paddr);
+    uint32_t offset = hdr.off_mem_rsvmap;
+
+    while (offset + 16U <= hdr.totalsize && rsv.count < ReserveMap::MAX_ENTRIES) {
+        const uint64_t addr = read_be64(base + offset);
+        const uint64_t size = read_be64(base + offset + 8U);
+        offset += 16U;
+
+        if (addr == 0ULL && size == 0ULL) {
             break;
-        } else {
-            // Malformed token encountered; abort parse
-            break;
+        }
+        if (size > 0ULL) {
+            rsv.entries[rsv.count] = MemoryRegion{
+                .base_paddr = static_cast<uintptr_t>(addr),
+                .size = static_cast<size_t>(size),
+            };
+            ++rsv.count;
         }
     }
 
-    if (has_start && has_end && initrd_end >= initrd_start) {
-        loc.start_paddr = initrd_start;
-        loc.end_paddr = initrd_end;
-        loc.size = initrd_end - initrd_start;
-        loc.valid = true;
+    return rsv;
+}
+
+InitrdLocation find_initrd(uintptr_t dtb_paddr) noexcept {
+    InitrdLocation info{};
+
+    FdtHeader hdr{};
+    if (!parse_header(dtb_paddr, hdr, false)) {
+        return info;
     }
 
-    return loc;
+    const auto* const base = reinterpret_cast<const uint8_t*>(dtb_paddr);
+    const auto* const struct_base = base + hdr.off_dt_struct;
+    const auto* const strings_base = base + hdr.off_dt_strings;
+    const uint32_t struct_size = hdr.size_dt_struct;
+    const uint32_t strings_size = hdr.size_dt_strings;
+
+    uint32_t depth = 0U;
+    bool in_chosen = false;
+    bool has_start = false;
+    bool has_end = false;
+    uint64_t start_val = 0ULL;
+    uint64_t end_val = 0ULL;
+
+    uint32_t offset = 0U;
+    while (offset + 4U <= struct_size) {
+        const uint32_t token = read_be32(struct_base + offset);
+        offset += 4U;
+
+        if (token == FDT_NOP) {
+            continue;
+        }
+        if (token == FDT_END) {
+            break;
+        }
+        if (token == FDT_BEGIN_NODE) {
+            uint32_t name_end = offset;
+            while (name_end < struct_size && struct_base[name_end] != 0U) {
+                ++name_end;
+            }
+            if (name_end >= struct_size) {
+                break;
+            }
+            const auto* const node_name = reinterpret_cast<const char*>(struct_base + offset);
+            const size_t padded_len = align_up_4(static_cast<size_t>(name_end - offset) + 1U);
+            if (padded_len > struct_size - offset) {
+                break;
+            }
+            offset += static_cast<uint32_t>(padded_len);
+            ++depth;
+            if (depth == 2U) {
+                in_chosen = str_eq(node_name, "chosen") || str_starts_with(node_name, "chosen@");
+            }
+            continue;
+        }
+        if (token == FDT_END_NODE) {
+            if (depth == 2U) {
+                in_chosen = false;
+            }
+            if (depth > 0U) {
+                --depth;
+            }
+            continue;
+        }
+        if (token == FDT_PROP) {
+            if (offset + 8U > struct_size) {
+                break;
+            }
+            const uint32_t prop_len = read_be32(struct_base + offset);
+            const uint32_t nameoff = read_be32(struct_base + offset + 4U);
+            offset += 8U;
+
+            const size_t padded_len = align_up_4(prop_len);
+            if (padded_len > struct_size - offset) {
+                break;
+            }
+            const auto* const prop_data = struct_base + offset;
+            offset += static_cast<uint32_t>(padded_len);
+
+            if (depth == 2U && in_chosen) {
+                const char* const prop_name = lookup_string(strings_base, strings_size, nameoff);
+                if (prop_name == nullptr) {
+                    continue;
+                }
+                if (str_eq(prop_name, "linux,initrd-start")) {
+                    if (prop_len == 4U) {
+                        start_val = read_be32(prop_data);
+                        has_start = true;
+                    } else if (prop_len == 8U) {
+                        start_val = read_be64(prop_data);
+                        has_start = true;
+                    }
+                } else if (str_eq(prop_name, "linux,initrd-end")) {
+                    if (prop_len == 4U) {
+                        end_val = read_be32(prop_data);
+                        has_end = true;
+                    } else if (prop_len == 8U) {
+                        end_val = read_be64(prop_data);
+                        has_end = true;
+                    }
+                }
+            }
+            continue;
+        }
+        break;
+    }
+
+    if (has_start && has_end && end_val > start_val) {
+        info.start_paddr = static_cast<uintptr_t>(start_val);
+        info.end_paddr = static_cast<uintptr_t>(end_val);
+        info.size = static_cast<size_t>(end_val - start_val);
+        info.valid = true;
+    }
+
+    return info;
 }
 
 } // namespace FDT

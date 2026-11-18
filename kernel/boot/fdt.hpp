@@ -5,36 +5,37 @@
 
 namespace FDT {
 
-constexpr uint32_t FDT_MAGIC = 0xD00DFEED;
+struct MemoryRegion {
+    uintptr_t base_paddr{0U};
+    size_t size{0U};
+};
 
-// Standard FDT Header layout (all multi-byte fields are Big-Endian in memory)
-struct Header {
-    uint32_t magic;
-    uint32_t totalsize;
-    uint32_t off_dt_struct;
-    uint32_t off_dt_strings;
-    uint32_t off_mem_rsvmap;
-    uint32_t version;
-    uint32_t last_comp_version;
-    uint32_t boot_cpuid_phys;
-    uint32_t size_dt_strings;
-    uint32_t size_dt_struct;
+struct MemoryMap {
+    static constexpr size_t MAX_REGIONS = 16U;
+    MemoryRegion regions[MAX_REGIONS]{};
+    size_t count{0U};
+    uintptr_t min_paddr{0U};
+    uintptr_t max_paddr{0U};
+    size_t total_usable_bytes{0U};
+};
+
+struct ReserveMap {
+    static constexpr size_t MAX_ENTRIES = 32U;
+    MemoryRegion entries[MAX_ENTRIES]{};
+    size_t count{0U};
 };
 
 struct InitrdLocation {
-    uintptr_t start_paddr{0};
-    uintptr_t end_paddr{0};
-    size_t size{0};
+    uintptr_t start_paddr{0U};
+    uintptr_t end_paddr{0U};
+    size_t size{0U};
     bool valid{false};
 };
 
-// Check if memory at `fdt_paddr` contains a valid Flattened Device Tree
-bool is_valid(uintptr_t fdt_paddr) noexcept;
-
-// Read total byte size of the DTB from its header
-uint32_t get_total_size(uintptr_t fdt_paddr) noexcept;
-
-// In-place scan of `/chosen` node for `linux,initrd-start` and `linux,initrd-end`
-InitrdLocation find_initrd(uintptr_t fdt_paddr) noexcept;
+bool validate_header(uintptr_t dtb_paddr, size_t* out_totalsize = nullptr) noexcept;
+bool find_memory_regions(uintptr_t dtb_paddr, MemoryMap& out_map) noexcept;
+MemoryMap find_memory_regions(uintptr_t dtb_paddr) noexcept;
+ReserveMap find_memory_reservations(uintptr_t dtb_paddr) noexcept;
+InitrdLocation find_initrd(uintptr_t dtb_paddr) noexcept;
 
 } // namespace FDT

@@ -13,6 +13,12 @@
 uintptr_t g_dtb_paddr = 0;
 FDT::InitrdLocation g_initrd_loc{};
 
+extern "C" {
+extern char _text_start[];
+// NOLINTNEXTLINE(bugprone-reserved-identifier)
+extern char __bss_end[];
+}
+
 namespace {
 
 void print_str(const char* str) noexcept {
@@ -38,57 +44,48 @@ void print_hex64(uint64_t val) noexcept {
 extern "C" void kmain(uintptr_t dtb_paddr) {
     g_dtb_paddr = dtb_paddr;
 
-    // 1. Initialize Console Driver
+    // Stage 1: Early Console Init (PL011 UART @ 0x09000000 via physical MMIO)
     HAL::get_console().init();
     print_str("[KERNEL] Core HAL initialised successfully.\r\n");
-
-    // 2. Initialize Physical Frame Allocator via HAL Platform Query
-    const auto platform = HAL::get_platform_info();
-    pfa_init(platform.ram_base, platform.ram_size);
-
-    // 3. Inspect DTB & Reserve DTB physical memory
     print_str("[BOOT] DTB Pointer: ");
     print_hex64(dtb_paddr);
     print_str("\r\n");
 
-    if (FDT::is_valid(dtb_paddr)) {
-        const uint32_t dtb_size = FDT::get_total_size(dtb_paddr);
-        pfa_reserve_range(dtb_paddr, dtb_paddr + dtb_size);
+    // Stage 2: DTB Discovery (Pre-MMU)
+    size_t dtb_size = 0U;
+    const bool dtb_valid = FDT::validate_header(dtb_paddr, &dtb_size);
+    const FDT::MemoryMap mem_map = FDT::find_memory_regions(dtb_paddr);
+    const FDT::ReserveMap reserve_map = FDT::find_memory_reservations(dtb_paddr);
+    g_initrd_loc = FDT::find_initrd(dtb_paddr);
 
-        print_str("[FDT] DTB reserved in PFA: ");
-        print_hex64(dtb_paddr);
+    for (size_t i = 0U; i < mem_map.count; ++i) {
+        print_str("[FDT] Memory Bank: ");
+        print_hex64(mem_map.regions[i].base_paddr);
         print_str(" - ");
-        print_hex64(dtb_paddr + dtb_size);
+        print_hex64(mem_map.regions[i].base_paddr + mem_map.regions[i].size);
         print_str("\r\n");
-
-        // 4. Parse & Reserve Initrd
-        g_initrd_loc = FDT::find_initrd(dtb_paddr);
-        if (g_initrd_loc.valid) {
-            pfa_reserve_range(g_initrd_loc.start_paddr, g_initrd_loc.end_paddr);
-
-            print_str("[INITRD] Found via FDT /chosen!\r\n");
-            print_str("         Start: ");
-            print_hex64(g_initrd_loc.start_paddr);
-            print_str("\r\n         End  : ");
-            print_hex64(g_initrd_loc.end_paddr);
-            print_str("\r\n         Size : ");
-            print_hex64(g_initrd_loc.size);
-            print_str(" bytes\r\n");
-
-            const auto* cpio_magic = reinterpret_cast<const char*>(g_initrd_loc.start_paddr);
-            print_str("         Signature: ");
-            HAL::get_console().write(cpio_magic, 6);
-            print_str("\r\n");
-        } else {
-            print_str("[INITRD WARNING] No initrd found in /chosen.\r\n");
-        }
-    } else {
-        print_str("[FDT ERROR] Invalid DTB magic!\r\n");
     }
+    print_str("[FDT] Discovered RAM Span: ");
+    print_hex64(mem_map.min_paddr);
+    print_str(" - ");
+    print_hex64(mem_map.max_paddr);
+    print_str("\r\n");
 
-    // 5. Initialize MMU and Paging
+    // Stage 3: Platform Info Update
+    const size_t discovered_ram_span = static_cast<size_t>(mem_map.max_paddr - mem_map.min_paddr);
+    HAL::set_platform_memory(mem_map.min_paddr, discovered_ram_span);
+
+    // Stage 4: Dynamic PFA Initialization (Pre-MMU)
+    const uintptr_t kernel_start = reinterpret_cast<uintptr_t>(_text_start);
+    const uintptr_t kernel_end = reinterpret_cast<uintptr_t>(__bss_end);
+    pfa_init(mem_map, kernel_start, kernel_end, dtb_valid ? dtb_paddr : 0U,
+             dtb_valid ? dtb_size : 0U, g_initrd_loc.valid ? g_initrd_loc.start_paddr : 0U,
+             g_initrd_loc.valid ? g_initrd_loc.end_paddr : 0U, &reserve_map);
+
+    // Stage 5: Full-RAM MMU Activation & PFA Higher-Half Pointer Rebasing
     print_str("[KERNEL] Activating MMU and Translation Tables...\r\n");
     HAL::get_mmu().activate();
+    pfa_on_mmu_enabled();
     print_str("[KERNEL] MMU Activated successfully.\r\n");
 
     // 6. Initialize GICv2, 100Hz Timer, and Preemptive Scheduler
