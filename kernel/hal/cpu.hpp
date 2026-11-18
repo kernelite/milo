@@ -76,5 +76,6 @@ class CpuControl {
 
 CpuControl& get_cpu() noexcept;
 PlatformInfo get_platform_info() noexcept;
+void set_platform_memory(uintptr_t ram_base, size_t ram_size) noexcept;
 
 } // namespace HAL

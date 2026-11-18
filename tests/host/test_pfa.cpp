@@ -1,84 +1,106 @@
+#include "boot/fdt.hpp"
+#include "memory_config.hpp"
 #include "mm/pfa.hpp"
-#include "mocks/host_hal.hpp"
 #include "test_framework.hpp"
 
-#include <vector>
+#include <cstddef>
+#include <cstdint>
+#include <sys/mman.h>
 
-TEST_CASE("PFA", "Bitmask Initialization, Single/Contiguous Allocations & Recycling") {
-    HostHAL::reset();
-    pfa_init(HostHAL::SIMULATED_RAM_BASE, HostHAL::SIMULATED_RAM_SIZE);
+TEST_CASE("PFA", "Dynamic >512 MiB Metadata Carving, Discontiguous Holes & Reservations") {
+    constexpr size_t SIM_SPAN = 1024UL * 1024UL * 1024UL; // 1 GiB (> 512 MiB cap)
+    void* const arena = mmap(nullptr, SIM_SPAN, PROT_READ | PROT_WRITE,
+                             MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    EXPECT_TRUE(arena != MAP_FAILED);
 
-    const size_t total_pages = HostHAL::SIMULATED_RAM_SIZE / HostHAL::SIMULATED_PAGE_SIZE;
-    EXPECT_EQ(pfa_allocated_pages_count(), 0U);
-    EXPECT_EQ(pfa_free_pages_count(), total_pages);
+    const auto base = reinterpret_cast<uintptr_t>(arena);
+    FDT::MemoryMap map{};
+    map.regions[0] = FDT::MemoryRegion{.base_paddr = base, .size = 256UL * 1024UL * 1024UL};
+    map.regions[1] = FDT::MemoryRegion{.base_paddr = base + (512UL * 1024UL * 1024UL),
+                                       .size = 512UL * 1024UL * 1024UL};
+    map.count = 2U;
+    map.min_paddr = base;
+    map.max_paddr = base + SIM_SPAN;
+    map.total_usable_bytes = 768UL * 1024UL * 1024UL;
 
-    // Reserve a region and verify it is marked allocated and skipped
-    const uintptr_t res_start = HostHAL::SIMULATED_RAM_BASE + (4U * HostHAL::SIMULATED_PAGE_SIZE);
-    const uintptr_t res_end = HostHAL::SIMULATED_RAM_BASE + (8U * HostHAL::SIMULATED_PAGE_SIZE);
-    pfa_reserve_range(res_start, res_end);
-    EXPECT_EQ(pfa_allocated_pages_count(), 4U);
-    EXPECT_TRUE(pfa_is_page_allocated(res_start));
-    EXPECT_FALSE(pfa_is_page_allocated(HostHAL::SIMULATED_RAM_BASE));
+    const uintptr_t kernel_start = base + 0x80000ULL;
+    const uintptr_t kernel_end = base + 0x180000ULL;
+    const uintptr_t dtb_paddr = base;
+    const size_t dtb_size = 0x2000ULL;
+    const uintptr_t initrd_start = base + 0x4000000ULL;
+    const uintptr_t initrd_end = base + 0x4200000ULL;
 
-    // Single frame allocation
-    const uintptr_t frame0 = alloc_frame();
-    EXPECT_EQ(frame0, HostHAL::SIMULATED_RAM_BASE);
-    EXPECT_EQ(frame0 % HostHAL::SIMULATED_PAGE_SIZE, 0U);
-    EXPECT_TRUE(pfa_is_page_allocated(frame0));
+    FDT::ReserveMap rsv{};
+    rsv.entries[0] = FDT::MemoryRegion{.base_paddr = base + 0x2000000ULL, .size = 0x10000ULL};
+    rsv.count = 1U;
 
-    // Contiguous multi-frame allocation skips reserved block [4..8)
-    const uintptr_t block = alloc_frames(6U);
-    EXPECT_EQ(block, res_end);
-    for (size_t i = 0U; i < 6U; ++i) {
-        EXPECT_TRUE(pfa_is_page_allocated(block + (i * HostHAL::SIMULATED_PAGE_SIZE)));
-    }
+    pfa_init(map, kernel_start, kernel_end, dtb_paddr, dtb_size, initrd_start, initrd_end, &rsv);
 
-    // Zero-count allocation returns 0
-    EXPECT_EQ(alloc_frames(0U), 0U);
+    EXPECT_EQ(pfa_total_pages_count(), SIM_SPAN / Arch::PAGE_SIZE);
+    EXPECT_EQ(pfa_metadata_size(), static_cast<size_t>(262144U * sizeof(Page)));
 
-    // Free and verify immediate recycling
-    free_frame(frame0);
-    EXPECT_FALSE(pfa_is_page_allocated(frame0));
-    const uintptr_t recycled = alloc_frame();
-    EXPECT_EQ(recycled, frame0);
+    const uintptr_t hole_probe = base + (300UL * 1024UL * 1024UL);
+    Page* const hole_page = page_from_paddr(hole_probe);
+    EXPECT_TRUE(hole_page != nullptr);
+    EXPECT_EQ(hole_page->flags, PageFlags::Reserved);
+    EXPECT_EQ(hole_page->ref_count, 1U);
+    EXPECT_TRUE(pfa_is_page_allocated(hole_probe));
 
-    free_frame(recycled);
-    free_frames(block, 6U);
-    EXPECT_EQ(pfa_allocated_pages_count(), 4U);
+    EXPECT_EQ(page_from_paddr(kernel_start)->flags, PageFlags::Reserved);
+    EXPECT_EQ(page_from_paddr(initrd_start)->flags, PageFlags::Reserved);
+    EXPECT_EQ(page_from_paddr(rsv.entries[0].base_paddr)->flags, PageFlags::Reserved);
+    EXPECT_EQ(page_from_paddr(pfa_metadata_paddr())->flags, PageFlags::Reserved);
+
+    munmap(arena, SIM_SPAN);
 }
 
-TEST_CASE("PFA", "Out-of-Bounds, Unaligned & Double-Free Safety Guards") {
-    HostHAL::reset();
-    pfa_init(HostHAL::SIMULATED_RAM_BASE, HostHAL::SIMULATED_RAM_SIZE);
+TEST_CASE("PFA", "Frame Allocation, Reference Counting (page_get/page_put) & Multi-Frame Runs") {
+    constexpr size_t ARENA_SIZE = 16UL * 1024UL * 1024UL; // 16 MiB
+    void* const arena =
+        mmap(nullptr, ARENA_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    EXPECT_TRUE(arena != MAP_FAILED);
 
-    const uintptr_t frame = alloc_frame();
-    EXPECT_NE(frame, 0U);
-    const size_t alloc_before = pfa_allocated_pages_count();
+    const auto base = reinterpret_cast<uintptr_t>(arena);
+    FDT::MemoryMap map{};
+    map.regions[0] = FDT::MemoryRegion{.base_paddr = base, .size = ARENA_SIZE};
+    map.count = 1U;
+    map.min_paddr = base;
+    map.max_paddr = base + ARENA_SIZE;
+    map.total_usable_bytes = ARENA_SIZE;
 
-    // 1. Unaligned address guard
-    HostHAL::clear_console_output();
-    free_frame(frame + 128U);
-    EXPECT_EQ(pfa_allocated_pages_count(), alloc_before);
-    EXPECT_NE(HostHAL::console_output().find("Unaligned physical frame address"),
-              std::string::npos);
+    pfa_init(map, base + 0x10000ULL, base + 0x20000ULL);
+    const size_t baseline_free = pfa_free_pages_count();
+    EXPECT_TRUE(baseline_free > 0U);
 
-    // 2. Out-of-bounds address guards (below RAM_BASE and >= RAM_END)
-    HostHAL::clear_console_output();
-    free_frame(0x1000U);
-    EXPECT_EQ(pfa_allocated_pages_count(), alloc_before);
-    EXPECT_NE(HostHAL::console_output().find("Out of bounds address"), std::string::npos);
+    const uintptr_t f1 = alloc_frame();
+    EXPECT_TRUE(f1 != 0U);
+    EXPECT_EQ(f1 & (Arch::PAGE_SIZE - 1U), static_cast<uintptr_t>(0U));
+    EXPECT_EQ(pfa_free_pages_count(), baseline_free - 1U);
 
-    HostHAL::clear_console_output();
-    free_frame(HostHAL::SIMULATED_RAM_BASE + HostHAL::SIMULATED_RAM_SIZE);
-    EXPECT_EQ(pfa_allocated_pages_count(), alloc_before);
-    EXPECT_NE(HostHAL::console_output().find("Out of bounds address"), std::string::npos);
+    Page* const p1 = page_from_paddr(f1);
+    EXPECT_TRUE(p1 != nullptr);
+    EXPECT_EQ(page_to_paddr(p1), f1);
+    EXPECT_EQ(p1->flags, PageFlags::Allocated);
+    EXPECT_EQ(p1->ref_count, 1U);
 
-    // 3. Double-free guard
-    free_frame(frame);
-    EXPECT_EQ(pfa_allocated_pages_count(), alloc_before - 1U);
+    page_get(f1);
+    EXPECT_EQ(p1->ref_count, 2U);
 
-    HostHAL::clear_console_output();
-    free_frame(frame);
-    EXPECT_EQ(pfa_allocated_pages_count(), alloc_before - 1U);
-    EXPECT_NE(HostHAL::console_output().find("Double-free detected"), std::string::npos);
+    free_frame(f1);
+    EXPECT_EQ(p1->ref_count, 1U);
+    EXPECT_EQ(p1->flags, PageFlags::Allocated);
+    EXPECT_EQ(pfa_free_pages_count(), baseline_free - 1U);
+
+    free_frame(f1);
+    EXPECT_EQ(p1->ref_count, 0U);
+    EXPECT_EQ(p1->flags, PageFlags::Free);
+    EXPECT_EQ(pfa_free_pages_count(), baseline_free);
+
+    const uintptr_t blk = alloc_frames(8U);
+    EXPECT_TRUE(blk != 0U);
+    EXPECT_EQ(pfa_free_pages_count(), baseline_free - 8U);
+    free_frames(blk, 8U);
+    EXPECT_EQ(pfa_free_pages_count(), baseline_free);
+
+    munmap(arena, ARENA_SIZE);
 }

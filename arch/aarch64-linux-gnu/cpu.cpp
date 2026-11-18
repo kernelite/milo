@@ -21,6 +21,19 @@ constexpr uintptr_t AARCH64_USER_STACK_TOP = 0x000000003FFF0000ULL;
 constexpr uintptr_t AARCH64_USER_BRK_BASE = 0x0000000010000000ULL;
 constexpr uintptr_t AARCH64_USER_MMAP_BASE = 0x000000003FFE0000ULL;
 
+constinit HAL::PlatformInfo g_platform_info{
+    .ram_base = Arch::RAM_BASE,
+    .ram_size = 256UL * 1024UL * 1024UL,
+    .max_ram_size = Arch::MAX_RAM_SIZE,
+    .page_size = Arch::PAGE_SIZE,
+    .higher_half_offset = AARCH64_HIGHER_HALF_OFFSET,
+    .user_va_limit = AARCH64_USER_VA_LIMIT,
+    .user_stack_top = AARCH64_USER_STACK_TOP,
+    .user_brk_base = AARCH64_USER_BRK_BASE,
+    .user_mmap_base = AARCH64_USER_MMAP_BASE,
+    .elf_machine = ELF_MACHINE_AARCH64,
+};
+
 class AArch64CpuControl : public HAL::CpuControl {
   public:
     constexpr AArch64CpuControl() = default;
@@ -206,17 +219,11 @@ CpuControl& get_cpu() noexcept {
 }
 
 PlatformInfo get_platform_info() noexcept {
-    return PlatformInfo{
-        .ram_base = Arch::RAM_BASE,
-        .ram_size = 256UL * 1024UL * 1024UL,
-        .max_ram_size = Arch::MAX_RAM_SIZE,
-        .page_size = Arch::PAGE_SIZE,
-        .higher_half_offset = AARCH64_HIGHER_HALF_OFFSET,
-        .user_va_limit = AARCH64_USER_VA_LIMIT,
-        .user_stack_top = AARCH64_USER_STACK_TOP,
-        .user_brk_base = AARCH64_USER_BRK_BASE,
-        .user_mmap_base = AARCH64_USER_MMAP_BASE,
-        .elf_machine = ELF_MACHINE_AARCH64,
-    };
+    return g_platform_info;
+}
+
+void set_platform_memory(uintptr_t ram_base, size_t ram_size) noexcept {
+    g_platform_info.ram_base = ram_base;
+    g_platform_info.ram_size = ram_size;
 }
 } // namespace HAL
