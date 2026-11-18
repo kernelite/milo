@@ -1,6 +1,7 @@
 // File: arch/aarch64-linux-gnu/mmu_aarch64.cpp
 #include "cpu_context.hpp"
 #include "hal/console.hpp"
+#include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
 #include "memory_config.hpp"
 #include "mm/address_space.hpp"
@@ -26,7 +27,34 @@ namespace {
 
 constexpr size_t PAGE_ENTRY_COUNT = 512U;
 constexpr uint64_t TABLE_ADDR_MASK = 0x000FFFFFFFFFF000ULL;
+constexpr uint64_t BLOCK_2M_ADDR_MASK = 0x000FFFFFFFE00000ULL;
+constexpr uint64_t DESC_TYPE_BLOCK = 0x1ULL;
 constexpr uint64_t DESC_TYPE_TABLE = 0x3ULL;
+
+constexpr uint64_t DESC_ATTR_NORMAL = 1ULL << 2U;
+constexpr uint64_t DESC_SH_ISH = 3ULL << 8U;
+constexpr uint64_t DESC_AF = 1ULL << 10U;
+constexpr uint64_t DESC_PXN = 1ULL << 53U;
+constexpr uint64_t DESC_UXN = 1ULL << 54U;
+
+constexpr uintptr_t align_down_page(uintptr_t addr) noexcept {
+    return addr & ~(Arch::PAGE_SIZE - 1U);
+}
+
+constexpr uintptr_t align_up_page(uintptr_t addr) noexcept {
+    return (addr + Arch::PAGE_SIZE - 1U) & ~(Arch::PAGE_SIZE - 1U);
+}
+
+inline bool is_mmu_enabled() noexcept {
+    uint64_t sctlr = 0ULL;
+    asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+    return (sctlr & 1ULL) != 0ULL;
+}
+
+inline uint64_t* table_ptr_from_phys(uintptr_t phys, bool mmu_on) noexcept {
+    const uintptr_t addr = mmu_on ? Kernel::MM::phys_to_virt(phys) : phys;
+    return reinterpret_cast<uint64_t*>(addr);
+}
 
 inline void flush_dcache_range(uintptr_t addr, size_t size) noexcept {
     const uintptr_t line_size = 64U;
@@ -77,12 +105,70 @@ uintptr_t allocate_table_page() noexcept {
         }
     }
 
-    auto* table = reinterpret_cast<uint64_t*>(phys);
-    for (size_t i = 0U; i < 512U; ++i) {
+    const bool mmu_on = is_mmu_enabled();
+    auto* const table = table_ptr_from_phys(phys, mmu_on);
+    for (size_t i = 0U; i < PAGE_ENTRY_COUNT; ++i) {
         table[i] = 0ULL;
     }
-    flush_dcache_range(phys, 4096U);
+    flush_dcache_range(reinterpret_cast<uintptr_t>(table), Arch::PAGE_SIZE);
     return phys;
+}
+
+uint64_t* ensure_l2_table(uint64_t* root_l0, size_t l0_idx, size_t l1_idx, bool mmu_on) noexcept {
+    const uint64_t l0_desc = root_l0[l0_idx];
+    if ((l0_desc & 1ULL) == 0ULL) {
+        const uintptr_t l1_paddr = allocate_table_page();
+        if (l1_paddr == 0U) {
+            return nullptr;
+        }
+        root_l0[l0_idx] = (l1_paddr & TABLE_ADDR_MASK) | DESC_TYPE_TABLE;
+        flush_dcache_range(reinterpret_cast<uintptr_t>(&root_l0[l0_idx]), sizeof(uint64_t));
+    } else if ((l0_desc & DESC_TYPE_TABLE) != DESC_TYPE_TABLE) {
+        return nullptr;
+    }
+
+    auto* const l1_table = table_ptr_from_phys(root_l0[l0_idx] & TABLE_ADDR_MASK, mmu_on);
+    const uint64_t l1_desc = l1_table[l1_idx];
+    if ((l1_desc & 1ULL) == 0ULL) {
+        const uintptr_t l2_paddr = allocate_table_page();
+        if (l2_paddr == 0U) {
+            return nullptr;
+        }
+        l1_table[l1_idx] = (l2_paddr & TABLE_ADDR_MASK) | DESC_TYPE_TABLE;
+        flush_dcache_range(reinterpret_cast<uintptr_t>(&l1_table[l1_idx]), sizeof(uint64_t));
+    } else if ((l1_desc & DESC_TYPE_TABLE) != DESC_TYPE_TABLE) {
+        return nullptr;
+    }
+
+    return table_ptr_from_phys(l1_table[l1_idx] & TABLE_ADDR_MASK, mmu_on);
+}
+
+bool map_block_2m_in_root(uint64_t* root_l0, uintptr_t virt_addr, uintptr_t phys_addr) noexcept {
+    if (((virt_addr | phys_addr) & (Arch::BLOCK_SIZE_2M - 1U)) != 0U) {
+        return false;
+    }
+
+    const size_t l0_idx = (virt_addr >> 39U) & 0x1FFU;
+    const size_t l1_idx = (virt_addr >> 30U) & 0x1FFU;
+    const size_t l2_idx = (virt_addr >> 21U) & 0x1FFU;
+    const bool mmu_on = is_mmu_enabled();
+
+    uint64_t* const l2_table = ensure_l2_table(root_l0, l0_idx, l1_idx, mmu_on);
+    if (l2_table == nullptr) {
+        return false;
+    }
+
+    // Refuse to overwrite an existing L3 table descriptor with a 2 MiB block
+    if ((l2_table[l2_idx] & 1ULL) != 0ULL &&
+        (l2_table[l2_idx] & DESC_TYPE_TABLE) == DESC_TYPE_TABLE) {
+        return false;
+    }
+
+    const uint64_t desc = (phys_addr & BLOCK_2M_ADDR_MASK) | DESC_TYPE_BLOCK | DESC_ATTR_NORMAL |
+                          DESC_SH_ISH | DESC_AF | DESC_PXN | DESC_UXN;
+    l2_table[l2_idx] = desc;
+    flush_dcache_range(reinterpret_cast<uintptr_t>(&l2_table[l2_idx]), sizeof(uint64_t));
+    return true;
 }
 
 bool map_page_in_root(uint64_t* root_l0, uintptr_t virt_addr, uintptr_t phys_addr,
@@ -91,39 +177,30 @@ bool map_page_in_root(uint64_t* root_l0, uintptr_t virt_addr, uintptr_t phys_add
     const size_t l1_idx = (virt_addr >> 30U) & 0x1FFU;
     const size_t l2_idx = (virt_addr >> 21U) & 0x1FFU;
     const size_t l3_idx = (virt_addr >> 12U) & 0x1FFU;
+    const bool mmu_on = is_mmu_enabled();
 
-    if ((root_l0[l0_idx] & 1U) == 0U) {
-        uintptr_t l1_paddr = allocate_table_page();
-        if (l1_paddr == 0U) {
-            return false;
-        }
-        root_l0[l0_idx] = (l1_paddr & 0x000FFFFFFFFFF000ULL) | 0x3ULL;
-        flush_dcache_range(reinterpret_cast<uintptr_t>(&root_l0[l0_idx]), sizeof(uint64_t));
+    uint64_t* const l2_table = ensure_l2_table(root_l0, l0_idx, l1_idx, mmu_on);
+    if (l2_table == nullptr) {
+        return false;
     }
-    auto* l1_table = reinterpret_cast<uint64_t*>(root_l0[l0_idx] & 0x000FFFFFFFFFF000ULL);
 
-    if ((l1_table[l1_idx] & 1U) == 0U) {
-        uintptr_t l2_paddr = allocate_table_page();
-        if (l2_paddr == 0U) {
-            return false;
-        }
-        l1_table[l1_idx] = (l2_paddr & 0x000FFFFFFFFFF000ULL) | 0x3ULL;
-        flush_dcache_range(reinterpret_cast<uintptr_t>(&l1_table[l1_idx]), sizeof(uint64_t));
-    }
-    auto* l2_table = reinterpret_cast<uint64_t*>(l1_table[l1_idx] & 0x000FFFFFFFFFF000ULL);
-
-    if ((l2_table[l2_idx] & 1U) == 0U) {
-        uintptr_t l3_paddr = allocate_table_page();
+    const uint64_t l2_desc = l2_table[l2_idx];
+    if ((l2_desc & 1ULL) == 0ULL) {
+        const uintptr_t l3_paddr = allocate_table_page();
         if (l3_paddr == 0U) {
             return false;
         }
-        l2_table[l2_idx] = (l3_paddr & 0x000FFFFFFFFFF000ULL) | 0x3ULL;
+        l2_table[l2_idx] = (l3_paddr & TABLE_ADDR_MASK) | DESC_TYPE_TABLE;
         flush_dcache_range(reinterpret_cast<uintptr_t>(&l2_table[l2_idx]), sizeof(uint64_t));
+    } else if ((l2_desc & DESC_TYPE_TABLE) != DESC_TYPE_TABLE) {
+        // L2 entry is a 2 MiB block descriptor (0b01), not an L3 table descriptor (0b11)
+        return false;
     }
-    auto* l3_table = reinterpret_cast<uint64_t*>(l2_table[l2_idx] & 0x000FFFFFFFFFF000ULL);
 
-    uint64_t desc = (phys_addr & 0x000FFFFFFFFFF000ULL) | 0x3ULL; // Valid + Page Descriptor
-    desc |= (1ULL << 10U);                                        // Access Flag (AF)
+    auto* const l3_table = table_ptr_from_phys(l2_table[l2_idx] & TABLE_ADDR_MASK, mmu_on);
+
+    uint64_t desc = (phys_addr & TABLE_ADDR_MASK) | DESC_TYPE_TABLE; // Valid + Page Descriptor
+    desc |= DESC_AF;
 
     const bool is_write = HAL::has_flag(flags, HAL::PageFlags::Write);
     const bool is_user = HAL::has_flag(flags, HAL::PageFlags::User);
@@ -133,27 +210,24 @@ bool map_page_in_root(uint64_t* root_l0, uintptr_t virt_addr, uintptr_t phys_add
     const uint64_t attr_idx = is_device ? 0ULL : 1ULL;
     desc |= (attr_idx << 2U);
 
-    uint64_t ap_ = 0ULL;
+    uint64_t ap_bits = 0ULL;
     if (!is_write) {
-        ap_ = is_user ? 0x3ULL : 0x2ULL;
+        ap_bits = is_user ? 0x3ULL : 0x2ULL;
     } else {
-        ap_ = is_user ? 0x1ULL : 0x0ULL;
+        ap_bits = is_user ? 0x1ULL : 0x0ULL;
     }
-    desc |= (ap_ << 6U);
+    desc |= (ap_bits << 6U);
 
     if (!is_device) {
-        desc |= (3ULL << 8U); // Inner Shareable
+        desc |= DESC_SH_ISH;
     }
 
     if (!is_exec) {
-        desc |= (1ULL << 53U); // PXN
-        desc |= (1ULL << 54U); // UXN
+        desc |= DESC_PXN | DESC_UXN;
+    } else if (is_user) {
+        desc |= DESC_PXN;
     } else {
-        if (is_user) {
-            desc |= (1ULL << 53U); // PXN
-        } else {
-            desc |= (1ULL << 54U); // UXN
-        }
+        desc |= DESC_UXN;
     }
 
     l3_table[l3_idx] = desc;
@@ -166,29 +240,57 @@ bool unmap_page_in_root(const uint64_t* root_l0, uintptr_t virt_addr) noexcept {
     const size_t l1_idx = (virt_addr >> 30U) & 0x1FFU;
     const size_t l2_idx = (virt_addr >> 21U) & 0x1FFU;
     const size_t l3_idx = (virt_addr >> 12U) & 0x1FFU;
+    const bool mmu_on = is_mmu_enabled();
 
-    if ((root_l0[l0_idx] & 1U) == 0U) {
+    const uint64_t l0_desc = root_l0[l0_idx];
+    if ((l0_desc & DESC_TYPE_TABLE) != DESC_TYPE_TABLE) {
         return false;
     }
-    const auto* l1_table =
-        reinterpret_cast<const uint64_t*>(root_l0[l0_idx] & 0x000FFFFFFFFFF000ULL);
+    const auto* const l1_table = table_ptr_from_phys(l0_desc & TABLE_ADDR_MASK, mmu_on);
 
-    if ((l1_table[l1_idx] & 1U) == 0U) {
+    const uint64_t l1_desc = l1_table[l1_idx];
+    if ((l1_desc & DESC_TYPE_TABLE) != DESC_TYPE_TABLE) {
         return false;
     }
-    const auto* l2_table =
-        reinterpret_cast<const uint64_t*>(l1_table[l1_idx] & 0x000FFFFFFFFFF000ULL);
+    const auto* const l2_table = table_ptr_from_phys(l1_desc & TABLE_ADDR_MASK, mmu_on);
 
-    if ((l2_table[l2_idx] & 1U) == 0U) {
+    const uint64_t l2_desc = l2_table[l2_idx];
+    if ((l2_desc & DESC_TYPE_TABLE) != DESC_TYPE_TABLE) {
         return false;
     }
-    auto* l3_table = reinterpret_cast<uint64_t*>(l2_table[l2_idx] & 0x000FFFFFFFFFF000ULL);
+    auto* const l3_table = table_ptr_from_phys(l2_desc & TABLE_ADDR_MASK, mmu_on);
 
     l3_table[l3_idx] = 0ULL;
     flush_dcache_range(reinterpret_cast<uintptr_t>(&l3_table[l3_idx]), sizeof(uint64_t));
 
     asm volatile("tlbi vaae1is, %0; dsb ish; isb" ::"r"(virt_addr >> 12U) : "memory");
     return true;
+}
+
+void map_ram_range_hybrid(uint64_t* root_l0, uintptr_t va_offset, uintptr_t range_start,
+                          uintptr_t range_end, uintptr_t excl_start, uintptr_t excl_end) noexcept {
+    const HAL::PageFlags ram_rw = HAL::PageFlags::Read | HAL::PageFlags::Write;
+    uintptr_t addr = range_start;
+
+    while (addr < range_end) {
+        if (addr >= excl_start && addr < excl_end) {
+            addr = excl_end;
+            continue;
+        }
+
+        const bool is_2m_aligned = (addr & (Arch::BLOCK_SIZE_2M - 1U)) == 0U;
+        const bool fits_in_range = (range_end - addr) >= Arch::BLOCK_SIZE_2M;
+        const uintptr_t block_end = addr + Arch::BLOCK_SIZE_2M;
+        const bool overlaps_excl = (addr < excl_end) && (block_end > excl_start);
+
+        if (is_2m_aligned && fits_in_range && !overlaps_excl) {
+            map_block_2m_in_root(root_l0, addr + va_offset, addr);
+            addr = block_end;
+        } else {
+            map_page_in_root(root_l0, addr + va_offset, addr, ram_rw);
+            addr += Arch::PAGE_SIZE;
+        }
+    }
 }
 
 class AArch64MemoryControl : public HAL::MemoryControl {
@@ -210,13 +312,20 @@ class AArch64MemoryControl : public HAL::MemoryControl {
     }
 
     void activate() override {
+        const HAL::PlatformInfo platform = HAL::get_platform_info();
         const uintptr_t text_start = reinterpret_cast<uintptr_t>(_text_start);
         const uintptr_t text_end = reinterpret_cast<uintptr_t>(_text_end);
         const uintptr_t rodata_start = reinterpret_cast<uintptr_t>(_rodata_start);
         const uintptr_t rodata_end = reinterpret_cast<uintptr_t>(_rodata_end);
         const uintptr_t data_start = reinterpret_cast<uintptr_t>(_data_start);
-        const uintptr_t ram_end = Arch::RAM_BASE + (256UL * 1024UL * 1024UL);
-        const uintptr_t higher_half_offset = 0xFFFF800000000000ULL;
+        const uintptr_t bss_end = reinterpret_cast<uintptr_t>(__bss_end);
+
+        const uintptr_t kernel_start = align_down_page(text_start);
+        const uintptr_t kernel_end = align_up_page(bss_end);
+
+        const uintptr_t ram_base = platform.ram_base;
+        const uintptr_t ram_end = platform.ram_base + platform.ram_size;
+        const uintptr_t higher_half_offset = platform.higher_half_offset;
 
         const HAL::PageFlags dev_rw =
             HAL::PageFlags::Read | HAL::PageFlags::Write | HAL::PageFlags::Device;
@@ -230,43 +339,30 @@ class AArch64MemoryControl : public HAL::MemoryControl {
         map_page_in_root(g_ttbr1_l0, 0x08010000ULL + higher_half_offset, 0x08010000U, dev_rw);
         map_page_in_root(g_ttbr1_l0, 0x09000000ULL + higher_half_offset, 0x09000000U, dev_rw);
 
-        // 2. Identity map low RAM below kernel text (0x40000000 to text_start)
-        for (uintptr_t addr = Arch::RAM_BASE; addr < text_start; addr += Arch::PAGE_SIZE) {
-            map_page_in_root(g_ttbr0_l0, addr, addr, HAL::PageFlags::Read | HAL::PageFlags::Write);
-        }
-
-        // 3. Identity map Kernel .text (RO + Executable)
+        // 2. Map Kernel ELF Segments at 4 KiB L3 granularity (enforcing W^X) in TTBR0 and TTBR1
         for (uintptr_t addr = text_start; addr < text_end; addr += Arch::PAGE_SIZE) {
             map_page_in_root(g_ttbr0_l0, addr, addr,
                              HAL::PageFlags::Read | HAL::PageFlags::Execute);
-        }
-
-        // 4. Identity map Kernel .rodata (RO + NX)
-        for (uintptr_t addr = rodata_start; addr < rodata_end; addr += Arch::PAGE_SIZE) {
-            map_page_in_root(g_ttbr0_l0, addr, addr, HAL::PageFlags::Read);
-        }
-
-        // 5. Identity map Kernel .data, .bss, boot stack, and physical RAM pool
-        for (uintptr_t addr = data_start; addr < ram_end; addr += Arch::PAGE_SIZE) {
-            map_page_in_root(g_ttbr0_l0, addr, addr, HAL::PageFlags::Read | HAL::PageFlags::Write);
-        }
-
-        // 6. Higher-half kernel space mappings for TTBR1_EL1 (0xFFFF800040000000+)
-        for (uintptr_t addr = Arch::RAM_BASE; addr < text_start; addr += Arch::PAGE_SIZE) {
-            map_page_in_root(g_ttbr1_l0, addr + higher_half_offset, addr,
-                             HAL::PageFlags::Read | HAL::PageFlags::Write);
-        }
-        for (uintptr_t addr = text_start; addr < text_end; addr += Arch::PAGE_SIZE) {
             map_page_in_root(g_ttbr1_l0, addr + higher_half_offset, addr,
                              HAL::PageFlags::Read | HAL::PageFlags::Execute);
         }
+
         for (uintptr_t addr = rodata_start; addr < rodata_end; addr += Arch::PAGE_SIZE) {
+            map_page_in_root(g_ttbr0_l0, addr, addr, HAL::PageFlags::Read);
             map_page_in_root(g_ttbr1_l0, addr + higher_half_offset, addr, HAL::PageFlags::Read);
         }
-        for (uintptr_t addr = data_start; addr < ram_end; addr += Arch::PAGE_SIZE) {
+
+        for (uintptr_t addr = data_start; addr < kernel_end; addr += Arch::PAGE_SIZE) {
+            map_page_in_root(g_ttbr0_l0, addr, addr, HAL::PageFlags::Read | HAL::PageFlags::Write);
             map_page_in_root(g_ttbr1_l0, addr + higher_half_offset, addr,
                              HAL::PageFlags::Read | HAL::PageFlags::Write);
         }
+
+        // 3. Map full discovered physical RAM outside the kernel image using 2 MiB L2 blocks
+        //    for aligned spans and 4 KiB L3 pages for unaligned leading/trailing boundaries.
+        map_ram_range_hybrid(g_ttbr0_l0, 0U, ram_base, ram_end, kernel_start, kernel_end);
+        map_ram_range_hybrid(g_ttbr1_l0, higher_half_offset, ram_base, ram_end, kernel_start,
+                             kernel_end);
 
         Arch::init_mmu(reinterpret_cast<uintptr_t>(g_ttbr0_l0),
                        reinterpret_cast<uintptr_t>(g_ttbr1_l0));
