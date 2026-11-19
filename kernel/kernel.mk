@@ -13,4 +13,5 @@ SRCS_CXX += kernel/main.cpp \
             kernel/process/stack_builder.cpp \
             kernel/process/process.cpp \
             kernel/process/scheduler.cpp \
-            kernel/process/wait_queue.cpp
+            kernel/process/wait_queue.cpp \
+            kernel/mm/heap.cpp

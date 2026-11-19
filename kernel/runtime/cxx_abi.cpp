@@ -1,6 +1,25 @@
+#include "hal/console.hpp"
 #include "hal/cpu.hpp"
+#include "mm/heap.hpp"
 
 #include <cstddef>
+#include <new>
+
+namespace {
+
+[[noreturn]] void kernel_heap_oom_panic() noexcept {
+    constexpr char msg[] = "\r\n[PANIC] Kernel heap OOM\r\n";
+    HAL::get_console().write(msg, sizeof(msg) - 1U);
+    while (true) {
+        HAL::get_cpu().halt();
+    }
+}
+
+} // namespace
+
+namespace std {
+const nothrow_t nothrow{};
+} // namespace std
 
 extern "C" {
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp)
@@ -57,31 +76,114 @@ int memcmp(const void* str1, const void* str2, size_t count) noexcept {
 }
 }
 
-// Standard operator new must not return nullptr.
-// Since no heap allocator exists yet, halt execution on accidental dynamic allocation.
-void* operator new([[maybe_unused]] size_t size) {
-    while (true) {
-        HAL::get_cpu().halt();
-    }
-}
+// ==========================================================================
+// Throwing Global Allocation Operators (Panic & Halt on OOM)
+// ==========================================================================
 
-void* operator new[]([[maybe_unused]] size_t size) {
-    while (true) {
-        HAL::get_cpu().halt();
+void* operator new(size_t size) {
+    void* const ptr = Kernel::MM::kmalloc(size, 16U);
+    if (ptr == nullptr) {
+        kernel_heap_oom_panic();
     }
-}
-
-// Placement new (allows constructing objects at pre-allocated buffer addresses)
-void* operator new([[maybe_unused]] size_t size, void* ptr) noexcept {
     return ptr;
 }
 
-void* operator new[]([[maybe_unused]] size_t size, void* ptr) noexcept {
+void* operator new[](size_t size) {
+    void* const ptr = Kernel::MM::kmalloc(size, 16U);
+    if (ptr == nullptr) {
+        kernel_heap_oom_panic();
+    }
     return ptr;
 }
 
-// Global Memory Deallocation Operators
-void operator delete([[maybe_unused]] void* ptr) noexcept {}
-void operator delete[]([[maybe_unused]] void* ptr) noexcept {}
-void operator delete([[maybe_unused]] void* ptr, [[maybe_unused]] size_t size) noexcept {}
-void operator delete[]([[maybe_unused]] void* ptr, [[maybe_unused]] size_t size) noexcept {}
+void* operator new(size_t size, std::align_val_t align) {
+    void* const ptr = Kernel::MM::kmalloc(size, static_cast<size_t>(align));
+    if (ptr == nullptr) {
+        kernel_heap_oom_panic();
+    }
+    return ptr;
+}
+
+void* operator new[](size_t size, std::align_val_t align) {
+    void* const ptr = Kernel::MM::kmalloc(size, static_cast<size_t>(align));
+    if (ptr == nullptr) {
+        kernel_heap_oom_panic();
+    }
+    return ptr;
+}
+
+// ==========================================================================
+// Non-Throwing Global Allocation Operators (Return nullptr on OOM)
+// ==========================================================================
+
+void* operator new(size_t size, const std::nothrow_t&) noexcept {
+    return Kernel::MM::kmalloc(size, 16U);
+}
+
+void* operator new[](size_t size, const std::nothrow_t&) noexcept {
+    return Kernel::MM::kmalloc(size, 16U);
+}
+
+void* operator new(size_t size, std::align_val_t align, const std::nothrow_t&) noexcept {
+    return Kernel::MM::kmalloc(size, static_cast<size_t>(align));
+}
+
+void* operator new[](size_t size, std::align_val_t align, const std::nothrow_t&) noexcept {
+    return Kernel::MM::kmalloc(size, static_cast<size_t>(align));
+}
+
+// ==========================================================================
+// Global Deallocation Operators
+// ==========================================================================
+
+void operator delete(void* ptr) noexcept {
+    Kernel::MM::kfree(ptr);
+}
+
+void operator delete[](void* ptr) noexcept {
+    Kernel::MM::kfree(ptr);
+}
+
+void operator delete(void* ptr, [[maybe_unused]] size_t size) noexcept {
+    Kernel::MM::kfree(ptr);
+}
+
+void operator delete[](void* ptr, [[maybe_unused]] size_t size) noexcept {
+    Kernel::MM::kfree(ptr);
+}
+
+void operator delete(void* ptr, [[maybe_unused]] std::align_val_t align) noexcept {
+    Kernel::MM::kfree(ptr);
+}
+
+void operator delete[](void* ptr, [[maybe_unused]] std::align_val_t align) noexcept {
+    Kernel::MM::kfree(ptr);
+}
+
+void operator delete(void* ptr, [[maybe_unused]] size_t size,
+                     [[maybe_unused]] std::align_val_t align) noexcept {
+    Kernel::MM::kfree(ptr);
+}
+
+void operator delete[](void* ptr, [[maybe_unused]] size_t size,
+                       [[maybe_unused]] std::align_val_t align) noexcept {
+    Kernel::MM::kfree(ptr);
+}
+
+void operator delete(void* ptr, const std::nothrow_t&) noexcept {
+    Kernel::MM::kfree(ptr);
+}
+
+void operator delete[](void* ptr, const std::nothrow_t&) noexcept {
+    Kernel::MM::kfree(ptr);
+}
+
+void operator delete(void* ptr, [[maybe_unused]] std::align_val_t align,
+                     const std::nothrow_t&) noexcept {
+    Kernel::MM::kfree(ptr);
+}
+
+void operator delete[](void* ptr, [[maybe_unused]] std::align_val_t align,
+                       const std::nothrow_t&) noexcept {
+    Kernel::MM::kfree(ptr);
+}
