@@ -4,6 +4,7 @@
 #include "hal/mmu.hpp"
 #include "hal/targets/qemu_virt/gicv2.hpp"
 #include "hal/targets/qemu_virt/timer.hpp"
+#include "mm/heap.hpp"
 #include "mm/pfa.hpp"
 #include "process/scheduler.hpp"
 #include "shell/shell.hpp"
@@ -88,14 +89,18 @@ extern "C" void kmain(uintptr_t dtb_paddr) {
     pfa_on_mmu_enabled();
     print_str("[KERNEL] MMU Activated successfully.\r\n");
 
-    // 6. Initialize GICv2, 100Hz Timer, and Preemptive Scheduler
+    // Stage 6: Kernel Slab & Compound Heap Allocator Initialization
+    Kernel::MM::heap_init();
+    print_str("[KERNEL] Kernel Heap Allocator initialized.\r\n");
+
+    // Stage 7: Initialize GICv2, 100Hz Timer, and Preemptive Scheduler
     HAL::QemuVirt::GicV2::init();
     HAL::QemuVirt::GenericTimer::init(100U);
     HAL::QemuVirt::GicV2::enable_irq(HAL::QemuVirt::TIMER_PPI_IRQ);
     Kernel::Scheduler::init();
     print_str("[KERNEL] GICv2 & 100Hz Preemptive Scheduler initialized.\r\n");
 
-    // 7. Drop into interactive kernel shell
+    // Stage 8: Drop into interactive kernel shell
     HAL::get_cpu().disable_interrupts();
     Kernel::Shell::run();
 }
