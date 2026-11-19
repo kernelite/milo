@@ -1,42 +1,107 @@
 #include "process/scheduler.hpp"
 
+#include "hal/console.hpp"
 #include "hal/cpu.hpp"
+#include "mm/address_space.hpp"
 
 namespace {
 
-constexpr size_t MAX_RUNQUEUE_SIZE = Kernel::Process::MAX_PROCESSES;
+constinit Kernel::Scheduler::Runqueue g_runqueue{};
+HAL::KernelContext g_idle_kctx{};
+uint64_t g_timer_ticks = 0ULL;
+bool g_in_schedule = false;
 
-struct Runqueue {
-    Kernel::Process::Process* queue[MAX_RUNQUEUE_SIZE]{nullptr};
-    size_t head{0U};
-    size_t tail{0U};
-    size_t count{0U};
-};
-
-Runqueue g_rq{};
-HAL::KernelContext g_bootstrap_kctx{};
-bool g_bootstrap_active = false;
-volatile uint64_t g_timer_ticks = 0ULL;
+[[noreturn]] void scheduler_atomic_panic(const char* msg) noexcept {
+    size_t len = 0U;
+    while (msg[len] != '\0') {
+        len++;
+    }
+    HAL::get_console().write(msg, len);
+    while (true) {
+        HAL::get_cpu().halt();
+    }
+}
 
 } // namespace
 
 namespace Kernel::Scheduler {
 
-void init() noexcept {
-    g_rq.head = 0U;
-    g_rq.tail = 0U;
-    g_rq.count = 0U;
-    g_bootstrap_active = false;
-    g_timer_ticks = 0ULL;
+void Runqueue::enqueue(Process::Process* proc) noexcept {
+    if (proc == nullptr || proc->on_runqueue) {
+        return;
+    }
+
+    proc->rq_prev = m_tail;
+    proc->rq_next = nullptr;
+    if (m_tail != nullptr) {
+        m_tail->rq_next = proc;
+    } else {
+        m_head = proc;
+    }
+    m_tail = proc;
+    proc->on_runqueue = true;
+    m_count++;
 }
 
-uint64_t timer_ticks() noexcept {
-    return g_timer_ticks;
+Process::Process* Runqueue::dequeue() noexcept {
+    if (m_head == nullptr) {
+        return nullptr;
+    }
+
+    Process::Process* const proc = m_head;
+    m_head = proc->rq_next;
+    if (m_head != nullptr) {
+        m_head->rq_prev = nullptr;
+    } else {
+        m_tail = nullptr;
+    }
+
+    proc->rq_next = nullptr;
+    proc->rq_prev = nullptr;
+    proc->on_runqueue = false;
+    m_count--;
+    return proc;
+}
+
+void Runqueue::remove(Process::Process* proc) noexcept {
+    if (proc == nullptr || !proc->on_runqueue) {
+        return;
+    }
+
+    if (proc->rq_prev != nullptr) {
+        proc->rq_prev->rq_next = proc->rq_next;
+    } else {
+        m_head = proc->rq_next;
+    }
+
+    if (proc->rq_next != nullptr) {
+        proc->rq_next->rq_prev = proc->rq_prev;
+    } else {
+        m_tail = proc->rq_prev;
+    }
+
+    proc->rq_next = nullptr;
+    proc->rq_prev = nullptr;
+    proc->on_runqueue = false;
+    m_count--;
+}
+
+void init() noexcept {
+    auto& cpu = HAL::get_cpu();
+    const bool irq_was_enabled = cpu.interrupts_enabled();
+    cpu.disable_interrupts();
+
+    g_runqueue = Runqueue{};
+    g_timer_ticks = 0ULL;
+    g_in_schedule = false;
+
+    if (irq_was_enabled) {
+        cpu.enable_interrupts();
+    }
 }
 
 void enqueue(Process::Process* proc) noexcept {
-    if (proc == nullptr || proc->state == Process::ProcessState::Unused ||
-        proc->state == Process::ProcessState::Zombie) {
+    if (proc == nullptr) {
         return;
     }
 
@@ -44,29 +109,33 @@ void enqueue(Process::Process* proc) noexcept {
     const bool irq_was_enabled = cpu.interrupts_enabled();
     cpu.disable_interrupts();
 
-    for (size_t i = 0U; i < g_rq.count; ++i) {
-        const size_t idx = (g_rq.head + i) % MAX_RUNQUEUE_SIZE;
-        if (g_rq.queue[idx] == proc) {
-            proc->state = Process::ProcessState::Ready;
-            if (irq_was_enabled) {
-                cpu.enable_interrupts();
-            }
-            return;
-        }
-    }
-
-    if (g_rq.count < MAX_RUNQUEUE_SIZE) {
-        if (!proc->kctx_initialized) {
-            Process::prepare_process_kstack(*proc);
+    if (proc->state != Process::ProcessState::Zombie &&
+        proc->state != Process::ProcessState::Unused) {
+        if (proc->active_wq != nullptr) {
+            proc->active_wq->remove(proc);
         }
         proc->state = Process::ProcessState::Ready;
         if (proc->timeslice == 0U) {
             proc->timeslice = DEFAULT_TIMESLICE_TICKS;
         }
-        g_rq.queue[g_rq.tail] = proc;
-        g_rq.tail = (g_rq.tail + 1U) % MAX_RUNQUEUE_SIZE;
-        g_rq.count++;
+        g_runqueue.enqueue(proc);
     }
+
+    if (irq_was_enabled) {
+        cpu.enable_interrupts();
+    }
+}
+
+void remove(Process::Process* proc) noexcept {
+    if (proc == nullptr) {
+        return;
+    }
+
+    auto& cpu = HAL::get_cpu();
+    const bool irq_was_enabled = cpu.interrupts_enabled();
+    cpu.disable_interrupts();
+
+    g_runqueue.remove(proc);
 
     if (irq_was_enabled) {
         cpu.enable_interrupts();
@@ -78,11 +147,6 @@ void yield() noexcept {
     const bool irq_was_enabled = cpu.interrupts_enabled();
     cpu.disable_interrupts();
 
-    auto* const current = Process::current_process();
-    if (current != nullptr && current->state == Process::ProcessState::Running) {
-        current->timeslice = DEFAULT_TIMESLICE_TICKS;
-        enqueue(current);
-    }
     schedule();
 
     if (irq_was_enabled) {
@@ -90,94 +154,135 @@ void yield() noexcept {
     }
 }
 
+bool is_in_atomic_context() noexcept {
+    return g_in_schedule || !HAL::get_cpu().interrupts_enabled();
+}
+
 void schedule() noexcept {
     auto& cpu = HAL::get_cpu();
-    cpu.disable_interrupts();
 
-    auto* const current = Process::current_process();
-
-    while (g_rq.count == 0U) {
-        if (current != nullptr && current->state == Process::ProcessState::Running) {
-            return; // Current process is the sole runnable task
-        }
-
-        if (!Process::has_runnable_processes()) {
-            // All scheduled processes have exited; return to bootstrap caller
-            Process::set_current_process(nullptr);
-            if (g_bootstrap_active) {
-                g_bootstrap_active = false;
-                HAL::KernelContext* prev_kctx = (current != nullptr) ? &current->kctx : nullptr;
-                cpu.switch_kernel_context(prev_kctx, &g_bootstrap_kctx);
-            }
-            return;
-        }
-
-        // At least one process is Blocked waiting for a timer/device IRQ; idle with IRQs enabled
-        cpu.enable_interrupts();
-        cpu.halt();
-        cpu.disable_interrupts();
+    // Debug assertion: schedule() must execute strictly inside an IRQ-disabled atomic boundary
+    if (cpu.interrupts_enabled()) {
+        scheduler_atomic_panic("\r\n[PANIC] Scheduler::schedule() entered with IRQs enabled!\r\n");
+    }
+    if (g_in_schedule) {
+        scheduler_atomic_panic("\r\n[PANIC] Recursive Scheduler::schedule() re-entry!\r\n");
     }
 
-    Process::Process* const next = g_rq.queue[g_rq.head];
-    g_rq.queue[g_rq.head] = nullptr;
-    g_rq.head = (g_rq.head + 1U) % MAX_RUNQUEUE_SIZE;
-    g_rq.count--;
+    g_in_schedule = true;
+
+    Process::Process* const prev = Process::current_process();
+    if (prev != nullptr && prev->state == Process::ProcessState::Running) {
+        if (g_runqueue.empty()) {
+            prev->timeslice = DEFAULT_TIMESLICE_TICKS;
+            g_in_schedule = false;
+            return;
+        }
+        prev->state = Process::ProcessState::Ready;
+        g_runqueue.enqueue(prev);
+    }
+
+    Process::Process* next = g_runqueue.dequeue();
+    while (next != nullptr && next->state != Process::ProcessState::Ready) {
+        next = g_runqueue.dequeue();
+    }
 
     if (next == nullptr) {
+        Process::set_current_process(nullptr);
+        g_in_schedule = false;
+        if (prev != nullptr) {
+            HAL::KernelContext* const prev_kctx =
+                (prev->state == Process::ProcessState::Zombie) ? nullptr : &prev->kctx;
+            cpu.switch_kernel_context(prev_kctx, &g_idle_kctx);
+        }
         return;
     }
 
+    if (!next->kctx_initialized) {
+        Process::prepare_process_kstack(*next);
+    }
+
+    next->state = Process::ProcessState::Running;
     if (next->timeslice == 0U) {
         next->timeslice = DEFAULT_TIMESLICE_TICKS;
     }
-    next->state = Process::ProcessState::Running;
     Process::set_current_process(next);
-
-    if (current == next) {
-        return;
-    }
 
     if (next->address_space.is_valid()) {
         next->address_space.activate();
     }
 
-    HAL::KernelContext* prev_kctx = nullptr;
-    if (current != nullptr) {
-        prev_kctx = &current->kctx;
-    } else if (g_bootstrap_active) {
-        prev_kctx = &g_bootstrap_kctx;
-    }
-    cpu.switch_kernel_context(prev_kctx, &next->kctx);
-}
+    g_in_schedule = false;
 
-void on_timer_tick() noexcept {
-    g_timer_ticks = g_timer_ticks + 1ULL;
-    Process::poll_console_tty();
-
-    auto* const current = Process::current_process();
-    if (current == nullptr || current->state != Process::ProcessState::Running) {
+    if (prev == next) {
         return;
     }
 
-    current->cpu_ticks++;
-
-    if (current->timeslice > 0U) {
-        current->timeslice--;
+    HAL::KernelContext* prev_kctx = nullptr;
+    if (prev == nullptr) {
+        prev_kctx = &g_idle_kctx;
+    } else if (prev->state != Process::ProcessState::Zombie) {
+        prev_kctx = &prev->kctx;
     }
 
-    if (current->timeslice == 0U) {
-        current->timeslice = DEFAULT_TIMESLICE_TICKS;
-        enqueue(current);
-        schedule();
+    cpu.switch_kernel_context(prev_kctx, &next->kctx);
+}
+
+void on_timer_tick(bool from_user) noexcept {
+    auto& cpu = HAL::get_cpu();
+    const bool irq_was_enabled = cpu.interrupts_enabled();
+    cpu.disable_interrupts();
+
+    g_timer_ticks++;
+
+    auto* const current = Process::current_process();
+    if (current != nullptr && current->state == Process::ProcessState::Running) {
+        if (from_user) {
+            current->utime++;
+        } else {
+            current->stime++;
+        }
+
+        if (current->timeslice > 0U) {
+            current->timeslice--;
+        }
+        if (current->timeslice == 0U) {
+            current->timeslice = DEFAULT_TIMESLICE_TICKS;
+            schedule();
+        }
     }
+
+    if (irq_was_enabled) {
+        cpu.enable_interrupts();
+    }
+}
+
+uint64_t timer_ticks() noexcept {
+    return g_timer_ticks;
 }
 
 void run_until_idle() noexcept {
     auto& cpu = HAL::get_cpu();
+    const bool irq_was_enabled = cpu.interrupts_enabled();
     cpu.disable_interrupts();
-    g_bootstrap_active = true;
-    schedule();
-    cpu.disable_interrupts();
+
+    while (Process::has_runnable_processes()) {
+        if (!g_runqueue.empty()) {
+            schedule();
+        } else {
+            Process::poll_console_tty();
+            if (!g_runqueue.empty()) {
+                continue;
+            }
+            cpu.enable_interrupts();
+            cpu.halt();
+            cpu.disable_interrupts();
+        }
+    }
+
+    if (irq_was_enabled) {
+        cpu.enable_interrupts();
+    }
 }
 
 } // namespace Kernel::Scheduler

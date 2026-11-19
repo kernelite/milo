@@ -1455,7 +1455,7 @@ void cmd_test_proc_exit() noexcept {
 
     free_frame(code1_paddr);
     Kernel::Process::release_process(*proc1);
-    assert_test(proc1->state == Kernel::Process::ProcessState::Unused &&
+    assert_test(Kernel::Process::find_process_by_pid(pid1) == nullptr &&
                     pfa_allocated_pages_count() == pages_before,
                 "Reaping PCB 1 freed all physical frames back to baseline");
 
@@ -1862,6 +1862,7 @@ void cmd_test_heap() noexcept {
     assert_test(nothrow_ok != nullptr && nothrow_oom == nullptr,
                 "std::nothrow operator new succeeds normally and returns nullptr on OOM");
     delete[] nothrow_ok;
+    delete[] nothrow_oom;
 
     // 4. Zero-size kmalloc(0) & krealloc cross-class / compound stress loop
     void* z0 = Kernel::MM::kmalloc(0U);

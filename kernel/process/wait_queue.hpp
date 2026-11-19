@@ -6,8 +6,6 @@ namespace Kernel::Process {
 
 struct Process;
 
-constexpr size_t MAX_WAITERS = 64U;
-
 class WaitQueue {
   public:
     constexpr WaitQueue() = default;
@@ -15,15 +13,17 @@ class WaitQueue {
     void sleep() noexcept;
     void wake_one() noexcept;
     void wake_all() noexcept;
-    [[nodiscard]] bool empty() const noexcept { return m_count == 0U; }
+    void remove(Process* proc) noexcept;
+
+    [[nodiscard]] bool empty() const noexcept { return m_head == nullptr; }
+    [[nodiscard]] size_t size() const noexcept { return m_count; }
 
   private:
-    Process* m_waiters[MAX_WAITERS]{nullptr};
-    size_t m_head{0U};
-    size_t m_tail{0U};
+    Process* m_head{nullptr};
+    Process* m_tail{nullptr};
     size_t m_count{0U};
 
-    bool enqueue(Process* proc) noexcept;
+    void enqueue(Process* proc) noexcept;
     Process* dequeue() noexcept;
 };
 
