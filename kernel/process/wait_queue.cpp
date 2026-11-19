@@ -6,25 +6,64 @@
 
 namespace Kernel::Process {
 
-bool WaitQueue::enqueue(Process* proc) noexcept {
-    if (m_count >= MAX_WAITERS || proc == nullptr) {
-        return false;
+void WaitQueue::enqueue(Process* proc) noexcept {
+    if (proc == nullptr || proc->active_wq != nullptr) {
+        return;
     }
-    m_waiters[m_tail] = proc;
-    m_tail = (m_tail + 1U) % MAX_WAITERS;
+
+    proc->wq_prev = m_tail;
+    proc->wq_next = nullptr;
+    if (m_tail != nullptr) {
+        m_tail->wq_next = proc;
+    } else {
+        m_head = proc;
+    }
+    m_tail = proc;
+    proc->active_wq = this;
     m_count++;
-    return true;
 }
 
 Process* WaitQueue::dequeue() noexcept {
-    if (m_count == 0U) {
+    if (m_head == nullptr) {
         return nullptr;
     }
-    Process* proc = m_waiters[m_head];
-    m_waiters[m_head] = nullptr;
-    m_head = (m_head + 1U) % MAX_WAITERS;
+
+    Process* const proc = m_head;
+    m_head = proc->wq_next;
+    if (m_head != nullptr) {
+        m_head->wq_prev = nullptr;
+    } else {
+        m_tail = nullptr;
+    }
+
+    proc->wq_next = nullptr;
+    proc->wq_prev = nullptr;
+    proc->active_wq = nullptr;
     m_count--;
     return proc;
+}
+
+void WaitQueue::remove(Process* proc) noexcept {
+    if (proc == nullptr || proc->active_wq != this) {
+        return;
+    }
+
+    if (proc->wq_prev != nullptr) {
+        proc->wq_prev->wq_next = proc->wq_next;
+    } else {
+        m_head = proc->wq_next;
+    }
+
+    if (proc->wq_next != nullptr) {
+        proc->wq_next->wq_prev = proc->wq_prev;
+    } else {
+        m_tail = proc->wq_prev;
+    }
+
+    proc->wq_next = nullptr;
+    proc->wq_prev = nullptr;
+    proc->active_wq = nullptr;
+    m_count--;
 }
 
 void WaitQueue::sleep() noexcept {
@@ -33,7 +72,8 @@ void WaitQueue::sleep() noexcept {
     cpu.disable_interrupts();
 
     auto* const current = current_process();
-    if (current != nullptr && enqueue(current)) {
+    if (current != nullptr) {
+        enqueue(current);
         current->state = ProcessState::Blocked;
         Scheduler::schedule();
     }
@@ -63,7 +103,7 @@ void WaitQueue::wake_all() noexcept {
     const bool irq_was_enabled = cpu.interrupts_enabled();
     cpu.disable_interrupts();
 
-    while (m_count > 0U) {
+    while (m_head != nullptr) {
         Process* const proc = dequeue();
         if (proc != nullptr) {
             Scheduler::enqueue(proc);
