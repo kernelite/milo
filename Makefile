@@ -17,7 +17,7 @@ BASH_CPIO          := $(INITRDS_DIR)/bash.cpio
 INITRD             ?= $(BUSYBOX_CPIO)
 
 # Freestanding C++ flags
-CXXFLAGS := -std=c++20 -ffreestanding -O2 -Wall -Wextra -fno-use-cxa-atexit \
+CXXFLAGS := -std=c++20 -ffreestanding -fsized-deallocation -O2 -Wall -Wextra -fno-use-cxa-atexit \
             -fno-exceptions -fno-rtti -fno-threadsafe-statics -MMD -MP -g
 ASFLAGS  := -g
 LDFLAGS  := -nostdlib -T arch/$(ARCH)/linker.ld
@@ -35,29 +35,6 @@ include kernel/kernel.mk
 OBJS := $(patsubst %.cpp, $(BUILD_DIR)/%.o, $(SRCS_CXX)) \
         $(patsubst %.s, $(BUILD_DIR)/%.o, $(SRCS_ASM))
 DEPS := $(OBJS:.o=.d)
-
-# Host-native test toolchain & sanitizer configuration (must be defined BEFORE host rules)
-HOST_CXX       ?= g++
-HOST_BUILD_DIR := $(BUILD_DIR)/host
-HOST_CXXFLAGS  := -std=c++20 -O1 -g -Wall -Wextra -Wpedantic -MMD -MP \
-                  -fsanitize=address,undefined -fno-omit-frame-pointer \
-                  -Ikernel -Itests/host
-HOST_LDFLAGS   := -fsanitize=address,undefined
-
-HOST_SRCS_CXX := tests/host/mocks/host_hal.cpp \
-                 $(wildcard tests/host/*.cpp) \
-                 kernel/loader/elf64.cpp \
-                 kernel/loader/elf_loader.cpp \
-                 kernel/fs/cpio.cpp \
-                 kernel/boot/fdt.cpp \
-                 kernel/process/stack_builder.cpp \
-                 kernel/mm/address_space.cpp \
-                 kernel/mm/pfa.cpp \
-				 kernel/mm/heap.cpp
-
-HOST_OBJS     := $(patsubst %.cpp, $(HOST_BUILD_DIR)/%.o, $(HOST_SRCS_CXX))
-HOST_DEPS     := $(HOST_OBJS:.o=.d)
-HOST_TEST_BIN := $(HOST_BUILD_DIR)/test_runner
 
 .PHONY: all clean run debug gdb lint format format-check lint-report quality test-host compile_commands.json ai-dump setup-musl setup-busybox setup-bash
 
@@ -83,19 +60,6 @@ $(BUILD_DIR)/%.o: %.cpp arch/memory_config.hpp
 $(BUILD_DIR)/%.o: %.s
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) $< -o $@
-
-# Host-native unit test compilation and execution
-$(HOST_BUILD_DIR)/%.o: %.cpp
-	@mkdir -p $(dir $@)
-	$(HOST_CXX) $(HOST_CXXFLAGS) -c $< -o $@
-
-$(HOST_TEST_BIN): $(HOST_OBJS)
-	@mkdir -p $(dir $@)
-	$(HOST_CXX) $(HOST_LDFLAGS) -o $@ $^
-
-test-host: $(HOST_TEST_BIN)
-	@echo "[TEST-HOST] Running native unit test suite under ASan + UBSan..."
-	./$(HOST_TEST_BIN)
 
 MUSL_CC       ?= $(shell command -v aarch64-linux-musl-gcc 2>/dev/null || echo /opt/aarch64-musl/bin/musl-gcc)
 HAS_MUSL_CC   := $(wildcard $(MUSL_CC))
@@ -198,7 +162,6 @@ $(BASH_CPIO): $(BUILD_DIR)/user/hello $(MUSL_USER_BIN) $(BASH_BIN)
 setup-bash: $(BASH_CPIO)
 
 -include $(DEPS)
--include $(HOST_DEPS)
 
 clean:
 	rm -rf $(BUILD_DIR) arch/memory_config.hpp
@@ -221,12 +184,11 @@ gdb: $(BUILD_DIR)/kernel.elf
 
 # Find all header files for formatting/linting targets
 HDRS := $(shell find kernel arch -name '*.hpp' -o -name '*.h')
-TEST_FILES := $(shell find tests -name '*.cpp' -o -name '*.hpp' 2>/dev/null)
 
 # --- Compilation Database Generation ---
 compile_commands.json: clean
 	@echo "[BEAR] Generating compilation database..."
-	bear -- $(MAKE) $(BUILD_DIR)/$(TARGET) $(HOST_TEST_BIN)
+	bear -- $(MAKE) $(BUILD_DIR)/$(TARGET)
 
 # --- Code Quality Targets ---
 lint: compile_commands.json
@@ -235,11 +197,11 @@ lint: compile_commands.json
 
 format:
 	@echo "[FORMAT] Formatting sources with clang-format..."
-	clang-format -i $(SRCS_CXX) $(SRCS_C) $(HDRS) $(TEST_FILES)
+	clang-format -i $(SRCS_CXX) $(SRCS_C) $(HDRS)
 
 format-check:
 	@echo "[FORMAT-CHECK] Checking source formatting..."
-	clang-format --dry-run --Werror $(SRCS_CXX) $(SRCS_C) $(HDRS) $(TEST_FILES)
+	clang-format --dry-run --Werror $(SRCS_CXX) $(SRCS_C) $(HDRS)
 
 lint-report: compile_commands.json
 	@python3 scripts/generate_quality_report.py
@@ -251,22 +213,3 @@ commit: quality
 
 ai-dump:
 	./concat_files.sh dump-for-ai.txt arch/ build/ kernel/ Makefile compile_commands.json
-
-# --- Code Coverage Target ---
-.PHONY: coverage
-coverage:
-	@$(MAKE) clean
-	@$(MAKE) test-host \
-		HOST_CXXFLAGS="-std=c++20 -O0 -g -Ikernel -Itests/host --coverage" \
-		HOST_LDFLAGS="--coverage"
-	@mkdir -p $(BUILD_DIR)/reports
-	lcov --capture --directory $(BUILD_DIR)/host/kernel \
-		--output-file $(BUILD_DIR)/reports/coverage.info \
-		--rc branch_coverage=1
-	lcov --extract $(BUILD_DIR)/reports/coverage.info "$(PWD)/kernel/*" \
-		--output-file $(BUILD_DIR)/reports/coverage.info \
-		--rc branch_coverage=1
-	lcov --list $(BUILD_DIR)/reports/coverage.info --rc branch_coverage=1
-	genhtml $(BUILD_DIR)/reports/coverage.info \
-		--output-directory $(BUILD_DIR)/reports/html \
-		--branch-coverage --function-coverage

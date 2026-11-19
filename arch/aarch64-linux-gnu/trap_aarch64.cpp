@@ -85,21 +85,22 @@ void dump_registers(const AArch64CpuContext* arch_ctx) noexcept {
 extern "C" {
 
 void aarch64_handle_irq_exception(HAL::CpuContext* ctx) noexcept {
-    (void)ctx;
     const uint32_t irq = HAL::QemuVirt::GicV2::acknowledge_irq();
     if (irq >= 1020U) {
         return; // Spurious interrupt
     }
 
+    auto* const arch_ctx = reinterpret_cast<AArch64CpuContext*>(ctx);
+    const bool from_user = (arch_ctx != nullptr) && ((arch_ctx->spsr_el1 & 0x0FU) == 0U);
+
     if (irq == HAL::QemuVirt::TIMER_PPI_IRQ) {
         HAL::QemuVirt::GenericTimer::reload();
         HAL::QemuVirt::GicV2::end_of_interrupt(irq);
-        Kernel::Scheduler::on_timer_tick();
+        Kernel::Scheduler::on_timer_tick(from_user);
         return;
     }
 
-    auto* const arch_ctx = reinterpret_cast<AArch64CpuContext*>(ctx);
-    if (arch_ctx != nullptr && (arch_ctx->spsr_el1 & 0x0FU) == 0U) {
+    if (from_user) {
         Kernel::Process::deliver_pending_signals(*ctx);
     }
 

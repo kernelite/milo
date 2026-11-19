@@ -4,14 +4,67 @@
 #include "mm/pfa.hpp"
 #include "process/scheduler.hpp"
 
+#include <new>
+
 extern "C" void* memcpy(void* dest, const void* src, size_t count) noexcept;
 
 namespace {
 
-Kernel::Process::Process g_process_table[Kernel::Process::MAX_PROCESSES]{};
+Kernel::Process::Process* g_process_list_head = nullptr;
+Kernel::Process::Process* g_process_list_tail = nullptr;
 Kernel::Process::Process* g_current_process = nullptr;
 uint32_t g_next_pid = 1U;
-uint64_t g_pid_cpu_ticks[Kernel::Process::MAX_PROCESSES]{};
+
+// Lightweight circular cache preserving tick telemetry after wait4() reaps & deletes a PCB
+constexpr size_t REAPED_TICKS_CACHE_SIZE = 16U;
+struct ReapedTickRecord {
+    uint32_t pid{0U};
+    uint64_t ticks{0ULL};
+};
+ReapedTickRecord g_reaped_ticks_cache[REAPED_TICKS_CACHE_SIZE]{};
+size_t g_reaped_ticks_cursor = 0U;
+
+void record_reaped_ticks(uint32_t pid, uint64_t ticks) noexcept {
+    if (pid == 0U) {
+        return;
+    }
+    for (size_t i = 0U; i < REAPED_TICKS_CACHE_SIZE; ++i) {
+        if (g_reaped_ticks_cache[i].pid == pid) {
+            g_reaped_ticks_cache[i].ticks = ticks;
+            return;
+        }
+    }
+    g_reaped_ticks_cache[g_reaped_ticks_cursor] = ReapedTickRecord{.pid = pid, .ticks = ticks};
+    g_reaped_ticks_cursor = (g_reaped_ticks_cursor + 1U) % REAPED_TICKS_CACHE_SIZE;
+}
+
+void link_global_process(Kernel::Process::Process& proc) noexcept {
+    proc.global_prev = g_process_list_tail;
+    proc.global_next = nullptr;
+    if (g_process_list_tail != nullptr) {
+        g_process_list_tail->global_next = &proc;
+    } else {
+        g_process_list_head = &proc;
+    }
+    g_process_list_tail = &proc;
+}
+
+void unlink_global_process(Kernel::Process::Process& proc) noexcept {
+    if (proc.global_prev != nullptr) {
+        proc.global_prev->global_next = proc.global_next;
+    } else if (g_process_list_head == &proc) {
+        g_process_list_head = proc.global_next;
+    }
+
+    if (proc.global_next != nullptr) {
+        proc.global_next->global_prev = proc.global_prev;
+    } else if (g_process_list_tail == &proc) {
+        g_process_list_tail = proc.global_prev;
+    }
+
+    proc.global_next = nullptr;
+    proc.global_prev = nullptr;
+}
 
 // Linux AArch64 rt_sigframe layout pushed onto EL0 stack
 struct alignas(16) RtSigFrame {
@@ -114,78 +167,97 @@ void close_cloexec_fds(Process& proc) noexcept {
 Process* allocate_process(uint32_t ppid) noexcept {
     const auto platform = HAL::get_platform_info();
 
-    for (size_t idx = 0U; idx < MAX_PROCESSES; ++idx) {
-        auto& slot = g_process_table[idx];
-        if (slot.state == ProcessState::Unused) {
-            const uintptr_t kstack_paddr = alloc_frames(KERNEL_STACK_PAGES);
-            if (kstack_paddr == 0U) {
-                return nullptr;
-            }
+    auto* const proc = new (std::nothrow) Process{};
+    if (proc == nullptr) {
+        return nullptr;
+    }
 
-            const size_t kstack_bytes = KERNEL_STACK_PAGES * platform.page_size;
-            auto* const kstack_kva = reinterpret_cast<uint8_t*>(MM::phys_to_virt(kstack_paddr));
-            for (size_t byte_idx = 0U; byte_idx < kstack_bytes; ++byte_idx) {
-                kstack_kva[byte_idx] = 0U;
-            }
+    const uintptr_t kstack_paddr = alloc_frames(KERNEL_STACK_PAGES);
+    if (kstack_paddr == 0U) {
+        delete proc;
+        return nullptr;
+    }
 
-            uint32_t candidate_pid = g_next_pid++;
-            if (candidate_pid == 0U) {
-                candidate_pid = g_next_pid++;
-            }
-            while (find_process_by_pid(candidate_pid) != nullptr) {
-                candidate_pid = g_next_pid++;
-                if (candidate_pid == 0U) {
-                    candidate_pid = g_next_pid++;
-                }
-            }
+    const size_t kstack_bytes = KERNEL_STACK_PAGES * platform.page_size;
+    auto* const kstack_kva = reinterpret_cast<uint8_t*>(MM::phys_to_virt(kstack_paddr));
+    for (size_t byte_idx = 0U; byte_idx < kstack_bytes; ++byte_idx) {
+        kstack_kva[byte_idx] = 0U;
+    }
 
-            slot.pid = candidate_pid;
-            slot.ppid = ppid;
-            slot.pgid = candidate_pid;
-            slot.sid = candidate_pid;
-            slot.umask = 0022U;
-            slot.state = ProcessState::Ready;
-            slot.exit_status = 0;
-            slot.timeslice = Scheduler::DEFAULT_TIMESLICE_TICKS;
-            slot.cpu_ticks = 0ULL;
-            slot.children_cpu_ticks = 0ULL;
-            slot.rlim_nofile_cur = MAX_FDS_PER_PROCESS;
-            slot.rlim_nofile_max = MAX_FDS_PER_PROCESS;
-            slot.stop_signal = 0U;
-            slot.stop_reported = false;
-            slot.continued = false;
-            slot.has_saved_sigmask = false;
-            slot.saved_sigmask = 0ULL;
-            slot.address_space = MM::AddressSpace{};
-            slot.context = HAL::CpuContext{};
-            slot.kctx = HAL::KernelContext{};
-            slot.kstack_paddr = kstack_paddr;
-            slot.kstack_top = reinterpret_cast<uintptr_t>(kstack_kva) + kstack_bytes;
-            slot.kctx_initialized = false;
-            slot.user_stack = UserStack{};
-            slot.entry_point = 0U;
-            slot.brk_start = platform.user_brk_base;
-            slot.brk_current = platform.user_brk_base;
-            slot.mmap_next_vaddr = platform.user_mmap_base;
-            slot.clear_child_tid = 0U;
-            slot.child_wait_queue = WaitQueue{};
-            for (size_t i = 0U; i < MAX_PATH_LEN; ++i) {
-                slot.cwd[i] = '\0';
-                slot.exe_path[i] = '\0';
-            }
-            slot.cwd[0] = '/';
-            reset_sigactions(slot);
-            g_pid_cpu_ticks[candidate_pid % MAX_PROCESSES] = 0ULL;
-            init_standard_fds(slot);
-            return &slot;
+    auto& cpu = HAL::get_cpu();
+    const bool irq_was_enabled = cpu.interrupts_enabled();
+    cpu.disable_interrupts();
+
+    uint32_t candidate_pid = g_next_pid++;
+    if (candidate_pid == 0U) {
+        candidate_pid = g_next_pid++;
+    }
+    while (find_process_by_pid(candidate_pid) != nullptr) {
+        candidate_pid = g_next_pid++;
+        if (candidate_pid == 0U) {
+            candidate_pid = g_next_pid++;
         }
     }
-    return nullptr;
+
+    proc->pid = candidate_pid;
+    proc->ppid = ppid;
+    proc->pgid = candidate_pid;
+    proc->sid = candidate_pid;
+    proc->umask = 0022U;
+    proc->state = ProcessState::Ready;
+    proc->exit_status = 0;
+    proc->timeslice = Scheduler::DEFAULT_TIMESLICE_TICKS;
+    proc->utime = 0U;
+    proc->stime = 0U;
+    proc->cutime = 0U;
+    proc->cstime = 0U;
+    proc->rlim_nofile_cur = MAX_FDS_PER_PROCESS;
+    proc->rlim_nofile_max = MAX_FDS_PER_PROCESS;
+    proc->stop_signal = 0U;
+    proc->stop_reported = false;
+    proc->continued = false;
+    proc->has_saved_sigmask = false;
+    proc->saved_sigmask = 0ULL;
+    proc->kstack_paddr = kstack_paddr;
+    proc->kstack_top = reinterpret_cast<uintptr_t>(kstack_kva) + kstack_bytes;
+    proc->kctx_initialized = false;
+    proc->entry_point = 0U;
+    proc->brk_start = platform.user_brk_base;
+    proc->brk_current = platform.user_brk_base;
+    proc->mmap_next_vaddr = platform.user_mmap_base;
+    proc->clear_child_tid = 0U;
+    proc->cwd[0] = '/';
+    proc->cwd[1] = '\0';
+    reset_sigactions(*proc);
+    init_standard_fds(*proc);
+
+    link_global_process(*proc);
+
+    if (irq_was_enabled) {
+        cpu.enable_interrupts();
+    }
+    return proc;
 }
 
 void release_process(Process& proc) noexcept {
+    auto& cpu = HAL::get_cpu();
+    const bool irq_was_enabled = cpu.interrupts_enabled();
+    cpu.disable_interrupts();
+
     if (g_current_process == &proc) {
         g_current_process = nullptr;
+    }
+
+    Scheduler::remove(&proc);
+    if (proc.active_wq != nullptr) {
+        proc.active_wq->remove(&proc);
+    }
+
+    record_reaped_ticks(proc.pid, static_cast<uint64_t>(proc.utime + proc.stime));
+    unlink_global_process(proc);
+
+    if (irq_was_enabled) {
+        cpu.enable_interrupts();
     }
 
     for (size_t idx = 0U; idx < MAX_FDS_PER_PROCESS; ++idx) {
@@ -201,58 +273,29 @@ void release_process(Process& proc) noexcept {
     }
 
     proc.address_space.destroy();
-    proc.pid = 0U;
-    proc.ppid = 0U;
-    proc.pgid = 0U;
-    proc.sid = 0U;
-    proc.umask = 0022U;
-    proc.state = ProcessState::Unused;
-    proc.exit_status = 0;
-    proc.timeslice = 0U;
-    proc.cpu_ticks = 0ULL;
-    proc.children_cpu_ticks = 0ULL;
-    proc.rlim_nofile_cur = MAX_FDS_PER_PROCESS;
-    proc.rlim_nofile_max = MAX_FDS_PER_PROCESS;
-    proc.stop_signal = 0U;
-    proc.stop_reported = false;
-    proc.continued = false;
-    proc.has_saved_sigmask = false;
-    proc.saved_sigmask = 0ULL;
-    proc.context = HAL::CpuContext{};
-    proc.kctx = HAL::KernelContext{};
-    proc.kstack_paddr = 0U;
-    proc.kstack_top = 0U;
-    proc.kctx_initialized = false;
-    proc.user_stack = UserStack{};
-    proc.entry_point = 0U;
-    proc.brk_start = 0U;
-    proc.brk_current = 0U;
-    proc.mmap_next_vaddr = 0U;
-    proc.clear_child_tid = 0U;
-    proc.child_wait_queue = WaitQueue{};
-    for (size_t i = 0U; i < MAX_PATH_LEN; ++i) {
-        proc.cwd[i] = '\0';
-        proc.exe_path[i] = '\0';
-    }
-    reset_sigactions(proc);
+    delete &proc;
 }
 
 Process* find_process_by_pid(uint32_t pid) noexcept {
     if (pid == 0U) {
         return nullptr;
     }
-    for (size_t idx = 0U; idx < MAX_PROCESSES; ++idx) {
-        if (g_process_table[idx].state != ProcessState::Unused && g_process_table[idx].pid == pid) {
-            return &g_process_table[idx];
+    for (Process* proc = g_process_list_head; proc != nullptr; proc = proc->global_next) {
+        if (proc->pid == pid) {
+            return proc;
         }
     }
     return nullptr;
 }
 
+Process* process_list_head() noexcept {
+    return g_process_list_head;
+}
+
 size_t active_process_count() noexcept {
     size_t count = 0U;
-    for (size_t idx = 0U; idx < MAX_PROCESSES; ++idx) {
-        if (g_process_table[idx].state != ProcessState::Unused) {
+    for (const Process* proc = g_process_list_head; proc != nullptr; proc = proc->global_next) {
+        if (proc->state != ProcessState::Unused) {
             count++;
         }
     }
@@ -260,8 +303,8 @@ size_t active_process_count() noexcept {
 }
 
 bool has_runnable_processes() noexcept {
-    for (size_t idx = 0U; idx < MAX_PROCESSES; ++idx) {
-        const auto state = g_process_table[idx].state;
+    for (const Process* proc = g_process_list_head; proc != nullptr; proc = proc->global_next) {
+        const auto state = proc->state;
         if (state == ProcessState::Ready || state == ProcessState::Running ||
             state == ProcessState::Blocked) {
             return true;
@@ -283,6 +326,10 @@ void send_signal(Process& target, uint32_t sig) noexcept {
         target.state == ProcessState::Zombie) {
         return;
     }
+
+    auto& cpu = HAL::get_cpu();
+    const bool irq_was_enabled = cpu.interrupts_enabled();
+    cpu.disable_interrupts();
 
     if (sig == SIG_CONT) {
         target.pending_signals &= ~((1ULL << (SIG_STOP - 1U)) | (1ULL << (SIG_TSTP - 1U)) |
@@ -312,8 +359,15 @@ void send_signal(Process& target, uint32_t sig) noexcept {
             !is_unmaskable && (handler == KERNEL_SIG_IGN ||
                                (handler == KERNEL_SIG_DFL && (sig == SIG_CHLD || sig == SIG_CONT)));
         if (!is_blocked && !is_ignored) {
+            if (target.active_wq != nullptr) {
+                target.active_wq->remove(&target);
+            }
             Scheduler::enqueue(&target);
         }
+    }
+
+    if (irq_was_enabled) {
+        cpu.enable_interrupts();
     }
 }
 
@@ -321,11 +375,10 @@ void signal_process_group(uint32_t pgid, uint32_t sig) noexcept {
     if (pgid == 0U || sig == 0U || sig > MAX_SIGNALS) {
         return;
     }
-    for (size_t idx = 0U; idx < MAX_PROCESSES; ++idx) {
-        auto& proc = g_process_table[idx];
-        if (proc.state != ProcessState::Unused && proc.state != ProcessState::Zombie &&
-            proc.pgid == pgid) {
-            send_signal(proc, sig);
+    for (Process* proc = g_process_list_head; proc != nullptr; proc = proc->global_next) {
+        if (proc->state != ProcessState::Unused && proc->state != ProcessState::Zombie &&
+            proc->pgid == pgid) {
+            send_signal(*proc, sig);
         }
     }
 }
@@ -556,9 +609,20 @@ int64_t execute_process(Process& proc) noexcept {
         for (size_t idx = 0U; idx < MAX_FDS_PER_PROCESS; ++idx) {
             close_fd(*proc, idx);
         }
-        g_pid_cpu_ticks[proc->pid % MAX_PROCESSES] = proc->cpu_ticks;
+
+        // Reparent any surviving children to PID 1 (init) or 0
+        const uint32_t reaper_pid =
+            (find_process_by_pid(1U) != nullptr && proc->pid != 1U) ? 1U : 0U;
+        for (Process* child = g_process_list_head; child != nullptr; child = child->global_next) {
+            if (child != proc && child->ppid == proc->pid) {
+                child->ppid = reaper_pid;
+            }
+        }
+
+        record_reaped_ticks(proc->pid, static_cast<uint64_t>(proc->utime + proc->stime));
         proc->exit_status = exit_code;
         proc->state = ProcessState::Zombie;
+
         if (proc->ppid != 0U) {
             auto* const parent = find_process_by_pid(proc->ppid);
             if (parent != nullptr) {
@@ -579,7 +643,16 @@ uint64_t last_cpu_ticks_for_pid(uint32_t pid) noexcept {
     if (pid == 0U) {
         return 0ULL;
     }
-    return g_pid_cpu_ticks[pid % MAX_PROCESSES];
+    const Process* const active = find_process_by_pid(pid);
+    if (active != nullptr) {
+        return static_cast<uint64_t>(active->utime + active->stime);
+    }
+    for (size_t i = 0U; i < REAPED_TICKS_CACHE_SIZE; ++i) {
+        if (g_reaped_ticks_cache[i].pid == pid) {
+            return g_reaped_ticks_cache[i].ticks;
+        }
+    }
+    return 0ULL;
 }
 
 void attach_loaded_elf(Process& proc, Loader::LoadedElf&& loaded) noexcept {
@@ -589,13 +662,6 @@ void attach_loaded_elf(Process& proc, Loader::LoadedElf&& loaded) noexcept {
         proc.brk_start = loaded.max_vaddr;
         proc.brk_current = loaded.max_vaddr;
     }
-}
-
-Process* process_at(size_t index) noexcept {
-    if (index >= MAX_PROCESSES) {
-        return nullptr;
-    }
-    return &g_process_table[index];
 }
 
 } // namespace Kernel::Process

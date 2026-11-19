@@ -51,6 +51,7 @@ constexpr uint64_t SYS_KILL = 129U;
 constexpr uint64_t SYS_RT_SIGACTION = 134U;
 constexpr uint64_t SYS_RT_SIGPROCMASK = 135U;
 constexpr uint64_t SYS_RT_SIGRETURN = 139U;
+constexpr uint64_t SYS_TIMES = 153U;
 constexpr uint64_t SYS_SETPGID = 154U;
 constexpr uint64_t SYS_GETPGID = 155U;
 constexpr uint64_t SYS_GETSID = 156U;
@@ -309,6 +310,14 @@ struct LinuxSigAction {
     uint64_t sa_mask;
 };
 static_assert(sizeof(LinuxSigAction) == 32U, "LinuxSigAction must be 32 bytes");
+
+struct LinuxTms {
+    int64_t tms_utime;
+    int64_t tms_stime;
+    int64_t tms_cutime;
+    int64_t tms_cstime;
+};
+static_assert(sizeof(LinuxTms) == 32U, "LinuxTms must match Linux ABI (32 bytes)");
 
 struct LinuxUtsname {
     char sysname[65];
@@ -2579,9 +2588,9 @@ int64_t sys_kill(int32_t pid, uint64_t sig) noexcept {
     }
 
     const uint32_t target_pgid = (pid == 0) ? caller->pgid : static_cast<uint32_t>(-pid);
-    for (size_t i = 0U; i < Kernel::Process::MAX_PROCESSES; ++i) {
-        auto* const proc = Kernel::Process::process_at(i);
-        if (proc == nullptr || proc->state == Kernel::Process::ProcessState::Unused ||
+    for (auto* proc = Kernel::Process::process_list_head(); proc != nullptr;
+         proc = proc->global_next) {
+        if (proc->state == Kernel::Process::ProcessState::Unused ||
             proc->state == Kernel::Process::ProcessState::Zombie) {
             continue;
         }
@@ -2735,8 +2744,8 @@ int64_t sys_prlimit64(int32_t pid, uint32_t resource, uintptr_t user_new_rlim,
         current_rlim.rlim_max = Kernel::Process::DEFAULT_USER_STACK_SIZE;
         break;
     case RLIMIT_NPROC:
-        current_rlim.rlim_cur = Kernel::Process::MAX_PROCESSES;
-        current_rlim.rlim_max = Kernel::Process::MAX_PROCESSES;
+        current_rlim.rlim_cur = RLIM64_INFINITY;
+        current_rlim.rlim_max = RLIM64_INFINITY;
         break;
     case RLIMIT_CORE:
         current_rlim.rlim_cur = 0ULL;
@@ -2783,13 +2792,17 @@ int64_t sys_getrusage(int32_t who, uintptr_t user_usage) noexcept {
         return ERR_EINVAL;
     }
 
-    const uint64_t ticks = (who == RUSAGE_CHILDREN) ? proc->children_cpu_ticks : proc->cpu_ticks;
+    const uint64_t uticks = (who == RUSAGE_CHILDREN) ? proc->cutime : proc->utime;
+    const uint64_t sticks = (who == RUSAGE_CHILDREN) ? proc->cstime : proc->stime;
     // Timer runs at 100 Hz (10,000 microseconds per tick)
-    const uint64_t total_usec = ticks * 10000ULL;
+    const uint64_t user_usec = uticks * 10000ULL;
+    const uint64_t sys_usec = sticks * 10000ULL;
 
     LinuxRusage usage{};
-    usage.ru_utime.tv_sec = static_cast<int64_t>(total_usec / 1000000ULL);
-    usage.ru_utime.tv_usec = static_cast<int64_t>(total_usec % 1000000ULL);
+    usage.ru_utime.tv_sec = static_cast<int64_t>(user_usec / 1000000ULL);
+    usage.ru_utime.tv_usec = static_cast<int64_t>(user_usec % 1000000ULL);
+    usage.ru_stime.tv_sec = static_cast<int64_t>(sys_usec / 1000000ULL);
+    usage.ru_stime.tv_usec = static_cast<int64_t>(sys_usec % 1000000ULL);
 
     return Kernel::MM::copy_to_user(proc->address_space, user_usage, &usage, sizeof(usage));
 }
@@ -2959,6 +2972,28 @@ int64_t sys_brk(uintptr_t addr) noexcept {
 
     proc->brk_current = addr;
     return static_cast<int64_t>(proc->brk_current);
+}
+
+int64_t sys_times(uintptr_t user_buf) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+
+    if (user_buf != 0U) {
+        const LinuxTms tms_val{
+            .tms_utime = static_cast<int64_t>(proc->utime),
+            .tms_stime = static_cast<int64_t>(proc->stime),
+            .tms_cutime = static_cast<int64_t>(proc->cutime),
+            .tms_cstime = static_cast<int64_t>(proc->cstime),
+        };
+        if (Kernel::MM::copy_to_user(proc->address_space, user_buf, &tms_val, sizeof(tms_val)) <
+            0) {
+            return ERR_EFAULT;
+        }
+    }
+
+    return static_cast<int64_t>(Kernel::Scheduler::timer_ticks());
 }
 
 int64_t sys_mmap(uintptr_t addr, uint64_t length, uint64_t prot, uint64_t flags, uint64_t raw_fd,
@@ -3417,19 +3452,22 @@ int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
         return ERR_EINVAL;
     }
 
+    auto& cpu = HAL::get_cpu();
+    const bool irq_was_enabled = cpu.interrupts_enabled();
+
     Kernel::Process::Process* target_child = nullptr;
     int32_t encoded_wstatus = 0;
     bool reap_child = false;
 
     while (true) {
-        HAL::get_cpu().disable_interrupts();
+        cpu.disable_interrupts();
 
         bool has_matching_child = false;
         Kernel::Process::Process* ready_child = nullptr;
 
-        for (size_t idx = 0U; idx < Kernel::Process::MAX_PROCESSES; ++idx) {
-            auto* const candidate = Kernel::Process::process_at(idx);
-            if (candidate == nullptr || candidate->state == Kernel::Process::ProcessState::Unused) {
+        for (auto* candidate = Kernel::Process::process_list_head(); candidate != nullptr;
+             candidate = candidate->global_next) {
+            if (candidate->state == Kernel::Process::ProcessState::Unused) {
                 continue;
             }
             if (candidate->ppid != parent->pid) {
@@ -3473,6 +3511,9 @@ int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
         }
 
         if (!has_matching_child) {
+            if (irq_was_enabled) {
+                cpu.enable_interrupts();
+            }
             return ERR_ECHILD;
         }
 
@@ -3482,14 +3523,24 @@ int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
         }
 
         if ((options & WAIT_WNOHANG) != 0ULL) {
+            if (irq_was_enabled) {
+                cpu.enable_interrupts();
+            }
             return 0;
         }
 
         if (Kernel::Process::has_unblocked_pending_signal(*parent)) {
+            if (irq_was_enabled) {
+                cpu.enable_interrupts();
+            }
             return ERR_EINTR;
         }
 
         parent->child_wait_queue.sleep();
+    }
+
+    if (irq_was_enabled) {
+        cpu.enable_interrupts();
     }
 
     if (user_wstatus != 0U) {
@@ -3502,9 +3553,14 @@ int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
 
     if (user_rusage != 0U) {
         LinuxRusage rusage{};
-        const uint64_t child_usec = target_child->cpu_ticks * 10000ULL;
-        rusage.ru_utime.tv_sec = static_cast<int64_t>(child_usec / 1000000ULL);
-        rusage.ru_utime.tv_usec = static_cast<int64_t>(child_usec % 1000000ULL);
+        const uint64_t child_user_usec =
+            static_cast<uint64_t>(target_child->utime + target_child->cutime) * 10000ULL;
+        const uint64_t child_sys_usec =
+            static_cast<uint64_t>(target_child->stime + target_child->cstime) * 10000ULL;
+        rusage.ru_utime.tv_sec = static_cast<int64_t>(child_user_usec / 1000000ULL);
+        rusage.ru_utime.tv_usec = static_cast<int64_t>(child_user_usec % 1000000ULL);
+        rusage.ru_stime.tv_sec = static_cast<int64_t>(child_sys_usec / 1000000ULL);
+        rusage.ru_stime.tv_usec = static_cast<int64_t>(child_sys_usec % 1000000ULL);
         const int64_t rusage_res =
             Kernel::MM::copy_to_user(parent->address_space, user_rusage, &rusage, sizeof(rusage));
         if (rusage_res < 0) {
@@ -3514,7 +3570,8 @@ int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
 
     const uint32_t reported_pid = target_child->pid;
     if (reap_child) {
-        parent->children_cpu_ticks += target_child->cpu_ticks;
+        parent->cutime += target_child->utime + target_child->cutime;
+        parent->cstime += target_child->stime + target_child->cstime;
         Kernel::Process::release_process(*target_child);
     }
     return static_cast<int64_t>(reported_pid);
@@ -3859,6 +3916,10 @@ class SyscallDispatcher : public HAL::TrapHandler {
 
         case SYS_RT_SIGRETURN:
             ret_val = Kernel::Process::restore_signal_frame(ctx);
+            break;
+
+        case SYS_TIMES:
+            ret_val = sys_times(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)));
             break;
 
         case SYS_SETPGID:

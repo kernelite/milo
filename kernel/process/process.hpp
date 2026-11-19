@@ -13,7 +13,6 @@
 
 namespace Kernel::Process {
 
-constexpr size_t MAX_PROCESSES = 64U;
 constexpr size_t MAX_FDS_PER_PROCESS = 64U;
 constexpr size_t KERNEL_STACK_PAGES = 4U; // 16 KiB per-process kernel stack
 constexpr size_t MAX_PATH_LEN = 256U;
@@ -80,8 +79,13 @@ struct Process {
     HAL::KernelContext kctx{};
     HAL::CpuContext context{};
     int64_t exit_status{0};
-    uint64_t cpu_ticks{0U};
-    uint64_t children_cpu_ticks{0U};
+
+    // Integrated CPU accounting counters (in timer ticks)
+    size_t utime{0U};
+    size_t stime{0U};
+    size_t cutime{0U};
+    size_t cstime{0U};
+
     uint64_t rlim_nofile_cur{MAX_FDS_PER_PROCESS};
     uint64_t rlim_nofile_max{MAX_FDS_PER_PROCESS};
     uint64_t saved_sigmask{0ULL};
@@ -113,15 +117,29 @@ struct Process {
     bool kctx_initialized{false};
     char cwd[MAX_PATH_LEN]{};
     char exe_path[MAX_PATH_LEN]{};
+
+    // Intrusive global process list links
+    Process* global_next{nullptr};
+    Process* global_prev{nullptr};
+
+    // Intrusive CPU runqueue links
+    Process* rq_next{nullptr};
+    Process* rq_prev{nullptr};
+    bool on_runqueue{false};
+
+    // Intrusive waitqueue links
+    Process* wq_next{nullptr};
+    Process* wq_prev{nullptr};
+    WaitQueue* active_wq{nullptr};
 };
 
 uint64_t last_cpu_ticks_for_pid(uint32_t pid) noexcept;
 
-// Static process table management
+// Heap-allocated dynamic process tracking via intrusive global list
 Process* allocate_process(uint32_t ppid = 0U) noexcept;
 void release_process(Process& proc) noexcept;
 Process* find_process_by_pid(uint32_t pid) noexcept;
-Process* process_at(size_t index) noexcept;
+Process* process_list_head() noexcept;
 size_t active_process_count() noexcept;
 bool has_runnable_processes() noexcept;
 
