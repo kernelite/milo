@@ -52,7 +52,8 @@ HOST_SRCS_CXX := tests/host/mocks/host_hal.cpp \
                  kernel/boot/fdt.cpp \
                  kernel/process/stack_builder.cpp \
                  kernel/mm/address_space.cpp \
-                 kernel/mm/pfa.cpp
+                 kernel/mm/pfa.cpp \
+				 kernel/mm/heap.cpp
 
 HOST_OBJS     := $(patsubst %.cpp, $(HOST_BUILD_DIR)/%.o, $(HOST_SRCS_CXX))
 HOST_DEPS     := $(HOST_OBJS:.o=.d)

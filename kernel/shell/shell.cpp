@@ -9,12 +9,14 @@
 #include "loader/elf64.hpp"
 #include "loader/elf_loader.hpp"
 #include "mm/address_space.hpp"
+#include "mm/heap.hpp"
 #include "mm/pfa.hpp"
 #include "process/process.hpp"
 #include "process/scheduler.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <new>
 
 extern "C" void cmd_test_uxn_fault();
 // Access global initrd metadata from main.cpp
@@ -1796,6 +1798,141 @@ void cmd_test_sched() noexcept {
                 "All kernel stack, user stack, and page-table frames freed cleanly");
 }
 
+void cmd_test_heap() noexcept {
+    print_str("\r\n[TEST] Running Kernel Slab & Compound Heap Allocator Suite...\r\n");
+
+    const size_t pfa_free_before = pfa_free_pages_count();
+    const auto stats_before = Kernel::MM::heap_get_stats();
+
+    struct HeapObject {
+        uint64_t magic;
+        uint32_t id;
+        uint32_t* dtor_counter;
+
+        HeapObject(uint64_t m, uint32_t idx, uint32_t* counter) noexcept
+            : magic(m), id(idx), dtor_counter(counter) {}
+
+        ~HeapObject() noexcept {
+            if (dtor_counter != nullptr) {
+                (*dtor_counter)++;
+            }
+        }
+    };
+
+    struct alignas(64) OverAlignedObject {
+        uint64_t payload[8];
+    };
+
+    // 1. Single-object C++ new / delete
+    uint32_t dtor_count = 0U;
+    auto* obj = new HeapObject(0xCAFEBABE12345678ULL, 7U, &dtor_count);
+    assert_test(obj != nullptr && (reinterpret_cast<uintptr_t>(obj) % 16U) == 0U &&
+                    obj->magic == 0xCAFEBABE12345678ULL && obj->id == 7U,
+                "C++ operator new allocated 16-byte aligned object and ran constructor");
+    delete obj;
+    assert_test(dtor_count == 1U, "C++ operator delete invoked destructor and reclaimed slot");
+
+    // 2. Array new[] / delete[]
+    uint32_t arr_dtors = 0U;
+    auto* arr = new HeapObject[4]{
+        {1ULL, 0U, &arr_dtors},
+        {2ULL, 1U, &arr_dtors},
+        {3ULL, 2U, &arr_dtors},
+        {4ULL, 3U, &arr_dtors},
+    };
+    assert_test(arr != nullptr && arr[2].magic == 3ULL && arr[3].id == 3U,
+                "C++ operator new[] constructed array elements cleanly");
+    delete[] arr;
+    assert_test(arr_dtors == 4U, "C++ operator delete[] destroyed all array elements");
+
+    // 3. Over-aligned std::align_val_t (64 B and 4096 B) & std::nothrow
+    auto* aligned64 = new (std::align_val_t{64U}) OverAlignedObject{};
+    assert_test(aligned64 != nullptr && (reinterpret_cast<uintptr_t>(aligned64) % 64U) == 0U,
+                "Over-aligned operator new(align_val_t{64}) satisfied 64-byte alignment");
+    ::operator delete(aligned64, std::align_val_t{64U});
+
+    void* page_aligned = ::operator new(256U, std::align_val_t{4096U});
+    assert_test(page_aligned != nullptr &&
+                    (reinterpret_cast<uintptr_t>(page_aligned) % 4096U) == 0U,
+                "Page-aligned operator new(align_val_t{4096}) yielded 4 KiB aligned frame");
+    ::operator delete(page_aligned, 256U, std::align_val_t{4096U});
+
+    auto* nothrow_ok = new (std::nothrow) uint8_t[128];
+    auto* nothrow_oom = new (std::nothrow) uint8_t[0x40000000ULL];
+    assert_test(nothrow_ok != nullptr && nothrow_oom == nullptr,
+                "std::nothrow operator new succeeds normally and returns nullptr on OOM");
+    delete[] nothrow_ok;
+
+    // 4. Zero-size kmalloc(0) & krealloc cross-class / compound stress loop
+    void* z0 = Kernel::MM::kmalloc(0U);
+    void* z1 = Kernel::MM::kmalloc(0U);
+    assert_test(z0 != nullptr && z1 != nullptr && z0 != z1 &&
+                    (reinterpret_cast<uintptr_t>(z0) % 16U) == 0U,
+                "kmalloc(0) returns distinct, valid, 16-byte aligned pointers");
+    Kernel::MM::kfree(z0);
+    Kernel::MM::kfree(z1);
+
+    constexpr size_t steps[] = {16U, 32U, 64U, 256U, 1024U, 4096U, 16384U, 512U, 32U};
+    auto* buf = static_cast<uint8_t*>(Kernel::MM::kzalloc(16U));
+    bool realloc_ok = (buf != nullptr);
+    size_t prev_len = 16U;
+    if (realloc_ok) {
+        for (size_t i = 0U; i < prev_len; ++i) {
+            if (buf[i] != 0U) {
+                realloc_ok = false;
+            }
+            buf[i] = static_cast<uint8_t>(i ^ 0x5AU);
+        }
+    }
+
+    for (size_t step_idx = 1U; realloc_ok && step_idx < (sizeof(steps) / sizeof(steps[0]));
+         ++step_idx) {
+        const size_t next_len = steps[step_idx];
+        auto* next_buf = static_cast<uint8_t*>(Kernel::MM::krealloc(buf, next_len));
+        if (next_buf == nullptr) {
+            realloc_ok = false;
+            break;
+        }
+        buf = next_buf;
+        const size_t check_len = (prev_len < next_len) ? prev_len : next_len;
+        for (size_t i = 0U; i < check_len; ++i) {
+            if (buf[i] != static_cast<uint8_t>(i ^ 0x5AU)) {
+                realloc_ok = false;
+                break;
+            }
+        }
+        for (size_t i = 0U; i < next_len; ++i) {
+            buf[i] = static_cast<uint8_t>(i ^ 0x5AU);
+        }
+        prev_len = next_len;
+    }
+    Kernel::MM::kfree(buf);
+    assert_test(
+        realloc_ok,
+        "kzalloc & krealloc preserved data across slab growth, compound promotion, and shrink");
+
+    // Multi-slab page expansion & excess slab reclamation check (2048B = 2 slots/page -> 2 pages)
+    void* s0 = Kernel::MM::kmalloc(2048U);
+    void* s1 = Kernel::MM::kmalloc(2048U);
+    void* s2 = Kernel::MM::kmalloc(2048U);
+    assert_test(s0 != nullptr && s1 != nullptr && s2 != nullptr,
+                "Multi-slab expansion allocated across multiple 4 KiB slab pages");
+    Kernel::MM::kfree(s0);
+    Kernel::MM::kfree(s1);
+    Kernel::MM::kfree(s2);
+
+    // 5. Verify zero leaks and full frame reclamation back to PFA
+    const auto stats_after = Kernel::MM::heap_get_stats();
+    const size_t pfa_free_after = pfa_free_pages_count();
+    assert_test(stats_after.active_slab_objects == stats_before.active_slab_objects &&
+                    stats_after.compound_pages == stats_before.compound_pages &&
+                    stats_after.active_bytes == stats_before.active_bytes,
+                "All slab objects and compound pages released cleanly");
+    assert_test((pfa_free_after + stats_after.slab_pages) ==
+                    (pfa_free_before + stats_before.slab_pages),
+                "PFA free page count returned strictly to baseline after teardown");
+}
+
 void cmd_sh() noexcept {
     if (g_initrd_loc.valid && g_initrd_loc.start_paddr != 0U && g_initrd_loc.size > 0U) {
         CpioEntry bash_entry{};
@@ -1834,7 +1971,8 @@ void print_help() noexcept {
     print_str("  test loader     - Test ELF segment loading and OOM rollback\r\n");
     print_str("  test user       - Instantiate EL0 process and verify syscall exit\r\n");
     print_str("  test fork_exec  - Test fork, execve and wait4");
-    print_str("  test all        - Run entire verification test suite\r\n");
+    print_str("  test heap       - Test kernel slab/compound heap & C++ new/delete ABI\r\n");
+    print_str("  test sched      - Test O(1) task scheduler\r\n");
     print_str(
         "  test stack_abi  - Run user stack allocation & System V ABI construction tests\r\n");
     print_str("  test user_echo  - Run EL0 user space echo test (x0=argc, x1=argv)\r\n");
@@ -1844,6 +1982,7 @@ void print_help() noexcept {
     print_str("  test user_mm    - Test user heap (sys_brk) & anonymous sys_mmap/sys_munmap\r\n");
     print_str("  test proc       - Test process spae and exit functions\r\n");
     print_str("  test musl       - Test MUSL");
+    print_str("  test all        - Run entire verification test suite\r\n");
     print_str("  bash            - Run interactive GNU bash shell\r\n");
     print_str("  sh              - Run interactive POSIX shell (/bin/bash or BusyBox)\r\n");
     print_str("  halt            - Put CPU into low-power WFI state\r\n");
@@ -1920,6 +2059,8 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_musl();
     } else if (streq(buf, "test sched")) {
         cmd_test_sched();
+    } else if (streq(buf, "test heap")) {
+        cmd_test_heap();
     } else if (streq(buf, "bash")) {
         cmd_bash();
     } else if (streq(buf, "sh")) {
@@ -1952,6 +2093,7 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_fork_exec();
         cmd_test_musl();
         cmd_test_sched();
+        cmd_test_heap();
     } else if (buf[0] != '\0') {
         print_str("Unknown command: '");
         print_str(buf);
