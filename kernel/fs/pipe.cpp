@@ -2,90 +2,137 @@
 
 #include "hal/cpu.hpp"
 #include "mm/address_space.hpp"
+#include "process/process.hpp"
+
+#include <new>
 
 namespace {
 
+constexpr int64_t ERR_EINTR = -4;
 constexpr int64_t ERR_EAGAIN = -11;
 constexpr int64_t ERR_EFAULT = -14;
 constexpr int64_t ERR_EINVAL = -22;
 constexpr int64_t ERR_EPIPE = -32;
-
-Kernel::FS::Pipe g_pipe_pool[Kernel::FS::MAX_PIPES]{};
-
-void maybe_free_pipe(Kernel::FS::Pipe* pipe) noexcept {
-    if (pipe != nullptr && pipe->readers == 0U && pipe->writers == 0U) {
-        pipe->in_use = false;
-        pipe->read_pos = 0U;
-        pipe->write_pos = 0U;
-        pipe->count = 0U;
-        pipe->read_wq = Kernel::Process::WaitQueue{};
-        pipe->write_wq = Kernel::Process::WaitQueue{};
-    }
-}
 
 } // namespace
 
 namespace Kernel::FS {
 
 Pipe* allocate_pipe() noexcept {
+    auto* const pipe = new (std::nothrow) Pipe{};
+    if (pipe == nullptr) {
+        return nullptr;
+    }
+
+    pipe->in_use = true;
+    pipe->readers = 1U;
+    pipe->writers = 1U;
+    pipe->read_pos = 0U;
+    pipe->write_pos = 0U;
+    pipe->count = 0U;
+    return pipe;
+}
+
+void retain_pipe_reader(Pipe* pipe) noexcept {
+    if (pipe == nullptr) {
+        return;
+    }
     auto& cpu = HAL::get_cpu();
     const bool irq_was_enabled = cpu.interrupts_enabled();
     cpu.disable_interrupts();
 
-    Pipe* allocated = nullptr;
-    for (size_t i = 0U; i < MAX_PIPES; ++i) {
-        if (!g_pipe_pool[i].in_use) {
-            g_pipe_pool[i].in_use = true;
-            g_pipe_pool[i].readers = 1U;
-            g_pipe_pool[i].writers = 1U;
-            g_pipe_pool[i].read_pos = 0U;
-            g_pipe_pool[i].write_pos = 0U;
-            g_pipe_pool[i].count = 0U;
-            g_pipe_pool[i].read_wq = Process::WaitQueue{};
-            g_pipe_pool[i].write_wq = Process::WaitQueue{};
-            allocated = &g_pipe_pool[i];
-            break;
-        }
+    if (pipe->in_use) {
+        pipe->readers++;
     }
 
     if (irq_was_enabled) {
         cpu.enable_interrupts();
     }
-    return allocated;
-}
-
-void retain_pipe_reader(Pipe* pipe) noexcept {
-    if (pipe != nullptr && pipe->in_use) {
-        pipe->readers++;
-    }
 }
 
 void retain_pipe_writer(Pipe* pipe) noexcept {
-    if (pipe != nullptr && pipe->in_use) {
+    if (pipe == nullptr) {
+        return;
+    }
+    auto& cpu = HAL::get_cpu();
+    const bool irq_was_enabled = cpu.interrupts_enabled();
+    cpu.disable_interrupts();
+
+    if (pipe->in_use) {
         pipe->writers++;
+    }
+
+    if (irq_was_enabled) {
+        cpu.enable_interrupts();
     }
 }
 
 void release_pipe_reader(Pipe* pipe) noexcept {
-    if (pipe == nullptr || !pipe->in_use) {
+    if (pipe == nullptr) {
         return;
     }
+    auto& cpu = HAL::get_cpu();
+    const bool irq_was_enabled = cpu.interrupts_enabled();
+    cpu.disable_interrupts();
+
+    if (!pipe->in_use) {
+        if (irq_was_enabled) {
+            cpu.enable_interrupts();
+        }
+        return;
+    }
+
     if (pipe->readers > 0U) {
         pipe->readers--;
     }
     pipe->write_wq.wake_all();
-    maybe_free_pipe(pipe);
+
+    const bool should_delete = (pipe->readers == 0U && pipe->writers == 0U);
+    if (should_delete) {
+        pipe->in_use = false;
+    }
+
+    if (irq_was_enabled) {
+        cpu.enable_interrupts();
+    }
+
+    if (should_delete) {
+        delete pipe;
+    }
 }
 
 void release_pipe_writer(Pipe* pipe) noexcept {
-    if (pipe == nullptr || !pipe->in_use) {
+    if (pipe == nullptr) {
         return;
     }
+    auto& cpu = HAL::get_cpu();
+    const bool irq_was_enabled = cpu.interrupts_enabled();
+    cpu.disable_interrupts();
+
+    if (!pipe->in_use) {
+        if (irq_was_enabled) {
+            cpu.enable_interrupts();
+        }
+        return;
+    }
+
     if (pipe->writers > 0U) {
         pipe->writers--;
     }
     pipe->read_wq.wake_all();
-    maybe_free_pipe(pipe);
+
+    const bool should_delete = (pipe->readers == 0U && pipe->writers == 0U);
+    if (should_delete) {
+        pipe->in_use = false;
+    }
+
+    if (irq_was_enabled) {
+        cpu.enable_interrupts();
+    }
+
+    if (should_delete) {
+        delete pipe;
+    }
 }
 
 int64_t pipe_read(Pipe* pipe, uintptr_t root_paddr, uintptr_t user_buf, size_t count,
@@ -113,6 +160,13 @@ int64_t pipe_read(Pipe* pipe, uintptr_t root_paddr, uintptr_t user_buf, size_t c
                 cpu.enable_interrupts();
             }
             return ERR_EAGAIN;
+        }
+        const auto* const cur = Process::current_process();
+        if (cur != nullptr && Process::has_unblocked_pending_signal(*cur)) {
+            if (irq_was_enabled) {
+                cpu.enable_interrupts();
+            }
+            return ERR_EINTR;
         }
         pipe->read_wq.sleep();
         cpu.disable_interrupts();
@@ -187,6 +241,13 @@ int64_t pipe_write(Pipe* pipe, uintptr_t root_paddr, uintptr_t user_buf, size_t 
                     cpu.enable_interrupts();
                 }
                 return (total_written > 0U) ? static_cast<int64_t>(total_written) : ERR_EAGAIN;
+            }
+            const auto* const cur = Process::current_process();
+            if (cur != nullptr && Process::has_unblocked_pending_signal(*cur)) {
+                if (irq_was_enabled) {
+                    cpu.enable_interrupts();
+                }
+                return (total_written > 0U) ? static_cast<int64_t>(total_written) : ERR_EINTR;
             }
             pipe->write_wq.sleep();
             cpu.disable_interrupts();

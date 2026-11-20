@@ -1,6 +1,8 @@
 #pragma once
 
 #include "core/traits.hpp"
+#include "fs/pipe.hpp"
+#include "process/wait_queue.hpp"
 
 #include <cstddef>
 #include <cstdint>

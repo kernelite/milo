@@ -10,11 +10,13 @@
 #include "mm/address_space.hpp"
 #include "mm/pfa.hpp"
 #include "process/process.hpp"
+#include "process/resource.hpp"
 #include "process/scheduler.hpp"
 #include "process/stack_builder.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <new>
 
 extern FDT::InitrdLocation g_initrd_loc;
 
@@ -95,7 +97,6 @@ constexpr int64_t ERR_EFAULT = -14;
 constexpr int64_t ERR_ENOTDIR = -20;
 constexpr int64_t ERR_EISDIR = -21;
 constexpr int64_t ERR_EINVAL = -22;
-constexpr int64_t ERR_EMFILE = -24;
 constexpr int64_t ERR_ENOTTY = -25;
 constexpr int64_t ERR_ESPIPE = -29;
 constexpr int64_t ERR_EROFS = -30;
@@ -216,14 +217,6 @@ constexpr uint64_t SIG_BLOCK = 0ULL;
 constexpr uint64_t SIG_UNBLOCK = 1ULL;
 constexpr uint64_t SIG_SETMASK = 2ULL;
 
-// Resource Limits (Linux asm-generic/resource.h)
-constexpr uint32_t RLIMIT_STACK = 3U;
-constexpr uint32_t RLIMIT_CORE = 4U;
-constexpr uint32_t RLIMIT_NPROC = 6U;
-constexpr uint32_t RLIMIT_NOFILE = 7U;
-constexpr uint32_t RLIM_NLIMITS = 16U;
-constexpr uint64_t RLIM64_INFINITY = ~0ULL;
-
 // getrandom Flags
 constexpr uint64_t GRND_NONBLOCK = 0x0001ULL;
 constexpr uint64_t GRND_RANDOM = 0x0002ULL;
@@ -245,6 +238,8 @@ constexpr int16_t POLLWRNORM = 0x0100;
 
 constexpr size_t MAX_FDSET_FDS = 1024U;
 constexpr size_t MAX_FDSET_WORDS = MAX_FDSET_FDS / 64U;
+
+constexpr size_t POLL_STACK_THRESHOLD = 32U;
 
 struct ktermios {
     uint32_t c_iflag;
@@ -731,6 +726,7 @@ void fill_stat_from_cpio(const char* canon_path, const CpioEntry& entry,
     stat_out.st_blocks = static_cast<int64_t>((entry.size + 511U) / 512U);
 }
 
+/* Remove this if everything works without it:
 int allocate_fd_slot(Kernel::Process::Process& proc, size_t min_fd = 0U) noexcept {
     size_t max_fds = Kernel::Process::MAX_FDS_PER_PROCESS;
     if (proc.rlim_nofile_cur < max_fds) {
@@ -743,6 +739,7 @@ int allocate_fd_slot(Kernel::Process::Process& proc, size_t min_fd = 0U) noexcep
     }
     return -1;
 }
+*/
 
 void unmap_and_free_range(Kernel::MM::AddressSpace& adrsp, uintptr_t start_vaddr,
                           uintptr_t end_vaddr, size_t page_size) noexcept {
@@ -868,7 +865,7 @@ int64_t resolve_dirfd_base(Kernel::Process::Process& proc, int32_t dirfd,
         out_base = proc.cwd;
         return 0;
     }
-    if (dirfd < 0 || static_cast<size_t>(dirfd) >= Kernel::Process::MAX_FDS_PER_PROCESS) {
+    if (dirfd < 0 || proc.fd_table == nullptr || static_cast<size_t>(dirfd) >= proc.fd_capacity) {
         return ERR_EBADF;
     }
     const auto& desc = proc.fd_table[static_cast<size_t>(dirfd)];
@@ -985,9 +982,9 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
     }
 
     if (cstr_eq(canon_path, "/dev/console") || cstr_eq(canon_path, "/dev/tty")) {
-        const int slot = allocate_fd_slot(*proc);
+        const int slot = Kernel::Process::allocate_fd(*proc);
         if (slot < 0) {
-            return ERR_EMFILE;
+            return slot;
         }
         proc->fd_table[slot] = Kernel::Process::FileDescriptor{
             .type = Kernel::Process::FdType::ConsoleTty,
@@ -999,9 +996,9 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
     }
 
     if (cstr_eq(canon_path, "/dev/null")) {
-        const int slot = allocate_fd_slot(*proc);
+        const int slot = Kernel::Process::allocate_fd(*proc);
         if (slot < 0) {
-            return ERR_EMFILE;
+            return slot;
         }
         proc->fd_table[slot] = Kernel::Process::FileDescriptor{
             .type = Kernel::Process::FdType::DevNull,
@@ -1016,11 +1013,6 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
         return ERR_EROFS;
     }
 
-    const int slot = allocate_fd_slot(*proc);
-    if (slot < 0) {
-        return ERR_EMFILE;
-    }
-
     CpioEntry entry{};
     if (!resolve_initrd_path(canon_path, entry)) {
         return ERR_ENOENT;
@@ -1028,6 +1020,11 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
 
     if ((flags & O_DIRECTORY) != 0ULL && !entry.is_directory) {
         return ERR_ENOTDIR;
+    }
+
+    const int slot = Kernel::Process::allocate_fd(*proc);
+    if (slot < 0) {
+        return slot;
     }
 
     auto& desc = proc->fd_table[slot];
@@ -1044,10 +1041,7 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
 
 int64_t sys_close(uint64_t raw_fd) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr) {
-        return ERR_EBADF;
-    }
-    if (raw_fd >= Kernel::Process::MAX_FDS_PER_PROCESS) {
+    if (proc == nullptr || proc->fd_table == nullptr || raw_fd >= proc->fd_capacity) {
         return ERR_EBADF;
     }
     const auto fd_idx = static_cast<size_t>(raw_fd);
@@ -1060,9 +1054,10 @@ int64_t sys_close(uint64_t raw_fd) noexcept {
 
 int64_t sys_lseek(uint64_t raw_fd, int64_t offset, uint64_t whence) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr || raw_fd >= Kernel::Process::MAX_FDS_PER_PROCESS) {
+    if (proc == nullptr || proc->fd_table == nullptr || raw_fd >= proc->fd_capacity) {
         return ERR_EBADF;
     }
+
     auto& desc = proc->fd_table[static_cast<size_t>(raw_fd)];
     if (!desc.in_use) {
         return ERR_EBADF;
@@ -1097,7 +1092,7 @@ int64_t sys_lseek(uint64_t raw_fd, int64_t offset, uint64_t whence) noexcept {
 
 int64_t sys_fstat(uint64_t raw_fd, uintptr_t user_statbuf) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr || raw_fd >= Kernel::Process::MAX_FDS_PER_PROCESS) {
+    if (proc == nullptr || proc->fd_table == nullptr || raw_fd >= proc->fd_capacity) {
         return ERR_EBADF;
     }
     const auto& desc = proc->fd_table[static_cast<size_t>(raw_fd)];
@@ -1126,7 +1121,8 @@ int64_t sys_newfstatat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_st
     }
 
     if (path_len == 0U && (flags & AT_EMPTY_PATH) != 0ULL) {
-        if (dirfd < 0 || static_cast<size_t>(dirfd) >= Kernel::Process::MAX_FDS_PER_PROCESS) {
+        if (dirfd < 0 || proc->fd_table == nullptr ||
+            static_cast<size_t>(dirfd) >= proc->fd_capacity) {
             return ERR_EBADF;
         }
         const auto& desc = proc->fd_table[static_cast<size_t>(dirfd)];
@@ -1205,7 +1201,8 @@ int64_t sys_faccessat2(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
     }
 
     if (path_len == 0U && (flags & AT_EMPTY_PATH) != 0ULL) {
-        if (dirfd < 0 || static_cast<size_t>(dirfd) >= Kernel::Process::MAX_FDS_PER_PROCESS) {
+        if (dirfd < 0 || proc->fd_table == nullptr ||
+            static_cast<size_t>(dirfd) >= proc->fd_capacity) {
             return ERR_EBADF;
         }
         const auto& desc = proc->fd_table[static_cast<size_t>(dirfd)];
@@ -1316,7 +1313,7 @@ int64_t sys_readlinkat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_bu
 
 int64_t sys_getdents64(uint64_t raw_fd, uintptr_t user_dirp, uint64_t count) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr || raw_fd >= Kernel::Process::MAX_FDS_PER_PROCESS) {
+    if (proc == nullptr || proc->fd_table == nullptr || raw_fd >= proc->fd_capacity) {
         return ERR_EBADF;
     }
 
@@ -1458,7 +1455,7 @@ int64_t sys_getdents64(uint64_t raw_fd, uintptr_t user_dirp, uint64_t count) noe
 
 int64_t sys_dup(uint64_t raw_oldfd) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr || raw_oldfd >= Kernel::Process::MAX_FDS_PER_PROCESS) {
+    if (proc == nullptr || proc->fd_table == nullptr || raw_oldfd >= proc->fd_capacity) {
         return ERR_EBADF;
     }
     const auto old_idx = static_cast<size_t>(raw_oldfd);
@@ -1466,9 +1463,9 @@ int64_t sys_dup(uint64_t raw_oldfd) noexcept {
         return ERR_EBADF;
     }
 
-    const int new_idx = allocate_fd_slot(*proc, 0U);
+    const int new_idx = Kernel::Process::allocate_fd(*proc, 0U);
     if (new_idx < 0) {
-        return ERR_EMFILE;
+        return new_idx;
     }
 
     Kernel::Process::copy_fd_slot(proc->fd_table[new_idx], proc->fd_table[old_idx], true);
@@ -1477,8 +1474,7 @@ int64_t sys_dup(uint64_t raw_oldfd) noexcept {
 
 int64_t sys_dup3(uint64_t raw_oldfd, uint64_t raw_newfd, uint64_t flags) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr || raw_oldfd >= Kernel::Process::MAX_FDS_PER_PROCESS ||
-        raw_newfd >= Kernel::Process::MAX_FDS_PER_PROCESS) {
+    if (proc == nullptr || proc->fd_table == nullptr || raw_oldfd >= proc->fd_capacity) {
         return ERR_EBADF;
     }
     if (raw_newfd >= proc->rlim_nofile_cur) {
@@ -1497,6 +1493,12 @@ int64_t sys_dup3(uint64_t raw_oldfd, uint64_t raw_newfd, uint64_t flags) noexcep
         return ERR_EBADF;
     }
 
+    if (new_idx >= proc->fd_capacity) {
+        if (!Kernel::Process::ensure_fd_capacity(*proc, new_idx + 1U)) {
+            return ERR_ENOMEM;
+        }
+    }
+
     if (proc->fd_table[new_idx].in_use) {
         Kernel::Process::close_fd(*proc, new_idx);
     }
@@ -1510,26 +1512,26 @@ int64_t sys_dup3(uint64_t raw_oldfd, uint64_t raw_newfd, uint64_t flags) noexcep
 
 int64_t sys_fcntl(uint64_t raw_fd, uint64_t cmd, uint64_t arg) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr || raw_fd >= Kernel::Process::MAX_FDS_PER_PROCESS) {
+    if (proc == nullptr || proc->fd_table == nullptr || raw_fd >= proc->fd_capacity) {
         return ERR_EBADF;
     }
     const auto fd_idx = static_cast<size_t>(raw_fd);
-    auto& desc = proc->fd_table[fd_idx];
-    if (!desc.in_use) {
+    if (!proc->fd_table[fd_idx].in_use) {
         return ERR_EBADF;
     }
 
     switch (cmd) {
     case F_DUPFD:
     case F_DUPFD_CLOEXEC: {
-        if (arg >= proc->rlim_nofile_cur || arg >= Kernel::Process::MAX_FDS_PER_PROCESS) {
+        if (arg >= proc->rlim_nofile_cur) {
             return ERR_EINVAL;
         }
-        const int new_idx = allocate_fd_slot(*proc, static_cast<size_t>(arg));
+        const int new_idx = Kernel::Process::allocate_fd(*proc, static_cast<size_t>(arg));
         if (new_idx < 0) {
-            return ERR_EMFILE;
+            return new_idx;
         }
-        Kernel::Process::copy_fd_slot(proc->fd_table[new_idx], desc, true);
+        // Re-index proc->fd_table[fd_idx] after allocate_fd in case krealloc relocated the table
+        Kernel::Process::copy_fd_slot(proc->fd_table[new_idx], proc->fd_table[fd_idx], true);
         if (cmd == F_DUPFD_CLOEXEC) {
             proc->fd_table[new_idx].flags |= Kernel::Process::FD_FLAG_CLOEXEC;
         }
@@ -1537,19 +1539,20 @@ int64_t sys_fcntl(uint64_t raw_fd, uint64_t cmd, uint64_t arg) noexcept {
     }
 
     case F_GETFD:
-        return ((desc.flags & Kernel::Process::FD_FLAG_CLOEXEC) != 0U)
+        return ((proc->fd_table[fd_idx].flags & Kernel::Process::FD_FLAG_CLOEXEC) != 0U)
                    ? static_cast<int64_t>(FD_CLOEXEC_BIT)
                    : 0;
 
     case F_SETFD:
         if ((arg & FD_CLOEXEC_BIT) != 0ULL) {
-            desc.flags |= Kernel::Process::FD_FLAG_CLOEXEC;
+            proc->fd_table[fd_idx].flags |= Kernel::Process::FD_FLAG_CLOEXEC;
         } else {
-            desc.flags &= ~Kernel::Process::FD_FLAG_CLOEXEC;
+            proc->fd_table[fd_idx].flags &= ~Kernel::Process::FD_FLAG_CLOEXEC;
         }
         return 0;
 
     case F_GETFL: {
+        const auto& desc = proc->fd_table[fd_idx];
         uint64_t flags = O_RDONLY;
         if (desc.is_readable() && desc.is_writable()) {
             flags = O_RDWR;
@@ -1564,9 +1567,9 @@ int64_t sys_fcntl(uint64_t raw_fd, uint64_t cmd, uint64_t arg) noexcept {
 
     case F_SETFL:
         if ((arg & O_NONBLOCK) != 0ULL) {
-            desc.flags |= Kernel::Process::FD_FLAG_NONBLOCK;
+            proc->fd_table[fd_idx].flags |= Kernel::Process::FD_FLAG_NONBLOCK;
         } else {
-            desc.flags &= ~Kernel::Process::FD_FLAG_NONBLOCK;
+            proc->fd_table[fd_idx].flags &= ~Kernel::Process::FD_FLAG_NONBLOCK;
         }
         return 0;
 
@@ -1584,22 +1587,22 @@ int64_t sys_pipe2(uintptr_t user_pipefd, uint64_t flags) noexcept {
         return ERR_EINVAL;
     }
 
-    const int read_fd = allocate_fd_slot(*proc, 0U);
+    const int read_fd = Kernel::Process::allocate_fd(*proc, 0U);
     if (read_fd < 0) {
-        return ERR_EMFILE;
+        return read_fd;
     }
     proc->fd_table[read_fd].in_use = true;
 
-    const int write_fd = allocate_fd_slot(*proc, static_cast<size_t>(read_fd) + 1U);
+    const int write_fd = Kernel::Process::allocate_fd(*proc, static_cast<size_t>(read_fd) + 1U);
     if (write_fd < 0) {
         proc->fd_table[read_fd].in_use = false;
-        return ERR_EMFILE;
+        return write_fd;
     }
 
     Kernel::FS::Pipe* const pipe = Kernel::FS::allocate_pipe();
     if (pipe == nullptr) {
         proc->fd_table[read_fd].in_use = false;
-        return ERR_EMFILE;
+        return ERR_ENOMEM;
     }
 
     uint32_t extra_flags = 0U;
@@ -1641,15 +1644,14 @@ int64_t sys_pipe2(uintptr_t user_pipefd, uint64_t flags) noexcept {
 // ==========================================================================
 
 int64_t sys_ioctl(uint64_t raw_fd, uint64_t request, uintptr_t arg) noexcept {
-    if (raw_fd >= Kernel::Process::MAX_FDS_PER_PROCESS) {
-        return ERR_EBADF;
-    }
     const auto fd_idx = static_cast<size_t>(raw_fd);
-
     auto* const proc = Kernel::Process::current_process();
     uintptr_t root_paddr = 0U;
 
     if (proc != nullptr) {
+        if (proc->fd_table == nullptr || fd_idx >= proc->fd_capacity) {
+            return ERR_EBADF;
+        }
         const auto& desc = proc->fd_table[fd_idx];
         if (!desc.in_use) {
             return ERR_EBADF;
@@ -1727,11 +1729,7 @@ int64_t sys_ioctl(uint64_t raw_fd, uint64_t request, uintptr_t arg) noexcept {
 }
 
 int64_t sys_read(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexcept {
-    if (raw_fd >= Kernel::Process::MAX_FDS_PER_PROCESS) {
-        return ERR_EBADF;
-    }
     const auto fd_idx = static_cast<size_t>(raw_fd);
-
     auto* const proc = Kernel::Process::current_process();
     uintptr_t root_paddr = 0U;
     bool nonblock = false;
@@ -1742,6 +1740,9 @@ int64_t sys_read(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexce
     const auto count = static_cast<size_t>(raw_count);
 
     if (proc != nullptr) {
+        if (proc->fd_table == nullptr || fd_idx >= proc->fd_capacity) {
+            return ERR_EBADF;
+        }
         auto& desc = proc->fd_table[fd_idx];
         if (!desc.in_use || !desc.is_readable()) {
             return ERR_EBADF;
@@ -2013,11 +2014,7 @@ int64_t sys_read(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexce
 }
 
 int64_t sys_write(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexcept {
-    if (raw_fd >= Kernel::Process::MAX_FDS_PER_PROCESS) {
-        return ERR_EBADF;
-    }
     const auto fd_idx = static_cast<size_t>(raw_fd);
-
     auto* const proc = Kernel::Process::current_process();
     uintptr_t root_paddr = 0U;
 
@@ -2027,6 +2024,9 @@ int64_t sys_write(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexc
     const auto count = static_cast<size_t>(raw_count);
 
     if (proc != nullptr) {
+        if (proc->fd_table == nullptr || fd_idx >= proc->fd_capacity) {
+            return ERR_EBADF;
+        }
         const auto& desc = proc->fd_table[fd_idx];
         if (!desc.in_use || !desc.is_writable()) {
             return ERR_EBADF;
@@ -2086,15 +2086,14 @@ int64_t sys_write(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexc
 }
 
 int64_t sys_writev(uint64_t raw_fd, uintptr_t user_iov, uint64_t raw_iovcnt) noexcept {
-    if (raw_fd >= Kernel::Process::MAX_FDS_PER_PROCESS) {
-        return ERR_EBADF;
-    }
     const auto fd_idx = static_cast<size_t>(raw_fd);
-
     auto* const proc = Kernel::Process::current_process();
     uintptr_t root_paddr = 0U;
 
     if (proc != nullptr) {
+        if (proc->fd_table == nullptr || fd_idx >= proc->fd_capacity) {
+            return ERR_EBADF;
+        }
         const auto& desc = proc->fd_table[fd_idx];
         if (!desc.in_use || !desc.is_writable()) {
             return ERR_EBADF;
@@ -2144,7 +2143,7 @@ int16_t poll_fd_revents(const Kernel::Process::Process& proc, int32_t raw_fd,
     if (raw_fd < 0) {
         return 0;
     }
-    if (static_cast<size_t>(raw_fd) >= Kernel::Process::MAX_FDS_PER_PROCESS) {
+    if (proc.fd_table == nullptr || static_cast<size_t>(raw_fd) >= proc.fd_capacity) {
         return POLLNVAL;
     }
     const auto& desc = proc.fd_table[static_cast<size_t>(raw_fd)];
@@ -2204,19 +2203,37 @@ int16_t poll_fd_revents(const Kernel::Process::Process& proc, int32_t raw_fd,
 
     return static_cast<int16_t>(revents);
 }
+
 int64_t sys_ppoll(uintptr_t user_fds, uint64_t nfds, uintptr_t user_tmo, uintptr_t user_sigmask,
                   uint64_t sigsetsize) noexcept {
     auto* const proc = Kernel::Process::current_process();
     if (proc == nullptr) {
         return ERR_EINVAL;
     }
-    if (nfds > Kernel::Process::MAX_FDS_PER_PROCESS) {
+    if (nfds > proc->rlim_nofile_cur) {
         return ERR_EINVAL;
     }
 
     const uintptr_t root_paddr = proc->address_space.root_paddr();
     const auto count = static_cast<size_t>(nfds);
-    LinuxPollFd kfdfs[Kernel::Process::MAX_FDS_PER_PROCESS]{};
+
+    LinuxPollFd stack_fds[POLL_STACK_THRESHOLD]{};
+    LinuxPollFd* heap_fds = nullptr;
+    LinuxPollFd* kfdfs = stack_fds;
+
+    struct PollHeapGuard {
+        LinuxPollFd* ptr{nullptr};
+        ~PollHeapGuard() noexcept { delete[] ptr; }
+    };
+
+    if (count > POLL_STACK_THRESHOLD) {
+        heap_fds = new (std::nothrow) LinuxPollFd[count]{};
+        if (heap_fds == nullptr) {
+            return ERR_ENOMEM;
+        }
+        kfdfs = heap_fds;
+    }
+    const PollHeapGuard heap_guard{heap_fds};
 
     if (count > 0U) {
         if (user_fds == 0U) {
@@ -2350,7 +2367,8 @@ int64_t sys_pselect6(int32_t nfds, uintptr_t user_rfds, uintptr_t user_wfds, uin
         const bool want_any = ((rfds[word] & bit) != 0ULL) || ((wfds[word] & bit) != 0ULL) ||
                               ((efds[word] & bit) != 0ULL);
         if (want_any) {
-            if (fd >= Kernel::Process::MAX_FDS_PER_PROCESS || !proc->fd_table[fd].in_use) {
+            if (proc->fd_table == nullptr || fd >= proc->fd_capacity ||
+                !proc->fd_table[fd].in_use) {
                 return ERR_EBADF;
             }
         }
@@ -2717,7 +2735,7 @@ int64_t sys_prlimit64(int32_t pid, uint32_t resource, uintptr_t user_new_rlim,
     if (caller == nullptr) {
         return ERR_EINVAL;
     }
-    if (pid < 0 || resource >= RLIM_NLIMITS) {
+    if (pid < 0 || resource >= Kernel::Process::RLIM_NLIMITS) {
         return ERR_EINVAL;
     }
 
@@ -2730,24 +2748,24 @@ int64_t sys_prlimit64(int32_t pid, uint32_t resource, uintptr_t user_new_rlim,
     }
 
     LinuxRlimit64 current_rlim{
-        .rlim_cur = RLIM64_INFINITY,
-        .rlim_max = RLIM64_INFINITY,
+        .rlim_cur = Kernel::Process::RLIM64_INFINITY,
+        .rlim_max = Kernel::Process::RLIM64_INFINITY,
     };
 
     switch (resource) {
-    case RLIMIT_NOFILE:
+    case Kernel::Process::RLIMIT_NOFILE:
         current_rlim.rlim_cur = target->rlim_nofile_cur;
         current_rlim.rlim_max = target->rlim_nofile_max;
         break;
-    case RLIMIT_STACK:
+    case Kernel::Process::RLIMIT_STACK:
         current_rlim.rlim_cur = Kernel::Process::DEFAULT_USER_STACK_SIZE;
         current_rlim.rlim_max = Kernel::Process::DEFAULT_USER_STACK_SIZE;
         break;
-    case RLIMIT_NPROC:
-        current_rlim.rlim_cur = RLIM64_INFINITY;
-        current_rlim.rlim_max = RLIM64_INFINITY;
+    case Kernel::Process::RLIMIT_NPROC:
+        current_rlim.rlim_cur = target->rlim_nproc_cur;
+        current_rlim.rlim_max = target->rlim_nproc_max;
         break;
-    case RLIMIT_CORE:
+    case Kernel::Process::RLIMIT_CORE:
         current_rlim.rlim_cur = 0ULL;
         current_rlim.rlim_max = 0ULL;
         break;
@@ -2771,12 +2789,19 @@ int64_t sys_prlimit64(int32_t pid, uint32_t resource, uintptr_t user_new_rlim,
         if (new_rlim.rlim_cur > new_rlim.rlim_max) {
             return ERR_EINVAL;
         }
-        if (resource == RLIMIT_NOFILE) {
-            if (new_rlim.rlim_max > Kernel::Process::MAX_FDS_PER_PROCESS) {
+        if (resource == Kernel::Process::RLIMIT_NOFILE) {
+            if (new_rlim.rlim_max > target->rlim_nofile_max ||
+                new_rlim.rlim_max > Kernel::Process::DEFAULT_RLIMIT_NOFILE_MAX) {
                 return ERR_EPERM;
             }
             target->rlim_nofile_cur = new_rlim.rlim_cur;
             target->rlim_nofile_max = new_rlim.rlim_max;
+        } else if (resource == Kernel::Process::RLIMIT_NPROC) {
+            if (new_rlim.rlim_max > target->rlim_nproc_max) {
+                return ERR_EPERM;
+            }
+            target->rlim_nproc_cur = new_rlim.rlim_cur;
+            target->rlim_nproc_max = new_rlim.rlim_max;
         }
     }
 
@@ -3178,6 +3203,10 @@ int64_t sys_clone(HAL::CpuContext& parent_ctx, uint64_t flags, uintptr_t child_s
         return ERR_EINVAL;
     }
 
+    if (Kernel::Process::active_process_count() >= parent->rlim_nproc_cur) {
+        return ERR_EAGAIN;
+    }
+
     auto* const child = Kernel::Process::allocate_process(parent->pid);
     if (child == nullptr) {
         return ERR_EAGAIN;
@@ -3195,6 +3224,8 @@ int64_t sys_clone(HAL::CpuContext& parent_ctx, uint64_t flags, uintptr_t child_s
     child->umask = parent->umask;
     child->rlim_nofile_cur = parent->rlim_nofile_cur;
     child->rlim_nofile_max = parent->rlim_nofile_max;
+    child->rlim_nproc_cur = parent->rlim_nproc_cur;
+    child->rlim_nproc_max = parent->rlim_nproc_max;
     child->entry_point = parent->entry_point;
     child->brk_start = parent->brk_start;
     child->brk_current = parent->brk_current;
@@ -3208,8 +3239,16 @@ int64_t sys_clone(HAL::CpuContext& parent_ctx, uint64_t flags, uintptr_t child_s
         child->sigactions[i] = parent->sigactions[i];
     }
 
-    for (size_t idx = 0U; idx < Kernel::Process::MAX_FDS_PER_PROCESS; ++idx) {
-        Kernel::Process::copy_fd_slot(child->fd_table[idx], parent->fd_table[idx], false);
+    if (parent->fd_table != nullptr && parent->fd_capacity > 0U) {
+        if (parent->fd_capacity > child->fd_capacity) {
+            if (!Kernel::Process::ensure_fd_capacity(*child, parent->fd_capacity)) {
+                Kernel::Process::release_process(*child);
+                return ERR_ENOMEM;
+            }
+        }
+        for (size_t idx = 0U; idx < parent->fd_capacity; ++idx) {
+            Kernel::Process::copy_fd_slot(child->fd_table[idx], parent->fd_table[idx], false);
+        }
     }
 
     const auto child_pid_s32 = static_cast<int32_t>(child->pid);
@@ -3408,6 +3447,14 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
         loaded.address_space.destroy();
         free_frame(scratch_paddr);
         return ERR_E2BIG;
+    }
+
+    if (proc->fd_table == nullptr &&
+        !Kernel::Process::init_fd_table(*proc, Kernel::Process::INITIAL_FD_CAPACITY)) {
+        free_frames(new_stack.phys_base, new_stack.num_pages);
+        loaded.address_space.destroy();
+        free_frame(scratch_paddr);
+        return ERR_ENOMEM;
     }
 
     loaded.address_space.activate();
