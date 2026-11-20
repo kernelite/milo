@@ -1,6 +1,7 @@
 #include "process/process.hpp"
 
 #include "hal/cpu.hpp"
+#include "mm/heap.hpp"
 #include "mm/pfa.hpp"
 #include "process/scheduler.hpp"
 
@@ -9,6 +10,7 @@
 extern "C" void* memcpy(void* dest, const void* src, size_t count) noexcept;
 
 namespace {
+constexpr int ERR_EMFILE = -24;
 
 Kernel::Process::Process* g_process_list_head = nullptr;
 Kernel::Process::Process* g_process_list_tail = nullptr;
@@ -38,34 +40,6 @@ void record_reaped_ticks(uint32_t pid, uint64_t ticks) noexcept {
     g_reaped_ticks_cursor = (g_reaped_ticks_cursor + 1U) % REAPED_TICKS_CACHE_SIZE;
 }
 
-void link_global_process(Kernel::Process::Process& proc) noexcept {
-    proc.global_prev = g_process_list_tail;
-    proc.global_next = nullptr;
-    if (g_process_list_tail != nullptr) {
-        g_process_list_tail->global_next = &proc;
-    } else {
-        g_process_list_head = &proc;
-    }
-    g_process_list_tail = &proc;
-}
-
-void unlink_global_process(Kernel::Process::Process& proc) noexcept {
-    if (proc.global_prev != nullptr) {
-        proc.global_prev->global_next = proc.global_next;
-    } else if (g_process_list_head == &proc) {
-        g_process_list_head = proc.global_next;
-    }
-
-    if (proc.global_next != nullptr) {
-        proc.global_next->global_prev = proc.global_prev;
-    } else if (g_process_list_tail == &proc) {
-        g_process_list_tail = proc.global_prev;
-    }
-
-    proc.global_next = nullptr;
-    proc.global_prev = nullptr;
-}
-
 // Linux AArch64 rt_sigframe layout pushed onto EL0 stack
 struct alignas(16) RtSigFrame {
     uint64_t magic;
@@ -83,40 +57,6 @@ static_assert((sizeof(RtSigFrame) % 16U) == 0U, "RtSigFrame must be 16-byte alig
 
 constexpr uint64_t RT_SIGFRAME_MAGIC = 0x5349474652414D45ULL;
 
-void reset_sigactions(Kernel::Process::Process& proc) noexcept {
-    proc.pending_signals = 0ULL;
-    proc.blocked_signals = 0ULL;
-    proc.has_saved_sigmask = false;
-    proc.saved_sigmask = 0ULL;
-    for (size_t i = 0U; i < Kernel::Process::MAX_SIGNALS; ++i) {
-        proc.sigactions[i] = Kernel::Process::SigAction{};
-    }
-}
-
-void init_standard_fds(Kernel::Process::Process& proc) noexcept {
-    for (size_t idx = 0U; idx < Kernel::Process::MAX_FDS_PER_PROCESS; ++idx) {
-        proc.fd_table[idx] = Kernel::Process::FileDescriptor{};
-    }
-    proc.fd_table[0] = Kernel::Process::FileDescriptor{
-        .type = Kernel::Process::FdType::ConsoleTty,
-        .flags = Kernel::Process::FD_FLAG_READ,
-        .offset = 0U,
-        .in_use = true,
-    };
-    proc.fd_table[1] = Kernel::Process::FileDescriptor{
-        .type = Kernel::Process::FdType::ConsoleTty,
-        .flags = Kernel::Process::FD_FLAG_WRITE,
-        .offset = 0U,
-        .in_use = true,
-    };
-    proc.fd_table[2] = Kernel::Process::FileDescriptor{
-        .type = Kernel::Process::FdType::ConsoleTty,
-        .flags = Kernel::Process::FD_FLAG_WRITE,
-        .offset = 0U,
-        .in_use = true,
-    };
-}
-
 bool is_stop_signal(uint32_t sig) noexcept {
     return sig == Kernel::Process::SIG_STOP || sig == Kernel::Process::SIG_TSTP ||
            sig == Kernel::Process::SIG_TTIN || sig == Kernel::Process::SIG_TTOU;
@@ -126,19 +66,135 @@ bool is_stop_signal(uint32_t sig) noexcept {
 
 namespace Kernel::Process {
 
-void close_fd(Process& proc, size_t fd_idx) noexcept {
-    if (fd_idx >= MAX_FDS_PER_PROCESS) {
+Process::~Process() noexcept {
+    destroy_fd_table(*this);
+}
+
+bool init_fd_table(Process& proc, size_t initial_capacity) noexcept {
+    if (proc.fd_table != nullptr) {
+        destroy_fd_table(proc);
+    }
+    if (initial_capacity == 0U) {
+        initial_capacity = INITIAL_FD_CAPACITY;
+    }
+
+    auto* const table = static_cast<FileDescriptor*>(
+        MM::kzalloc(initial_capacity * sizeof(FileDescriptor), alignof(FileDescriptor)));
+    if (table == nullptr) {
+        return false;
+    }
+
+    for (size_t idx = 0U; idx < initial_capacity; ++idx) {
+        new (&table[idx]) FileDescriptor{};
+    }
+
+    proc.fd_table = table;
+    proc.fd_capacity = initial_capacity;
+    return true;
+}
+
+void destroy_fd_table(Process& proc) noexcept {
+    if (proc.fd_table == nullptr) {
+        proc.fd_capacity = 0U;
         return;
     }
+
+    for (size_t idx = 0U; idx < proc.fd_capacity; ++idx) {
+        if (proc.fd_table[idx].in_use) {
+            close_fd(proc, idx);
+        }
+    }
+
+    MM::kfree(proc.fd_table);
+    proc.fd_table = nullptr;
+    proc.fd_capacity = 0U;
+}
+
+bool ensure_fd_capacity(Process& proc, size_t required_slots) noexcept {
+    if (required_slots > proc.rlim_nofile_cur) {
+        return false;
+    }
+    if (proc.fd_table != nullptr && required_slots <= proc.fd_capacity) {
+        return true;
+    }
+
+    size_t new_capacity = (proc.fd_capacity > 0U) ? proc.fd_capacity : INITIAL_FD_CAPACITY;
+    while (new_capacity < required_slots) {
+        if (new_capacity >= proc.rlim_nofile_cur) {
+            new_capacity = static_cast<size_t>(proc.rlim_nofile_cur);
+            break;
+        }
+        if (new_capacity > (SIZE_MAX / 2U)) {
+            new_capacity = static_cast<size_t>(proc.rlim_nofile_cur);
+            break;
+        }
+        const size_t doubled = new_capacity * 2U;
+        new_capacity =
+            (doubled > proc.rlim_nofile_cur) ? static_cast<size_t>(proc.rlim_nofile_cur) : doubled;
+    }
+
+    auto* const grown = static_cast<FileDescriptor*>(MM::krealloc(
+        proc.fd_table, new_capacity * sizeof(FileDescriptor), alignof(FileDescriptor)));
+    if (grown == nullptr) {
+        return false;
+    }
+
+    for (size_t idx = proc.fd_capacity; idx < new_capacity; ++idx) {
+        new (&grown[idx]) FileDescriptor{};
+    }
+
+    proc.fd_table = grown;
+    proc.fd_capacity = new_capacity;
+    return true;
+}
+
+int allocate_fd(Process& proc, size_t min_fd) noexcept {
+    const auto max_fds = static_cast<size_t>(proc.rlim_nofile_cur);
+    if (min_fd >= max_fds) {
+        return ERR_EMFILE;
+    }
+
+    if (proc.fd_table == nullptr || min_fd >= proc.fd_capacity) {
+        if (!ensure_fd_capacity(proc, min_fd + 1U)) {
+            return ERR_EMFILE;
+        }
+    }
+
+    const size_t search_limit = (proc.fd_capacity < max_fds) ? proc.fd_capacity : max_fds;
+    for (size_t idx = min_fd; idx < search_limit; ++idx) {
+        if (!proc.fd_table[idx].in_use) {
+            return static_cast<int>(idx);
+        }
+    }
+
+    if (proc.fd_capacity >= max_fds) {
+        return ERR_EMFILE;
+    }
+
+    const size_t next_slot = proc.fd_capacity;
+    if (!ensure_fd_capacity(proc, next_slot + 1U)) {
+        return ERR_EMFILE;
+    }
+
+    return static_cast<int>(next_slot);
+}
+
+void close_fd(Process& proc, size_t fd_idx) noexcept {
+    if (proc.fd_table == nullptr || fd_idx >= proc.fd_capacity) {
+        return;
+    }
+
     auto& desc = proc.fd_table[fd_idx];
     if (!desc.in_use) {
         return;
     }
-    if (desc.type == FdType::PipeRead) {
+
+    if (desc.type == FdType::PipeRead && desc.pipe != nullptr) {
         FS::release_pipe_reader(desc.pipe);
-    } else if (desc.type == FdType::PipeWrite) {
+    } else if (desc.type == FdType::PipeWrite && desc.pipe != nullptr) {
         FS::release_pipe_writer(desc.pipe);
     }
+
     desc = FileDescriptor{};
 }
 
@@ -148,90 +204,114 @@ void copy_fd_slot(FileDescriptor& dst, const FileDescriptor& src, bool clear_clo
         dst.flags &= ~FD_FLAG_CLOEXEC;
     }
     if (dst.in_use) {
-        if (dst.type == FdType::PipeRead) {
+        if (dst.type == FdType::PipeRead && dst.pipe != nullptr) {
             FS::retain_pipe_reader(dst.pipe);
-        } else if (dst.type == FdType::PipeWrite) {
+        } else if (dst.type == FdType::PipeWrite && dst.pipe != nullptr) {
             FS::retain_pipe_writer(dst.pipe);
         }
     }
 }
 
 void close_cloexec_fds(Process& proc) noexcept {
-    for (size_t idx = 0U; idx < MAX_FDS_PER_PROCESS; ++idx) {
+    if (proc.fd_table == nullptr) {
+        return;
+    }
+    for (size_t idx = 0U; idx < proc.fd_capacity; ++idx) {
         if (proc.fd_table[idx].in_use && (proc.fd_table[idx].flags & FD_FLAG_CLOEXEC) != 0U) {
             close_fd(proc, idx);
         }
     }
 }
-
 Process* allocate_process(uint32_t ppid) noexcept {
-    const auto platform = HAL::get_platform_info();
-
-    auto* const proc = new (std::nothrow) Process{};
-    if (proc == nullptr) {
-        return nullptr;
-    }
-
-    const uintptr_t kstack_paddr = alloc_frames(KERNEL_STACK_PAGES);
-    if (kstack_paddr == 0U) {
-        delete proc;
-        return nullptr;
-    }
-
-    const size_t kstack_bytes = KERNEL_STACK_PAGES * platform.page_size;
-    auto* const kstack_kva = reinterpret_cast<uint8_t*>(MM::phys_to_virt(kstack_paddr));
-    for (size_t byte_idx = 0U; byte_idx < kstack_bytes; ++byte_idx) {
-        kstack_kva[byte_idx] = 0U;
-    }
-
     auto& cpu = HAL::get_cpu();
     const bool irq_was_enabled = cpu.interrupts_enabled();
     cpu.disable_interrupts();
 
-    uint32_t candidate_pid = g_next_pid++;
-    if (candidate_pid == 0U) {
-        candidate_pid = g_next_pid++;
-    }
-    while (find_process_by_pid(candidate_pid) != nullptr) {
-        candidate_pid = g_next_pid++;
-        if (candidate_pid == 0U) {
-            candidate_pid = g_next_pid++;
+    if (active_process_count() >= default_rlimit_nproc()) {
+        if (irq_was_enabled) {
+            cpu.enable_interrupts();
         }
+        return nullptr;
     }
 
-    proc->pid = candidate_pid;
+    void* const raw_proc = MM::kzalloc(sizeof(Process), alignof(Process));
+    if (raw_proc == nullptr) {
+        if (irq_was_enabled) {
+            cpu.enable_interrupts();
+        }
+        return nullptr;
+    }
+    auto* const proc = new (raw_proc) Process{};
+    proc->fd_table = nullptr;
+    proc->fd_capacity = 0U;
+
+    const uintptr_t kstack_pa = alloc_frames(KERNEL_STACK_PAGES);
+    if (kstack_pa == 0U) {
+        proc->~Process();
+        MM::kfree(proc);
+        if (irq_was_enabled) {
+            cpu.enable_interrupts();
+        }
+        return nullptr;
+    }
+
+    if (!init_fd_table(*proc, INITIAL_FD_CAPACITY)) {
+        free_frames(kstack_pa, KERNEL_STACK_PAGES);
+        proc->~Process();
+        MM::kfree(proc);
+        if (irq_was_enabled) {
+            cpu.enable_interrupts();
+        }
+        return nullptr;
+    }
+
+    const size_t page_size = HAL::get_platform_info().page_size;
+    proc->kstack_paddr = kstack_pa;
+    proc->kstack_top = MM::phys_to_virt(kstack_pa) + (KERNEL_STACK_PAGES * page_size);
+
+    if (g_next_pid == 0U) {
+        g_next_pid = 1U;
+    }
+    proc->pid = g_next_pid++;
     proc->ppid = ppid;
-    proc->pgid = candidate_pid;
-    proc->sid = candidate_pid;
-    proc->umask = 0022U;
+    proc->pgid = (ppid == 0U) ? proc->pid : 0U;
+    proc->sid = (ppid == 0U) ? proc->pid : 0U;
     proc->state = ProcessState::Ready;
-    proc->exit_status = 0;
-    proc->timeslice = Scheduler::DEFAULT_TIMESLICE_TICKS;
-    proc->utime = 0U;
-    proc->stime = 0U;
-    proc->cutime = 0U;
-    proc->cstime = 0U;
-    proc->rlim_nofile_cur = MAX_FDS_PER_PROCESS;
-    proc->rlim_nofile_max = MAX_FDS_PER_PROCESS;
-    proc->stop_signal = 0U;
-    proc->stop_reported = false;
-    proc->continued = false;
-    proc->has_saved_sigmask = false;
-    proc->saved_sigmask = 0ULL;
-    proc->kstack_paddr = kstack_paddr;
-    proc->kstack_top = reinterpret_cast<uintptr_t>(kstack_kva) + kstack_bytes;
-    proc->kctx_initialized = false;
-    proc->entry_point = 0U;
-    proc->brk_start = platform.user_brk_base;
-    proc->brk_current = platform.user_brk_base;
-    proc->mmap_next_vaddr = platform.user_mmap_base;
-    proc->clear_child_tid = 0U;
     proc->cwd[0] = '/';
     proc->cwd[1] = '\0';
-    reset_sigactions(*proc);
-    init_standard_fds(*proc);
 
-    link_global_process(*proc);
+    proc->rlim_nofile_cur = DEFAULT_RLIMIT_NOFILE_CUR;
+    proc->rlim_nofile_max = DEFAULT_RLIMIT_NOFILE_MAX;
+    proc->rlim_nproc_cur = default_rlimit_nproc();
+    proc->rlim_nproc_max = default_rlimit_nproc();
+
+    proc->fd_table[0] = FileDescriptor{
+        .type = FdType::ConsoleTty,
+        .flags = FD_FLAG_READ,
+        .offset = 0U,
+        .in_use = true,
+    };
+    proc->fd_table[1] = FileDescriptor{
+        .type = FdType::ConsoleTty,
+        .flags = FD_FLAG_WRITE,
+        .offset = 0U,
+        .in_use = true,
+    };
+    proc->fd_table[2] = FileDescriptor{
+        .type = FdType::ConsoleTty,
+        .flags = FD_FLAG_WRITE,
+        .offset = 0U,
+        .in_use = true,
+    };
+
+    proc->global_prev = g_process_list_tail;
+    proc->global_next = nullptr;
+    if (g_process_list_tail != nullptr) {
+        g_process_list_tail->global_next = proc;
+    } else {
+        g_process_list_head = proc;
+    }
+    g_process_list_tail = proc;
 
     if (irq_was_enabled) {
         cpu.enable_interrupts();
@@ -244,36 +324,54 @@ void release_process(Process& proc) noexcept {
     const bool irq_was_enabled = cpu.interrupts_enabled();
     cpu.disable_interrupts();
 
-    if (g_current_process == &proc) {
-        g_current_process = nullptr;
-    }
-
     Scheduler::remove(&proc);
     if (proc.active_wq != nullptr) {
         proc.active_wq->remove(&proc);
     }
 
-    record_reaped_ticks(proc.pid, static_cast<uint64_t>(proc.utime + proc.stime));
-    unlink_global_process(proc);
+    if (proc.global_prev != nullptr) {
+        proc.global_prev->global_next = proc.global_next;
+    } else if (g_process_list_head == &proc) {
+        g_process_list_head = proc.global_next;
+    }
+
+    if (proc.global_next != nullptr) {
+        proc.global_next->global_prev = proc.global_prev;
+    } else if (g_process_list_tail == &proc) {
+        g_process_list_tail = proc.global_prev;
+    }
+
+    proc.global_next = nullptr;
+    proc.global_prev = nullptr;
+
+    if (g_current_process == &proc) {
+        g_current_process = nullptr;
+    }
+
+    record_reaped_ticks(proc.pid, proc.utime + proc.stime);
+
+    // Idempotent teardown of dynamic fd_table, user stack, address space, kstack, and PCB
+    destroy_fd_table(proc);
+
+    if (proc.user_stack.phys_base != 0U && proc.user_stack.num_pages > 0U) {
+        free_frames(proc.user_stack.phys_base, proc.user_stack.num_pages);
+        proc.user_stack = UserStack{};
+    }
+
+    proc.address_space.destroy();
+
+    if (proc.kstack_paddr != 0U) {
+        free_frames(proc.kstack_paddr, KERNEL_STACK_PAGES);
+        proc.kstack_paddr = 0U;
+        proc.kstack_top = 0U;
+    }
 
     if (irq_was_enabled) {
         cpu.enable_interrupts();
     }
 
-    for (size_t idx = 0U; idx < MAX_FDS_PER_PROCESS; ++idx) {
-        close_fd(proc, idx);
-    }
-
-    if (proc.user_stack.phys_base != 0U && proc.user_stack.num_pages > 0U) {
-        free_frames(proc.user_stack.phys_base, proc.user_stack.num_pages);
-    }
-
-    if (proc.kstack_paddr != 0U) {
-        free_frames(proc.kstack_paddr, KERNEL_STACK_PAGES);
-    }
-
-    proc.address_space.destroy();
-    delete &proc;
+    proc.~Process();
+    MM::kfree(&proc);
 }
 
 Process* find_process_by_pid(uint32_t pid) noexcept {
@@ -603,39 +701,62 @@ int64_t execute_process(Process& proc) noexcept {
 }
 
 [[noreturn]] void exit_current_process(int64_t exit_code) noexcept {
-    HAL::get_cpu().disable_interrupts();
-    auto* const proc = g_current_process;
-    if (proc != nullptr) {
-        for (size_t idx = 0U; idx < MAX_FDS_PER_PROCESS; ++idx) {
-            close_fd(*proc, idx);
-        }
+    auto& cpu = HAL::get_cpu();
+    cpu.disable_interrupts();
 
-        // Reparent any surviving children to PID 1 (init) or 0
-        const uint32_t reaper_pid =
-            (find_process_by_pid(1U) != nullptr && proc->pid != 1U) ? 1U : 0U;
-        for (Process* child = g_process_list_head; child != nullptr; child = child->global_next) {
-            if (child != proc && child->ppid == proc->pid) {
-                child->ppid = reaper_pid;
-            }
-        }
+    auto* const proc = current_process();
+    if (proc == nullptr) {
+        cpu.return_to_kernel(exit_code);
+    }
 
-        record_reaped_ticks(proc->pid, static_cast<uint64_t>(proc->utime + proc->stime));
-        proc->exit_status = exit_code;
-        proc->state = ProcessState::Zombie;
+    proc->exit_status = exit_code;
+    proc->state = ProcessState::Zombie;
+    record_reaped_ticks(proc->pid, proc->utime + proc->stime);
 
-        if (proc->ppid != 0U) {
-            auto* const parent = find_process_by_pid(proc->ppid);
-            if (parent != nullptr) {
-                send_signal(*parent, SIG_CHLD);
-                parent->child_wait_queue.wake_all();
+    // Close all open descriptors & free fd_table immediately so downstream
+    // pipe readers receive EOF before the parent calls wait4()
+    destroy_fd_table(*proc);
+
+    if (proc->clear_child_tid != 0U) {
+        const uint32_t zero_tid = 0U;
+        MM::copy_to_user(proc->address_space, proc->clear_child_tid, &zero_tid, sizeof(zero_tid));
+        proc->clear_child_tid = 0U;
+    }
+
+    // Reparent any orphaned children to PID 1
+    auto* const init_proc = (proc->pid != 1U) ? find_process_by_pid(1U) : nullptr;
+    const uint32_t adopt_pid = (init_proc != nullptr) ? 1U : 0U;
+    bool adopted_zombie = false;
+
+    for (auto* child = g_process_list_head; child != nullptr; child = child->global_next) {
+        if (child != proc && child->state != ProcessState::Unused && child->ppid == proc->pid) {
+            child->ppid = adopt_pid;
+            if (child->state == ProcessState::Zombie) {
+                adopted_zombie = true;
             }
         }
     }
 
+    if (adopted_zombie && init_proc != nullptr) {
+        send_signal(*init_proc, SIG_CHLD);
+        init_proc->child_wait_queue.wake_all();
+    }
+
+    if (proc->ppid != 0U) {
+        auto* const parent = find_process_by_pid(proc->ppid);
+        if (parent != nullptr && parent->state != ProcessState::Unused &&
+            parent->state != ProcessState::Zombie) {
+            send_signal(*parent, SIG_CHLD);
+            parent->child_wait_queue.wake_all();
+        }
+    }
+
+    Scheduler::remove(proc);
     Scheduler::schedule();
 
+    cpu.return_to_kernel(exit_code);
     while (true) {
-        HAL::get_cpu().halt();
+        cpu.halt();
     }
 }
 

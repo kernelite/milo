@@ -5,6 +5,7 @@
 #include "hal/cpu.hpp"
 #include "loader/elf_loader.hpp"
 #include "mm/address_space.hpp"
+#include "process/resource.hpp"
 #include "process/stack_builder.hpp"
 #include "process/wait_queue.hpp"
 
@@ -13,7 +14,7 @@
 
 namespace Kernel::Process {
 
-constexpr size_t MAX_FDS_PER_PROCESS = 64U;
+constexpr size_t INITIAL_FD_CAPACITY = 16U;
 constexpr size_t KERNEL_STACK_PAGES = 4U; // 16 KiB per-process kernel stack
 constexpr size_t MAX_PATH_LEN = 256U;
 constexpr size_t MAX_SIGNALS = 64U;
@@ -76,6 +77,8 @@ struct FileDescriptor {
 };
 
 struct Process {
+    ~Process() noexcept;
+
     HAL::KernelContext kctx{};
     HAL::CpuContext context{};
     int64_t exit_status{0};
@@ -86,8 +89,10 @@ struct Process {
     size_t cutime{0U};
     size_t cstime{0U};
 
-    uint64_t rlim_nofile_cur{MAX_FDS_PER_PROCESS};
-    uint64_t rlim_nofile_max{MAX_FDS_PER_PROCESS};
+    uint64_t rlim_nofile_cur{DEFAULT_RLIMIT_NOFILE_CUR};
+    uint64_t rlim_nofile_max{DEFAULT_RLIMIT_NOFILE_MAX};
+    uint64_t rlim_nproc_cur{0ULL};
+    uint64_t rlim_nproc_max{0ULL};
     uint64_t saved_sigmask{0ULL};
     MM::AddressSpace address_space;
     uintptr_t kstack_paddr{0U};
@@ -102,7 +107,8 @@ struct Process {
     UserStack user_stack{};
     WaitQueue child_wait_queue;
     SigAction sigactions[MAX_SIGNALS]{};
-    FileDescriptor fd_table[MAX_FDS_PER_PROCESS]{};
+    FileDescriptor* fd_table{nullptr};
+    size_t fd_capacity{0U};
     uint32_t pid{0U};
     uint32_t ppid{0U};
     uint32_t pgid{0U};
@@ -146,7 +152,11 @@ bool has_runnable_processes() noexcept;
 Process* current_process() noexcept;
 void set_current_process(Process* proc) noexcept;
 
-// File descriptor lifecycle helpers (handle Pipe refcounting)
+// Dynamic file descriptor table lifecycle & allocation
+bool init_fd_table(Process& proc, size_t initial_capacity = INITIAL_FD_CAPACITY) noexcept;
+void destroy_fd_table(Process& proc) noexcept;
+bool ensure_fd_capacity(Process& proc, size_t required_slots) noexcept;
+int allocate_fd(Process& proc, size_t min_fd = 0U) noexcept;
 void close_fd(Process& proc, size_t fd_idx) noexcept;
 void copy_fd_slot(FileDescriptor& dst, const FileDescriptor& src, bool clear_cloexec) noexcept;
 void close_cloexec_fds(Process& proc) noexcept;
