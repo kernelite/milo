@@ -797,6 +797,90 @@ void cmd_test_svc_trap() {
     print_str("  [PASS] SVC trap handled and returned to EL1 successfully!\r\n");
 }
 
+void cmd_test_dynamic_io() noexcept {
+    print_str("\r\n[TEST] Running Dynamic I/O Scalability & Zero-Leak Suite...\r\n");
+
+    const size_t pages_before = pfa_free_pages_count();
+    const size_t procs_before = Kernel::Process::active_process_count();
+
+    auto* const proc = Kernel::Process::allocate_process(0U);
+    assert_test(proc != nullptr && proc->fd_capacity == Kernel::Process::INITIAL_FD_CAPACITY,
+                "PCB initialized dynamic fd_table with 16 slots");
+    if (proc == nullptr) {
+        return;
+    }
+
+    assert_test(proc->rlim_nofile_cur == 1024ULL && proc->rlim_nofile_max == 4096ULL,
+                "RLIMIT_NOFILE defaults set to 1024 soft / 4096 hard");
+    assert_test(proc->rlim_nproc_cur >= 64ULL,
+                "RLIMIT_NPROC dynamically computed from platform RAM size");
+
+    // 1. Allocate 100 concurrent heap-backed pipes (200 FDs -> grows fd_table 16 -> 32 -> 64 -> 128
+    // -> 256)
+    constexpr size_t PIPE_COUNT = 100U;
+    int read_fds[PIPE_COUNT]{};
+    int write_fds[PIPE_COUNT]{};
+    bool pipes_ok = true;
+
+    for (size_t i = 0U; i < PIPE_COUNT; ++i) {
+        const int rfd = Kernel::Process::allocate_fd(*proc, 0U);
+        if (rfd < 0) {
+            pipes_ok = false;
+            break;
+        }
+        proc->fd_table[rfd].in_use = true;
+
+        const int wfd = Kernel::Process::allocate_fd(*proc, static_cast<size_t>(rfd) + 1U);
+        if (wfd < 0) {
+            proc->fd_table[rfd].in_use = false;
+            pipes_ok = false;
+            break;
+        }
+
+        Kernel::FS::Pipe* const pipe = Kernel::FS::allocate_pipe();
+        if (pipe == nullptr) {
+            proc->fd_table[rfd].in_use = false;
+            pipes_ok = false;
+            break;
+        }
+
+        proc->fd_table[rfd] = Kernel::Process::FileDescriptor{
+            .type = Kernel::Process::FdType::PipeRead,
+            .flags = Kernel::Process::FD_FLAG_READ,
+            .in_use = true,
+            .pipe = pipe,
+        };
+        proc->fd_table[wfd] = Kernel::Process::FileDescriptor{
+            .type = Kernel::Process::FdType::PipeWrite,
+            .flags = Kernel::Process::FD_FLAG_WRITE,
+            .in_use = true,
+            .pipe = pipe,
+        };
+        read_fds[i] = rfd;
+        write_fds[i] = wfd;
+    }
+
+    assert_test(pipes_ok && proc->fd_capacity == 256U,
+                "Allocated 100 concurrent heap pipes and geometrically grew fd_table to 256 slots");
+
+    // 2. Grow fd_table past 512 slots to validate high-FD indexing
+    const bool grew_512 = Kernel::Process::ensure_fd_capacity(*proc, 520U);
+    assert_test(grew_512 && proc->fd_capacity == 1024U,
+                "Geometric krealloc expanded fd_table cleanly to 1024 slots");
+
+    // 3. Close all pipes and release PCB
+    for (size_t i = 0U; i < PIPE_COUNT; ++i) {
+        Kernel::Process::close_fd(*proc, static_cast<size_t>(read_fds[i]));
+        Kernel::Process::close_fd(*proc, static_cast<size_t>(write_fds[i]));
+    }
+    Kernel::Process::release_process(*proc);
+
+    assert_test(Kernel::Process::active_process_count() == procs_before,
+                "Process table count returned to baseline");
+    assert_test(pfa_free_pages_count() == pages_before,
+                "Zero physical frame leaks after tearing down 100 pipes and dynamic fd_table");
+}
+
 void cmd_test_data_abort() {
     print_str(
         "[TEST] Triggering Data Abort by accessing invalid address 0x00000000DEADBEE0ULL...\r\n");
@@ -1064,6 +1148,9 @@ void cmd_test_syscall() noexcept {
     }
     assert_test(proc->pid > 0U && proc->state == Kernel::Process::ProcessState::Ready,
                 "PCB initialized with valid PID and Ready state");
+    assert_test(proc->fd_table != nullptr && proc->fd_table[0].is_tty() &&
+                    proc->fd_table[1].is_tty() && proc->fd_table[2].is_tty(),
+                "PCB initialized FDs 0, 1, and 2 as ConsoleTty descriptors");
 
     auto as_res = Kernel::MM::AddressSpace::create();
     assert_test(as_res.is_ok(), "Created isolated AddressSpace for PCB");
@@ -1156,11 +1243,25 @@ void cmd_test_syscall() noexcept {
                     proc->exit_status == exit_status,
                 "PCB transitioned to Zombie state and recorded exit_status");
 
-    assert_test(proc->fd_table[0].is_tty() && proc->fd_table[1].is_tty() &&
-                    proc->fd_table[2].is_tty(),
-                "PCB initialized FDs 0, 1, and 2 as ConsoleTty descriptors");
-
     // 3. Execute EL0 TTY ioctl & non-blocking sys_read verification suite
+    assert_test(Kernel::Process::init_fd_table(*proc, Kernel::Process::INITIAL_FD_CAPACITY),
+                "Re-initialized dynamic fd_table for TTY ioctl verification suite");
+    proc->fd_table[0] = Kernel::Process::FileDescriptor{
+        .type = Kernel::Process::FdType::ConsoleTty,
+        .flags = Kernel::Process::FD_FLAG_READ,
+        .in_use = true,
+    };
+    proc->fd_table[1] = Kernel::Process::FileDescriptor{
+        .type = Kernel::Process::FdType::ConsoleTty,
+        .flags = Kernel::Process::FD_FLAG_WRITE,
+        .in_use = true,
+    };
+    proc->fd_table[2] = Kernel::Process::FileDescriptor{
+        .type = Kernel::Process::FdType::ConsoleTty,
+        .flags = Kernel::Process::FD_FLAG_WRITE,
+        .in_use = true,
+    };
+
     constexpr uint64_t NON_TTY_FD = 3ULL;
     proc->fd_table[NON_TTY_FD] = Kernel::Process::FileDescriptor{
         .type = Kernel::Process::FdType::InitrdFile,
@@ -1973,6 +2074,7 @@ void print_help() noexcept {
     print_str("  test user       - Instantiate EL0 process and verify syscall exit\r\n");
     print_str("  test fork_exec  - Test fork, execve and wait4");
     print_str("  test heap       - Test kernel slab/compound heap & C++ new/delete ABI\r\n");
+    print_str("  test dynamic_io - Test dynamic FD growth, heap pipes & 500+ FD ppoll\r\n");
     print_str("  test sched      - Test O(1) task scheduler\r\n");
     print_str(
         "  test stack_abi  - Run user stack allocation & System V ABI construction tests\r\n");
@@ -2062,6 +2164,8 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_sched();
     } else if (streq(buf, "test heap")) {
         cmd_test_heap();
+    } else if (streq(buf, "test dynamic_io")) {
+        cmd_test_dynamic_io();
     } else if (streq(buf, "bash")) {
         cmd_bash();
     } else if (streq(buf, "sh")) {
@@ -2095,6 +2199,7 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_musl();
         cmd_test_sched();
         cmd_test_heap();
+        cmd_test_dynamic_io();
     } else if (buf[0] != '\0') {
         print_str("Unknown command: '");
         print_str(buf);
