@@ -570,6 +570,76 @@ bool AddressSpaceBackend::query_user_page(uintptr_t root_paddr, uintptr_t vaddr,
     return true;
 }
 
+bool AddressSpaceBackend::query_pte_flags(uintptr_t root_paddr, uintptr_t vaddr,
+                                          uint64_t& out_raw_pte) noexcept {
+    constexpr uintptr_t USER_VA_LIMIT = 0x40000000ULL;
+    constexpr uint64_t AP_USER_BIT = 1ULL << 6U;
+
+    if (root_paddr == 0U || vaddr >= USER_VA_LIMIT) {
+        return false;
+    }
+
+    const size_t l0_idx = (vaddr >> 39U) & 0x1FFU;
+    const size_t l1_idx = (vaddr >> 30U) & 0x1FFU;
+    const size_t l2_idx = (vaddr >> 21U) & 0x1FFU;
+    const size_t l3_idx = (vaddr >> 12U) & 0x1FFU;
+
+    const auto* const l0_table =
+        reinterpret_cast<const uint64_t*>(Kernel::MM::phys_to_virt(root_paddr));
+    const uint64_t l0_desc = l0_table[l0_idx];
+    if ((l0_desc & DESC_TYPE_TABLE) != DESC_TYPE_TABLE) {
+        return false;
+    }
+
+    const auto* const l1_table =
+        reinterpret_cast<const uint64_t*>(Kernel::MM::phys_to_virt(l0_desc & TABLE_ADDR_MASK));
+    const uint64_t l1_desc = l1_table[l1_idx];
+    if ((l1_desc & DESC_TYPE_TABLE) != DESC_TYPE_TABLE) {
+        return false;
+    }
+
+    const auto* const l2_table =
+        reinterpret_cast<const uint64_t*>(Kernel::MM::phys_to_virt(l1_desc & TABLE_ADDR_MASK));
+    const uint64_t l2_desc = l2_table[l2_idx];
+    if ((l2_desc & DESC_TYPE_TABLE) != DESC_TYPE_TABLE) {
+        return false;
+    }
+
+    const auto* const l3_table =
+        reinterpret_cast<const uint64_t*>(Kernel::MM::phys_to_virt(l2_desc & TABLE_ADDR_MASK));
+    const uint64_t l3_desc = l3_table[l3_idx];
+    if ((l3_desc & DESC_TYPE_TABLE) != DESC_TYPE_TABLE) {
+        return false;
+    }
+
+    if ((l3_desc & AP_USER_BIT) == 0ULL) {
+        return false;
+    }
+
+    out_raw_pte = l3_desc;
+    return true;
+}
+
+bool AddressSpaceBackend::remap_user_page(uintptr_t root_paddr, uintptr_t vaddr, uintptr_t paddr,
+                                          HAL::PageFlags flags) noexcept {
+    constexpr uintptr_t USER_VA_LIMIT = 0x40000000ULL;
+    constexpr size_t UART_L2_IDX = (0x09000000ULL >> 21U) & 0x1FFU;
+
+    if (root_paddr == 0U || vaddr >= USER_VA_LIMIT) {
+        return false;
+    }
+
+    const size_t l0_idx = (vaddr >> 39U) & 0x1FFU;
+    const size_t l1_idx = (vaddr >> 30U) & 0x1FFU;
+    const size_t l2_idx = (vaddr >> 21U) & 0x1FFU;
+    if (l0_idx == 0U && l1_idx == 0U && l2_idx == UART_L2_IDX) {
+        return false;
+    }
+
+    auto* const root_l0 = reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(root_paddr));
+    return map_page_in_root(root_l0, vaddr, paddr, flags);
+}
+
 void AddressSpaceBackend::activate_root(uintptr_t root_paddr) noexcept {
     asm volatile("dsb ish\n\t"
                  "msr ttbr0_el1, %0\n\t"

@@ -77,6 +77,10 @@ struct AddressSpaceBackend {
     static bool protect_user_page(uintptr_t root_paddr, uintptr_t vaddr, PageFlags flags) noexcept;
     static bool query_user_page(uintptr_t root_paddr, uintptr_t vaddr, uintptr_t& out_paddr,
                                 PageFlags& out_flags) noexcept;
+    static bool query_pte_flags(uintptr_t root_paddr, uintptr_t vaddr,
+                                uint64_t& out_raw_pte) noexcept;
+    static bool remap_user_page(uintptr_t root_paddr, uintptr_t vaddr, uintptr_t paddr,
+                                PageFlags flags) noexcept;
     static void activate_root(uintptr_t root_paddr) noexcept;
     static uintptr_t current_root_paddr() noexcept;
     static void destroy_root(uintptr_t root_paddr) noexcept;
