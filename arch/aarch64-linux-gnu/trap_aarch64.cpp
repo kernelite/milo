@@ -1,9 +1,13 @@
 #include "cpu_context.hpp"
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
+#include "hal/mmu.hpp"
 #include "hal/targets/qemu_virt/gicv2.hpp"
 #include "hal/targets/qemu_virt/timer.hpp"
 #include "hal/trap.hpp"
+#include "memory_config.hpp"
+#include "mm/address_space.hpp"
+#include "mm/pfa.hpp"
 #include "process/process.hpp"
 #include "process/scheduler.hpp"
 
@@ -15,11 +19,15 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
 void aarch64_handle_irq_exception(HAL::CpuContext* ctx) noexcept;
 void aarch64_handle_invalid_exception(HAL::CpuContext* ctx, uint64_t type) noexcept;
 [[noreturn]] void return_to_kernel(int64_t exit_code) noexcept;
+void* memcpy(void* dest, const void* src, size_t count) noexcept;
 }
 
 namespace {
 
 constexpr bool ENABLE_REGISTER_DUMP = false;
+constexpr uint64_t TABLE_ADDR_MASK = 0x000FFFFFFFFFF000ULL;
+constexpr uint64_t DESC_UXN = 1ULL << 54U;
+constexpr uint64_t DESC_COW = 1ULL << 55U;
 
 void print_str(const char* str) noexcept {
     size_t len = 0;
@@ -126,6 +134,74 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
     case 0x24U: // Data Abort from Lower EL
     case 0x25U: // Data Abort from Current EL
     {
+        if (eclass == 0x24U) {
+            const uint32_t dfsc = static_cast<uint32_t>(esr & 0x3FU);
+            const bool is_perm_fault = (dfsc & 0x3CU) == 0x0CU;   // Level 0..3 permission fault
+            const bool is_write = (esr & (1ULL << 6U)) != 0ULL;   // WnR bit
+            const bool far_valid = (esr & (1ULL << 10U)) == 0ULL; // FnV == 0
+
+            if (is_perm_fault && is_write && far_valid) {
+                const uintptr_t current_root = HAL::AddressSpaceBackend::current_root_paddr();
+                uint64_t raw_pte = 0ULL;
+
+                if (HAL::AddressSpaceBackend::query_pte_flags(current_root, far, raw_pte) &&
+                    (raw_pte & DESC_COW) != 0ULL) {
+                    const uintptr_t fault_paddr = raw_pte & TABLE_ADDR_MASK;
+                    Page* const page = page_from_paddr(fault_paddr);
+
+                    if (page != nullptr) {
+                        HAL::PageFlags user_rw_flags =
+                            HAL::PageFlags::User | HAL::PageFlags::Read | HAL::PageFlags::Write;
+                        if ((raw_pte & DESC_UXN) == 0ULL) {
+                            user_rw_flags |= HAL::PageFlags::Execute;
+                        }
+                        if (((raw_pte >> 2U) & 0x7ULL) == 0ULL) {
+                            user_rw_flags |= HAL::PageFlags::Device;
+                        } else {
+                            user_rw_flags |= HAL::PageFlags::Cacheable;
+                        }
+
+                        bool cow_resolved = false;
+                        if (__atomic_load_n(&page->ref_count, __ATOMIC_ACQ_REL) > 1U) {
+                            const uintptr_t new_paddr = alloc_frame();
+                            if (new_paddr != 0U) {
+                                auto* const dst_kva =
+                                    reinterpret_cast<void*>(Kernel::MM::phys_to_virt(new_paddr));
+                                const auto* const src_kva = reinterpret_cast<const void*>(
+                                    Kernel::MM::phys_to_virt(fault_paddr));
+                                memcpy(dst_kva, src_kva, Arch::PAGE_SIZE);
+                                HAL::get_cpu().flush_dcache_range(
+                                    reinterpret_cast<uintptr_t>(dst_kva), Arch::PAGE_SIZE);
+
+                                if (HAL::AddressSpaceBackend::remap_user_page(
+                                        current_root, far, new_paddr, user_rw_flags)) {
+                                    page_put(fault_paddr);
+                                    cow_resolved = true;
+                                } else {
+                                    free_frame(new_paddr);
+                                }
+                            }
+                        } else {
+                            cow_resolved = HAL::AddressSpaceBackend::remap_user_page(
+                                current_root, far, fault_paddr, user_rw_flags);
+                        }
+
+                        if (cow_resolved) {
+                            asm volatile("dsb ish\n\t"
+                                         "tlbi vaae1is, %0\n\t"
+                                         "dsb ish\n\t"
+                                         "isb" ::"r"(far >> 12U)
+                                         : "memory");
+                            if (HAL::has_flag(user_rw_flags, HAL::PageFlags::Execute)) {
+                                HAL::get_cpu().invalidate_icache();
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
         print_str("\r\n[TRAP] Data/Instruction Abort Trap Captured!\r\n");
         print_str("  Faulting Virtual Address (FAR_EL1): ");
         print_hex64(far);
@@ -157,7 +233,6 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
         }
         return;
     }
-
     default: {
         print_str("\r\n[PANIC] Unhandled Synchronous Exception! EC=");
         print_hex64(eclass);

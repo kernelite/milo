@@ -347,8 +347,8 @@ void page_put(uintptr_t paddr) noexcept {
     const size_t idx = static_cast<size_t>(page - g_pages);
     size_t current_hint = __atomic_load_n(&g_search_hint, __ATOMIC_RELAXED);
     while (idx < current_hint &&
-           !__atomic_compare_exchange_n(&g_search_hint, &current_hint, idx, false,
-                                        __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+           !__atomic_compare_exchange_n(&g_search_hint, &current_hint, idx, false, __ATOMIC_RELAXED,
+                                        __ATOMIC_RELAXED)) {
     }
 }
 
