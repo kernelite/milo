@@ -38,6 +38,9 @@ constexpr uint64_t DESC_AF = 1ULL << 10U;
 constexpr uint64_t DESC_PXN = 1ULL << 53U;
 constexpr uint64_t DESC_UXN = 1ULL << 54U;
 constexpr uint64_t DESC_COW = 1ULL << 55U;
+constexpr uint64_t PTE_DEMAND_ZERO = 1ULL << 56U;
+constexpr uint64_t PTE_DZ_FLAGS_SHIFT = 8U;
+// constexpr uint64_t PTE_DZ_FLAGS_MASK = 0xFFULL << PTE_DZ_FLAGS_SHIFT;
 
 constexpr uintptr_t align_down_page(uintptr_t addr) noexcept {
     return addr & ~(Arch::PAGE_SIZE - 1U);
@@ -45,6 +48,11 @@ constexpr uintptr_t align_down_page(uintptr_t addr) noexcept {
 
 constexpr uintptr_t align_up_page(uintptr_t addr) noexcept {
     return (addr + Arch::PAGE_SIZE - 1U) & ~(Arch::PAGE_SIZE - 1U);
+}
+
+constexpr uint64_t encode_demand_zero_pte(HAL::PageFlags flags) noexcept {
+    return PTE_DEMAND_ZERO |
+           (static_cast<uint64_t>(static_cast<uint8_t>(flags)) << PTE_DZ_FLAGS_SHIFT);
 }
 
 inline bool is_mmu_enabled() noexcept {
@@ -432,6 +440,50 @@ MemoryControl& get_mmu() noexcept {
     return aarch64_mmu;
 }
 
+bool AddressSpaceBackend::map_demand_zero(uintptr_t root_paddr, uintptr_t vaddr,
+                                          HAL::PageFlags expected_flags) noexcept {
+    constexpr uintptr_t USER_VA_LIMIT = 0x40000000ULL;
+    constexpr size_t UART_L2_IDX = (0x09000000ULL >> 21U) & 0x1FFU;
+
+    if (root_paddr == 0U || vaddr >= USER_VA_LIMIT) {
+        return false;
+    }
+
+    const size_t l0_idx = (vaddr >> 39U) & 0x1FFU;
+    const size_t l1_idx = (vaddr >> 30U) & 0x1FFU;
+    const size_t l2_idx = (vaddr >> 21U) & 0x1FFU;
+    const size_t l3_idx = (vaddr >> 12U) & 0x1FFU;
+
+    if (l0_idx == 0U && l1_idx == 0U && l2_idx == UART_L2_IDX) {
+        return false;
+    }
+
+    const bool mmu_on = is_mmu_enabled();
+    auto* const root_l0 = reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(root_paddr));
+
+    uint64_t* const l2_table = ensure_l2_table(root_l0, l0_idx, l1_idx, mmu_on);
+    if (l2_table == nullptr) {
+        return false;
+    }
+
+    const uint64_t l2_desc = l2_table[l2_idx];
+    if ((l2_desc & 1ULL) == 0ULL) {
+        const uintptr_t l3_paddr = allocate_table_page();
+        if (l3_paddr == 0U) {
+            return false;
+        }
+        l2_table[l2_idx] = (l3_paddr & TABLE_ADDR_MASK) | DESC_TYPE_TABLE;
+        flush_dcache_range(reinterpret_cast<uintptr_t>(&l2_table[l2_idx]), sizeof(uint64_t));
+    } else if ((l2_desc & DESC_TYPE_TABLE) != DESC_TYPE_TABLE) {
+        return false;
+    }
+
+    auto* const l3_table = table_ptr_from_phys(l2_table[l2_idx] & TABLE_ADDR_MASK, mmu_on);
+    l3_table[l3_idx] = encode_demand_zero_pte(expected_flags);
+    flush_dcache_range(reinterpret_cast<uintptr_t>(&l3_table[l3_idx]), sizeof(uint64_t));
+    return true;
+}
+
 uintptr_t AddressSpaceBackend::create_root() noexcept {
     const uintptr_t root_phys = allocate_zeroed_table();
     if (root_phys == 0U) {
@@ -608,11 +660,16 @@ bool AddressSpaceBackend::query_pte_flags(uintptr_t root_paddr, uintptr_t vaddr,
     const auto* const l3_table =
         reinterpret_cast<const uint64_t*>(Kernel::MM::phys_to_virt(l2_desc & TABLE_ADDR_MASK));
     const uint64_t l3_desc = l3_table[l3_idx];
-    if ((l3_desc & DESC_TYPE_TABLE) != DESC_TYPE_TABLE) {
+
+    if ((l3_desc & 1ULL) == 0ULL) {
+        if ((l3_desc & PTE_DEMAND_ZERO) != 0ULL) {
+            out_raw_pte = l3_desc;
+            return true;
+        }
         return false;
     }
 
-    if ((l3_desc & AP_USER_BIT) == 0ULL) {
+    if ((l3_desc & DESC_TYPE_TABLE) != DESC_TYPE_TABLE || (l3_desc & AP_USER_BIT) == 0ULL) {
         return false;
     }
 
@@ -758,6 +815,9 @@ bool AddressSpaceBackend::clone_user_space(uintptr_t src_root, uintptr_t dst_roo
         for (size_t i3 = 0U; i3 < PAGE_ENTRY_COUNT; ++i3) {
             uint64_t src_desc = src_l3[i3];
             if ((src_desc & 1U) == 0U) {
+                if ((src_desc & PTE_DEMAND_ZERO) != 0ULL) {
+                    dst_l3[i3] = src_desc;
+                }
                 continue;
             }
 
@@ -833,11 +893,19 @@ bool AddressSpaceBackend::protect_user_page(uintptr_t root_paddr, uintptr_t vadd
     auto* const l3_table =
         reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(l2_desc & TABLE_ADDR_MASK));
     uint64_t l3_desc = l3_table[l3_idx];
-    if ((l3_desc & DESC_TYPE_TABLE) != DESC_TYPE_TABLE) {
+
+    if ((l3_desc & 1ULL) == 0ULL) {
+        if ((l3_desc & PTE_DEMAND_ZERO) != 0ULL) {
+            l3_table[l3_idx] = encode_demand_zero_pte(flags);
+            flush_dcache_range(reinterpret_cast<uintptr_t>(&l3_table[l3_idx]), sizeof(uint64_t));
+            return true;
+        }
         return false;
     }
 
-    l3_desc &= ~((0x3ULL << 6U) | (1ULL << 53U) | (1ULL << 54U));
+    if ((l3_desc & DESC_TYPE_TABLE) != DESC_TYPE_TABLE) {
+        return false;
+    }
 
     const bool is_write = HAL::has_flag(flags, HAL::PageFlags::Write);
     const bool is_user = HAL::has_flag(flags, HAL::PageFlags::User);
@@ -869,4 +937,5 @@ bool AddressSpaceBackend::protect_user_page(uintptr_t root_paddr, uintptr_t vadd
                  : "memory");
     return true;
 }
+
 } // namespace HAL

@@ -743,19 +743,30 @@ int allocate_fd_slot(Kernel::Process::Process& proc, size_t min_fd = 0U) noexcep
 
 void unmap_and_free_range(Kernel::MM::AddressSpace& adrsp, uintptr_t start_vaddr,
                           uintptr_t end_vaddr, size_t page_size) noexcept {
+    constexpr uint64_t PTE_DEMAND_ZERO = 1ULL << 56U;
     const uintptr_t page_mask = page_size - 1U;
+
     for (uintptr_t page_vaddr = start_vaddr; page_vaddr < end_vaddr; page_vaddr += page_size) {
         uintptr_t out_paddr = 0U;
         HAL::PageFlags out_flags = HAL::PageFlags::None;
         if (adrsp.query_user_page(page_vaddr, out_paddr, out_flags)) {
             adrsp.unmap_user_page(page_vaddr);
             free_frame(out_paddr & ~page_mask);
+        } else {
+            uint64_t raw_pte = 0ULL;
+            if (adrsp.query_pte_flags(page_vaddr, raw_pte) && (raw_pte & PTE_DEMAND_ZERO) != 0ULL) {
+                adrsp.unmap_user_page(page_vaddr);
+            }
         }
     }
 }
 
 bool validate_user_range(uintptr_t root_paddr, uintptr_t user_buf, size_t count,
                          HAL::PageFlags required_perm) noexcept {
+    constexpr uint64_t PTE_DEMAND_ZERO = 1ULL << 56U;
+    constexpr uint64_t PTE_DZ_FLAGS_SHIFT = 8U;
+    constexpr uint64_t PTE_DZ_FLAGS_MASK = 0xFFULL << PTE_DZ_FLAGS_SHIFT;
+
     const uintptr_t va_limit = Kernel::MM::user_addr_space_limit();
     if (user_buf >= va_limit) {
         return false;
@@ -776,7 +787,13 @@ bool validate_user_range(uintptr_t root_paddr, uintptr_t user_buf, size_t count,
         uintptr_t out_paddr = 0U;
         HAL::PageFlags flags = HAL::PageFlags::None;
         if (!Kernel::MM::AddressSpace::query_user_page(root_paddr, page_vaddr, out_paddr, flags)) {
-            return false;
+            uint64_t raw_pte = 0ULL;
+            if (!Kernel::MM::AddressSpace::query_pte_flags(root_paddr, page_vaddr, raw_pte) ||
+                (raw_pte & PTE_DEMAND_ZERO) == 0ULL) {
+                return false;
+            }
+            flags =
+                static_cast<HAL::PageFlags>((raw_pte & PTE_DZ_FLAGS_MASK) >> PTE_DZ_FLAGS_SHIFT);
         }
         if (!HAL::has_flag(flags, HAL::PageFlags::User) || !HAL::has_flag(flags, required_perm)) {
             return false;
@@ -2973,20 +2990,7 @@ int64_t sys_brk(uintptr_t addr) noexcept {
 
         for (uintptr_t page_vaddr = old_page_end; page_vaddr < new_page_end;
              page_vaddr += page_size) {
-            const uintptr_t paddr = alloc_frame();
-            if (paddr == 0U) {
-                unmap_and_free_range(proc->address_space, old_page_end, page_vaddr, page_size);
-                return static_cast<int64_t>(proc->brk_current);
-            }
-
-            auto* const kva = reinterpret_cast<uint8_t*>(Kernel::MM::phys_to_virt(paddr));
-            for (size_t i = 0U; i < page_size; ++i) {
-                kva[i] = 0U;
-            }
-            HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(kva), page_size);
-
-            if (!proc->address_space.map_user_page(page_vaddr, paddr, heap_flags)) {
-                free_frame(paddr);
+            if (!proc->address_space.map_demand_zero(page_vaddr, heap_flags)) {
                 unmap_and_free_range(proc->address_space, old_page_end, page_vaddr, page_size);
                 return static_cast<int64_t>(proc->brk_current);
             }
@@ -3074,7 +3078,9 @@ int64_t sys_mmap(uintptr_t addr, uint64_t length, uint64_t prot, uint64_t flags,
              page += page_size) {
             uintptr_t tmp_pa = 0U;
             HAL::PageFlags tmp_fl = HAL::PageFlags::None;
-            if (proc->address_space.query_user_page(page, tmp_pa, tmp_fl)) {
+            uint64_t tmp_pte = 0ULL;
+            if (proc->address_space.query_user_page(page, tmp_pa, tmp_fl) ||
+                proc->address_space.query_pte_flags(page, tmp_pte)) {
                 hint_free = false;
                 break;
             }
@@ -3113,27 +3119,10 @@ int64_t sys_mmap(uintptr_t addr, uint64_t length, uint64_t prot, uint64_t flags,
     }
 
     for (uintptr_t page_vaddr = map_start; page_vaddr < map_end; page_vaddr += page_size) {
-        const uintptr_t paddr = alloc_frame();
-        if (paddr == 0U) {
+        if (!proc->address_space.map_demand_zero(page_vaddr, page_flags)) {
             unmap_and_free_range(proc->address_space, map_start, page_vaddr, page_size);
             return ERR_ENOMEM;
         }
-
-        auto* const kva = reinterpret_cast<uint8_t*>(Kernel::MM::phys_to_virt(paddr));
-        for (size_t i = 0U; i < page_size; ++i) {
-            kva[i] = 0U;
-        }
-        HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(kva), page_size);
-
-        if (!proc->address_space.map_user_page(page_vaddr, paddr, page_flags)) {
-            free_frame(paddr);
-            unmap_and_free_range(proc->address_space, map_start, page_vaddr, page_size);
-            return ERR_ENOMEM;
-        }
-    }
-
-    if ((prot & PROT_EXEC) != 0U) {
-        HAL::get_cpu().invalidate_icache();
     }
 
     if (used_arena_bump) {
