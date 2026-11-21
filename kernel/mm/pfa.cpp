@@ -33,6 +33,25 @@ constexpr uintptr_t align_up_page(uintptr_t addr) noexcept {
     return (addr + Arch::PAGE_SIZE - 1U) & ~(Arch::PAGE_SIZE - 1U);
 }
 
+inline PageFlags atomic_load_flags(const Page& page) noexcept {
+    const auto raw =
+        __atomic_load_n(reinterpret_cast<const uint8_t*>(&page.flags), __ATOMIC_ACQUIRE);
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+    return static_cast<PageFlags>(raw);
+}
+
+inline void atomic_store_flags(Page& page, PageFlags flags) noexcept {
+    __atomic_store_n(reinterpret_cast<uint8_t*>(&page.flags), static_cast<uint8_t>(flags),
+                     __ATOMIC_RELEASE);
+}
+
+inline bool atomic_try_claim_free_page(Page& page) noexcept {
+    auto expected = static_cast<uint8_t>(PageFlags::Free);
+    const auto desired = static_cast<uint8_t>(PageFlags::Allocated);
+    return __atomic_compare_exchange_n(reinterpret_cast<uint8_t*>(&page.flags), &expected, desired,
+                                       false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
+}
+
 void pfa_print(const char* str) noexcept {
     size_t len = 0U;
     while (str[len] != '\0') {
@@ -174,8 +193,6 @@ void pfa_init(const FDT::MemoryMap& mem_map, uintptr_t kernel_start, uintptr_t k
 #if defined(__aarch64__)
     g_pages = reinterpret_cast<Page*>(g_pages_paddr);
 #else
-    // Host unit tests pass simulated physical addresses (e.g., 0x40000000) that are not
-    // directly mapped in the host process's virtual address space.
     constexpr size_t HOST_MAX_METADATA_BYTES = 16UL * 1024UL * 1024UL; // Up to 4 GiB RAM
     alignas(Page) static uint8_t g_host_pages_storage[HOST_MAX_METADATA_BYTES];
     if (needed_bytes > HOST_MAX_METADATA_BYTES) {
@@ -221,7 +238,7 @@ void pfa_init(const FDT::MemoryMap& mem_map, uintptr_t kernel_start, uintptr_t k
             ++free_count;
         }
     }
-    g_free_pages = free_count;
+    __atomic_store_n(&g_free_pages, free_count, __ATOMIC_RELEASE);
 
     pfa_print("[PFA] Physical Frame Allocator Initialized.\r\n");
     pfa_print("  RAM Range   : ");
@@ -282,58 +299,90 @@ uintptr_t page_to_paddr(const Page* page) noexcept {
 
 void page_get(uintptr_t paddr) noexcept {
     Page* const page = page_from_paddr(paddr);
-    if (page == nullptr || has_page_flag(page->flags, PageFlags::Reserved)) {
+    if (page == nullptr || has_page_flag(atomic_load_flags(*page), PageFlags::Reserved)) {
         return;
     }
 
-    if (page->ref_count < UINT32_MAX) {
-        ++page->ref_count;
-    }
-
-    if (page->flags == PageFlags::Free) {
-        page->flags = PageFlags::Allocated;
-        if (g_free_pages > 0U) {
-            --g_free_pages;
+    // Relaxed ordering is sufficient for reference increments on already-allocated frames.
+    // Requiring current > 0 prevents resurrecting a frame concurrently transitioning to Free.
+    uint32_t current = __atomic_load_n(&page->ref_count, __ATOMIC_RELAXED);
+    while (current > 0U && current < UINT32_MAX) {
+        if (__atomic_compare_exchange_n(&page->ref_count, &current, current + 1U, false,
+                                        __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            return;
         }
     }
 }
 
 void page_put(uintptr_t paddr) noexcept {
     Page* const page = page_from_paddr(paddr);
-    if (page == nullptr || has_page_flag(page->flags, PageFlags::Reserved) ||
-        page->ref_count == 0U) {
+    if (page == nullptr || has_page_flag(atomic_load_flags(*page), PageFlags::Reserved)) {
         return;
     }
 
-    --page->ref_count;
-    if (page->ref_count == 0U) {
-        page->flags = PageFlags::Free;
-        page->order = 0U;
-        page->slab_cache = nullptr;
-        ++g_free_pages;
-
-        const size_t idx = static_cast<size_t>(page - g_pages);
-        if (idx < g_search_hint) {
-            g_search_hint = idx;
+    // Acquire-Release semantics ensure memory operations before the put
+    // are visible before the page is freed and potentially reused.
+    uint32_t current = __atomic_load_n(&page->ref_count, __ATOMIC_RELAXED);
+    while (true) {
+        if (current == 0U) {
+            return;
         }
+        if (__atomic_compare_exchange_n(&page->ref_count, &current, current - 1U, false,
+                                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            if (current != 1U) {
+                return;
+            }
+            break;
+        }
+    }
+
+    page->order = 0U;
+    page->slab_cache = nullptr;
+    page->next = nullptr;
+    page->prev = nullptr;
+    page->freelist = nullptr;
+    atomic_store_flags(*page, PageFlags::Free);
+    __atomic_add_fetch(&g_free_pages, 1U, __ATOMIC_RELAXED);
+
+    const size_t idx = static_cast<size_t>(page - g_pages);
+    size_t current_hint = __atomic_load_n(&g_search_hint, __ATOMIC_RELAXED);
+    while (idx < current_hint &&
+           !__atomic_compare_exchange_n(&g_search_hint, &current_hint, idx, false,
+                                        __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
     }
 }
 
+uint32_t page_ref_count(uintptr_t paddr) noexcept {
+    const Page* const page = page_from_paddr(paddr);
+    if (page == nullptr) {
+        return 0U;
+    }
+    return __atomic_load_n(&page->ref_count, __ATOMIC_ACQUIRE);
+}
+
 uintptr_t alloc_frame() noexcept {
-    if (g_pages == nullptr || g_free_pages == 0U || g_total_pages == 0U) {
+    if (g_pages == nullptr || __atomic_load_n(&g_free_pages, __ATOMIC_RELAXED) == 0U ||
+        g_total_pages == 0U) {
         pfa_print("[PFA ERROR] Out of physical memory frames!\r\n");
         return 0U;
     }
 
+    const size_t start_hint = __atomic_load_n(&g_search_hint, __ATOMIC_RELAXED);
     for (size_t offset = 0U; offset < g_total_pages; ++offset) {
-        const size_t idx = (g_search_hint + offset) % g_total_pages;
-        if (g_pages[idx].flags == PageFlags::Free && g_pages[idx].ref_count == 0U) {
-            g_pages[idx].flags = PageFlags::Allocated;
-            g_pages[idx].ref_count = 1U;
-            g_pages[idx].order = 0U;
-            g_pages[idx].slab_cache = nullptr;
-            --g_free_pages;
-            g_search_hint = (idx + 1U < g_total_pages) ? (idx + 1U) : 0U;
+        const size_t idx = (start_hint + offset) % g_total_pages;
+        Page& page = g_pages[idx];
+
+        if (atomic_load_flags(page) == PageFlags::Free && atomic_try_claim_free_page(page)) {
+            page.order = 0U;
+            page.slab_cache = nullptr;
+            page.next = nullptr;
+            page.prev = nullptr;
+            page.freelist = nullptr;
+            __atomic_store_n(&page.ref_count, 1U, __ATOMIC_RELEASE);
+            __atomic_sub_fetch(&g_free_pages, 1U, __ATOMIC_RELAXED);
+
+            const size_t next_hint = (idx + 1U < g_total_pages) ? (idx + 1U) : 0U;
+            __atomic_store_n(&g_search_hint, next_hint, __ATOMIC_RELAXED);
             return g_ram_start + (idx << Arch::PAGE_SHIFT);
         }
     }
@@ -349,7 +398,8 @@ uintptr_t alloc_frames(size_t count) noexcept {
     if (count == 1U) {
         return alloc_frame();
     }
-    if (g_pages == nullptr || g_free_pages < count || count > g_total_pages) {
+    if (g_pages == nullptr || __atomic_load_n(&g_free_pages, __ATOMIC_RELAXED) < count ||
+        count > g_total_pages) {
         pfa_print("[PFA ERROR] Out of physical memory frames!\r\n");
         return 0U;
     }
@@ -358,21 +408,42 @@ uintptr_t alloc_frames(size_t count) noexcept {
     size_t run_len = 0U;
 
     for (size_t idx = 0U; idx < g_total_pages; ++idx) {
-        if (g_pages[idx].flags == PageFlags::Free && g_pages[idx].ref_count == 0U) {
+        if (atomic_load_flags(g_pages[idx]) == PageFlags::Free) {
             if (run_len == 0U) {
                 run_start = idx;
             }
             ++run_len;
             if (run_len == count) {
-                for (size_t k = run_start; k < run_start + count; ++k) {
-                    g_pages[k].flags = PageFlags::Allocated;
-                    g_pages[k].ref_count = 1U;
-                    g_pages[k].order = 0U;
-                    g_pages[k].slab_cache = nullptr;
+                size_t claimed = 0U;
+                while (claimed < count) {
+                    Page& page = g_pages[run_start + claimed];
+                    if (!atomic_try_claim_free_page(page)) {
+                        break;
+                    }
+                    page.order = 0U;
+                    page.slab_cache = nullptr;
+                    page.next = nullptr;
+                    page.prev = nullptr;
+                    page.freelist = nullptr;
+                    __atomic_store_n(&page.ref_count, 1U, __ATOMIC_RELEASE);
+                    ++claimed;
                 }
-                g_free_pages -= count;
-                g_search_hint = (run_start + count < g_total_pages) ? (run_start + count) : 0U;
-                return g_ram_start + (run_start << Arch::PAGE_SHIFT);
+
+                if (claimed == count) {
+                    __atomic_sub_fetch(&g_free_pages, count, __ATOMIC_RELAXED);
+                    const size_t next_hint =
+                        (run_start + count < g_total_pages) ? (run_start + count) : 0U;
+                    __atomic_store_n(&g_search_hint, next_hint, __ATOMIC_RELAXED);
+                    return g_ram_start + (run_start << Arch::PAGE_SHIFT);
+                }
+
+                // Roll back partial claim if another core raced on a page in the span
+                for (size_t rollback = 0U; rollback < claimed; ++rollback) {
+                    Page& page = g_pages[run_start + rollback];
+                    __atomic_store_n(&page.ref_count, 0U, __ATOMIC_RELAXED);
+                    atomic_store_flags(page, PageFlags::Free);
+                }
+                run_len = 0U;
             }
         } else {
             run_len = 0U;
@@ -399,11 +470,12 @@ void free_frame(uintptr_t paddr) noexcept {
     }
 
     const size_t idx = (paddr - g_ram_start) >> Arch::PAGE_SHIFT;
-    if (has_page_flag(g_pages[idx].flags, PageFlags::Reserved)) {
+    if (has_page_flag(atomic_load_flags(g_pages[idx]), PageFlags::Reserved)) {
         return;
     }
 
-    if (g_pages[idx].flags == PageFlags::Free || g_pages[idx].ref_count == 0U) {
+    if (atomic_load_flags(g_pages[idx]) == PageFlags::Free ||
+        __atomic_load_n(&g_pages[idx].ref_count, __ATOMIC_ACQUIRE) == 0U) {
         pfa_print("[PFA WARNING] Double-free detected at physical address: ");
         pfa_print_hex64(paddr);
         pfa_print("\r\n");
@@ -425,11 +497,11 @@ bool pfa_is_page_allocated(uintptr_t paddr) noexcept {
         return false;
     }
     const size_t idx = (paddr - g_ram_start) >> Arch::PAGE_SHIFT;
-    return g_pages[idx].flags != PageFlags::Free;
+    return atomic_load_flags(g_pages[idx]) != PageFlags::Free;
 }
 
 size_t pfa_free_pages_count() noexcept {
-    return g_free_pages;
+    return __atomic_load_n(&g_free_pages, __ATOMIC_RELAXED);
 }
 
 size_t pfa_total_pages_count() noexcept {
@@ -445,5 +517,6 @@ size_t pfa_metadata_size() noexcept {
 }
 
 size_t pfa_allocated_pages_count() noexcept {
-    return (g_total_pages >= g_free_pages) ? (g_total_pages - g_free_pages) : 0U;
+    const size_t free_count = __atomic_load_n(&g_free_pages, __ATOMIC_RELAXED);
+    return (g_total_pages >= free_count) ? (g_total_pages - free_count) : 0U;
 }
