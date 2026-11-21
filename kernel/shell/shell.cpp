@@ -940,6 +940,43 @@ void cmd_test_pfa() {
     uintptr_t page_recycled = alloc_frame();
     assert_test(page_recycled == page1, "Freed frame was recycled cleanly");
     free_frame(page_recycled);
+
+    // Reference counting & CoW sharing verification
+    const size_t free_before_ref = pfa_free_pages_count();
+    const uintptr_t shared_frame = alloc_frame();
+    assert_test(shared_frame != 0U && page_ref_count(shared_frame) == 1U,
+                "Newly allocated frame starts with ref_count == 1");
+
+    page_get(shared_frame);
+    page_get(shared_frame);
+    assert_test(page_ref_count(shared_frame) == 3U,
+                "page_get() atomically incremented ref_count to 3");
+
+    page_put(shared_frame);
+    assert_test(page_ref_count(shared_frame) == 2U && pfa_is_page_allocated(shared_frame),
+                "First page_put() decremented ref_count to 2 without freeing frame");
+
+    page_put(shared_frame);
+    assert_test(page_ref_count(shared_frame) == 1U && pfa_is_page_allocated(shared_frame),
+                "Second page_put() decremented ref_count to 1 without freeing frame");
+
+    page_put(shared_frame);
+    assert_test(page_ref_count(shared_frame) == 0U && !pfa_is_page_allocated(shared_frame) &&
+                    pfa_free_pages_count() == free_before_ref,
+                "Final page_put() transitioned ref_count to 0 and returned frame to free pool");
+
+    page_put(shared_frame);
+    assert_test(page_ref_count(shared_frame) == 0U && pfa_free_pages_count() == free_before_ref,
+                "Duplicate page_put() on free frame is a safe no-op without underflow");
+
+    if (g_initrd_loc.valid && g_initrd_loc.start_paddr != 0U) {
+        const uint32_t reserved_refs = page_ref_count(g_initrd_loc.start_paddr);
+        page_get(g_initrd_loc.start_paddr);
+        page_put(g_initrd_loc.start_paddr);
+        assert_test(page_ref_count(g_initrd_loc.start_paddr) == reserved_refs &&
+                        pfa_is_page_allocated(g_initrd_loc.start_paddr),
+                    "Reserved frames ignore page_get() and page_put()");
+    }
 }
 
 void cmd_test_ro() noexcept {

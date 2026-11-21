@@ -17,4 +17,5 @@ initrds
 .DS_Store
 
 # AI support files
-dump-for-ai.txt
+dump-for-ai*.txt
+dump-index.txt

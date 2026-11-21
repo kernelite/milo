@@ -68,6 +68,10 @@ void pfa_on_mmu_enabled() noexcept;
 void free_frame(uintptr_t paddr) noexcept;
 void free_frames(uintptr_t paddr, size_t count) noexcept;
 
+void page_get(uintptr_t paddr) noexcept;
+void page_put(uintptr_t paddr) noexcept;
+[[nodiscard]] uint32_t page_ref_count(uintptr_t paddr) noexcept;
+
 [[nodiscard]] Page* page_from_paddr(uintptr_t paddr) noexcept;
 [[nodiscard]] uintptr_t page_to_paddr(const Page* page) noexcept;
 
