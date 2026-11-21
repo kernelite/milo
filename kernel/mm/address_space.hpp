@@ -76,6 +76,11 @@ class AddressSpace {
     static bool query_user_page(uintptr_t root_paddr, uintptr_t vaddr, uintptr_t& out_paddr,
                                 HAL::PageFlags& out_flags) noexcept;
 
+    bool map_demand_zero(uintptr_t vaddr, HAL::PageFlags expected_flags) const noexcept;
+
+    static bool map_demand_zero(uintptr_t root_paddr, uintptr_t vaddr,
+                                HAL::PageFlags expected_flags) noexcept;
+
     bool query_pte_flags(uintptr_t vaddr, uint64_t& out_raw_pte) const noexcept;
 
     static bool query_pte_flags(uintptr_t root_paddr, uintptr_t vaddr,
