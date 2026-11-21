@@ -70,6 +70,8 @@ void free_frames(uintptr_t paddr, size_t count) noexcept;
 
 [[nodiscard]] Page* page_from_paddr(uintptr_t paddr) noexcept;
 [[nodiscard]] uintptr_t page_to_paddr(const Page* page) noexcept;
+void page_get(uintptr_t paddr) noexcept;
+void page_put(uintptr_t paddr) noexcept;
 
 [[nodiscard]] bool pfa_is_page_allocated(uintptr_t paddr) noexcept;
 [[nodiscard]] size_t pfa_allocated_pages_count() noexcept;

@@ -32,10 +32,12 @@ constexpr uint64_t DESC_TYPE_BLOCK = 0x1ULL;
 constexpr uint64_t DESC_TYPE_TABLE = 0x3ULL;
 
 constexpr uint64_t DESC_ATTR_NORMAL = 1ULL << 2U;
+constexpr uint64_t AP_RO_BIT = 1ULL << 7U; // Access Permission[2] (1 = RO, 0 = RW)
 constexpr uint64_t DESC_SH_ISH = 3ULL << 8U;
 constexpr uint64_t DESC_AF = 1ULL << 10U;
 constexpr uint64_t DESC_PXN = 1ULL << 53U;
 constexpr uint64_t DESC_UXN = 1ULL << 54U;
+constexpr uint64_t DESC_COW = 1ULL << 55U;
 
 constexpr uintptr_t align_down_page(uintptr_t addr) noexcept {
     return addr & ~(Arch::PAGE_SIZE - 1U);
@@ -500,7 +502,6 @@ bool AddressSpaceBackend::query_user_page(uintptr_t root_paddr, uintptr_t vaddr,
     constexpr uintptr_t USER_VA_LIMIT = 0x40000000ULL;
     constexpr uintptr_t PAGE_OFFSET_MASK = Arch::PAGE_SIZE - 1U;
     constexpr uint64_t AP_USER_BIT = 1ULL << 6U;
-    constexpr uint64_t AP_RO_BIT = 1ULL << 7U;
     constexpr uint64_t UXN_BIT = 1ULL << 54U;
     constexpr uint64_t ATTR_INDEX_MASK = 0x7ULL;
 
@@ -667,8 +668,8 @@ bool AddressSpaceBackend::clone_user_space(uintptr_t src_root, uintptr_t dst_roo
             continue;
         }
 
-        const auto* const src_l3 = reinterpret_cast<const uint64_t*>(
-            Kernel::MM::phys_to_virt(src_l2[i2] & TABLE_ADDR_MASK));
+        auto* const src_l3 =
+            reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(src_l2[i2] & TABLE_ADDR_MASK));
 
         uintptr_t dst_l3_paddr = 0U;
         if ((dst_l2[i2] & 1U) == 0U) {
@@ -685,37 +686,35 @@ bool AddressSpaceBackend::clone_user_space(uintptr_t src_root, uintptr_t dst_roo
         auto* const dst_l3 = reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(dst_l3_paddr));
 
         for (size_t i3 = 0U; i3 < PAGE_ENTRY_COUNT; ++i3) {
-            const uint64_t src_desc = src_l3[i3];
+            uint64_t src_desc = src_l3[i3];
             if ((src_desc & 1U) == 0U) {
                 continue;
             }
 
             const uintptr_t src_page_paddr = src_desc & TABLE_ADDR_MASK;
-            const uint64_t desc_attrs = src_desc & ~TABLE_ADDR_MASK;
 
-            const uintptr_t dst_page_paddr = alloc_frame();
-            if (dst_page_paddr == 0U) {
-                return false;
+            // If the page is writable (AP[2] == 0), downgrade it to Read-Only and mark as CoW
+            if ((src_desc & AP_RO_BIT) == 0ULL) {
+                src_desc |= AP_RO_BIT; // Make Read-Only
+                src_desc |= DESC_COW;  // Mark as CoW
+
+                // Update parent PTE
+                src_l3[i3] = src_desc;
+                flush_dcache_range(reinterpret_cast<uintptr_t>(&src_l3[i3]), sizeof(uint64_t));
             }
 
-            const auto* const src_kva =
-                reinterpret_cast<const uint8_t*>(Kernel::MM::phys_to_virt(src_page_paddr));
-            auto* const dst_kva =
-                reinterpret_cast<uint8_t*>(Kernel::MM::phys_to_virt(dst_page_paddr));
+            // Map the exact same physical frame into the child's L3 table
+            dst_l3[i3] = src_desc;
 
-            for (size_t byte_idx = 0U; byte_idx < Arch::PAGE_SIZE; ++byte_idx) {
-                dst_kva[byte_idx] = src_kva[byte_idx];
-            }
-            flush_dcache_range(reinterpret_cast<uintptr_t>(dst_kva), Arch::PAGE_SIZE);
-
-            dst_l3[i3] = (dst_page_paddr & TABLE_ADDR_MASK) | desc_attrs;
+            // Increment the physical frame's reference count
+            page_get(src_page_paddr);
         }
 
         flush_dcache_range(reinterpret_cast<uintptr_t>(dst_l3), Arch::PAGE_SIZE);
     }
 
     asm volatile("dsb ish\n\t"
-                 "ic ialluis\n\t"
+                 "tlbi vmalle1is\n\t"
                  "dsb ish\n\t"
                  "isb" ::
                      : "memory");
