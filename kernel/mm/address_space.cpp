@@ -196,4 +196,16 @@ bool AddressSpace::remap_user_page(uintptr_t root_paddr, uintptr_t vaddr, uintpt
     return HAL::AddressSpaceBackend::remap_user_page(root_paddr, vaddr, paddr, flags);
 }
 
+bool AddressSpace::map_demand_zero(uintptr_t vaddr, HAL::PageFlags expected_flags) const noexcept {
+    return map_demand_zero(m_root_paddr, vaddr, expected_flags);
+}
+
+bool AddressSpace::map_demand_zero(uintptr_t root_paddr, uintptr_t vaddr,
+                                   HAL::PageFlags expected_flags) noexcept {
+    if (root_paddr == 0U || vaddr >= user_addr_space_limit()) {
+        return false;
+    }
+    return HAL::AddressSpaceBackend::map_demand_zero(root_paddr, vaddr, expected_flags);
+}
+
 } // namespace Kernel::MM

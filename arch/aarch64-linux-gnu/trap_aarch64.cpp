@@ -28,6 +28,9 @@ constexpr bool ENABLE_REGISTER_DUMP = false;
 constexpr uint64_t TABLE_ADDR_MASK = 0x000FFFFFFFFFF000ULL;
 constexpr uint64_t DESC_UXN = 1ULL << 54U;
 constexpr uint64_t DESC_COW = 1ULL << 55U;
+constexpr uint64_t PTE_DEMAND_ZERO = 1ULL << 56U;
+constexpr uint64_t PTE_DZ_FLAGS_SHIFT = 8U;
+constexpr uint64_t PTE_DZ_FLAGS_MASK = 0xFFULL << PTE_DZ_FLAGS_SHIFT;
 
 void print_str(const char* str) noexcept {
     size_t len = 0;
@@ -134,13 +137,53 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
     case 0x24U: // Data Abort from Lower EL
     case 0x25U: // Data Abort from Current EL
     {
-        if (eclass == 0x24U) {
-            const uint32_t dfsc = static_cast<uint32_t>(esr & 0x3FU);
-            const bool is_perm_fault = (dfsc & 0x3CU) == 0x0CU;   // Level 0..3 permission fault
-            const bool is_write = (esr & (1ULL << 6U)) != 0ULL;   // WnR bit
-            const bool far_valid = (esr & (1ULL << 10U)) == 0ULL; // FnV == 0
+        if (eclass == 0x24U || eclass == 0x20U) {
+            const uint32_t fsc = static_cast<uint32_t>(esr & 0x3FU);
+            const bool is_translation_fault = (fsc & 0x3CU) == 0x04U; // Levels 0..3 (0x04..0x07)
+            const bool is_perm_fault = (fsc & 0x3CU) == 0x0CU;        // Levels 0..3 (0x0C..0x0F)
+            const bool is_write = (esr & (1ULL << 6U)) != 0ULL;       // WnR bit
+            const bool far_valid = (esr & (1ULL << 10U)) == 0ULL;     // FnV == 0
 
-            if (is_perm_fault && is_write && far_valid) {
+            // 1. Lazy Demand-Zero Translation Fault Resolution
+            if (is_translation_fault && far_valid) {
+                const uintptr_t current_root = HAL::AddressSpaceBackend::current_root_paddr();
+                uint64_t raw_pte = 0ULL;
+
+                if (HAL::AddressSpaceBackend::query_pte_flags(current_root, far, raw_pte) &&
+                    ((raw_pte & 1ULL) == 0ULL) && ((raw_pte & PTE_DEMAND_ZERO) != 0ULL)) {
+                    const auto intended_flags = static_cast<HAL::PageFlags>(
+                        (raw_pte & PTE_DZ_FLAGS_MASK) >> PTE_DZ_FLAGS_SHIFT);
+
+                    const bool perm_ok =
+                        HAL::has_flag(intended_flags, HAL::PageFlags::User) &&
+                        (eclass != 0x20U ||
+                         HAL::has_flag(intended_flags, HAL::PageFlags::Execute)) &&
+                        (!is_write || HAL::has_flag(intended_flags, HAL::PageFlags::Write));
+
+                    if (perm_ok) {
+                        const uintptr_t new_paddr = alloc_frame();
+                        if (new_paddr != 0U) {
+                            auto* const dst_kva =
+                                reinterpret_cast<void*>(Kernel::MM::phys_to_virt(new_paddr));
+                            __builtin_memset(dst_kva, 0, Arch::PAGE_SIZE);
+                            HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(dst_kva),
+                                                              Arch::PAGE_SIZE);
+
+                            if (HAL::AddressSpaceBackend::map_user_page(
+                                    current_root, far, new_paddr, intended_flags)) {
+                                if (HAL::has_flag(intended_flags, HAL::PageFlags::Execute)) {
+                                    HAL::get_cpu().invalidate_icache();
+                                }
+                                return; // Resume user execution; faulting instruction retries
+                            }
+                            free_frame(new_paddr);
+                        }
+                    }
+                }
+            }
+
+            // 2. Copy-on-Write (CoW) Write Permission Fault Resolution
+            if (eclass == 0x24U && is_perm_fault && is_write && far_valid) {
                 const uintptr_t current_root = HAL::AddressSpaceBackend::current_root_paddr();
                 uint64_t raw_pte = 0ULL;
 
@@ -195,7 +238,7 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
                             if (HAL::has_flag(user_rw_flags, HAL::PageFlags::Execute)) {
                                 HAL::get_cpu().invalidate_icache();
                             }
-                            return;
+                            return; // Resume user execution; faulting instruction retries
                         }
                     }
                 }
