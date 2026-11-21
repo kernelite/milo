@@ -171,4 +171,29 @@ Result<AddressSpace, AddressSpaceError> AddressSpace::clone() const noexcept {
     return dst_space;
 }
 
+bool AddressSpace::query_pte_flags(uintptr_t vaddr, uint64_t& out_raw_pte) const noexcept {
+    return query_pte_flags(m_root_paddr, vaddr, out_raw_pte);
+}
+
+bool AddressSpace::query_pte_flags(uintptr_t root_paddr, uintptr_t vaddr,
+                                   uint64_t& out_raw_pte) noexcept {
+    if (root_paddr == 0U || vaddr >= user_addr_space_limit()) {
+        return false;
+    }
+    return HAL::AddressSpaceBackend::query_pte_flags(root_paddr, vaddr, out_raw_pte);
+}
+
+bool AddressSpace::remap_user_page(uintptr_t vaddr, uintptr_t paddr,
+                                   HAL::PageFlags flags) const noexcept {
+    return remap_user_page(m_root_paddr, vaddr, paddr, flags);
+}
+
+bool AddressSpace::remap_user_page(uintptr_t root_paddr, uintptr_t vaddr, uintptr_t paddr,
+                                   HAL::PageFlags flags) noexcept {
+    if (root_paddr == 0U || vaddr >= user_addr_space_limit()) {
+        return false;
+    }
+    return HAL::AddressSpaceBackend::remap_user_page(root_paddr, vaddr, paddr, flags);
+}
+
 } // namespace Kernel::MM
