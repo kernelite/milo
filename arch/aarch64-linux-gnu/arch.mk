@@ -7,3 +7,4 @@ SRCS_CXX += arch/$(ARCH)/uart_console.cpp \
             arch/$(ARCH)/arch_test.cpp \
             kernel/hal/targets/qemu_virt/gicv2.cpp \
             kernel/hal/targets/qemu_virt/timer.cpp
+CXXFLAGS += -mcpu=cortex-a53 -mno-outline-atomics

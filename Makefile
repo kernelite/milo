@@ -212,4 +212,4 @@ commit: quality
 	git commit
 
 ai-dump:
-	./concat_files.sh dump-for-ai.txt arch/ build/ kernel/ Makefile compile_commands.json
+	@python3 scripts/ai_dump.py arch/ kernel/ user/ Makefile
