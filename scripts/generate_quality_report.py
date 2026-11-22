@@ -15,7 +15,7 @@ MD_REPORT = REPORTS_DIR / "quality_report.md"
 def get_cpp_files():
     sources = []
     for root, _, files in os.walk("."):
-        if any(ignored in root for ignored in ["build", ".git", ".devcontainer", ".vscode"]):
+        if any(ignored in root for ignored in ["build", ".git", ".devcontainer", ".vscode", "third_party"]):
             continue
         for file in files:
             if file.endswith((".cpp", ".hpp", ".c", ".h")):
@@ -63,6 +63,7 @@ def run_clang_tidy(files):
                 "check": check
             })
     return diagnostics
+
 def generate_reports(format_issues, tidy_issues):
     # 1. Markdown Report
     md_content = ["# Code Quality Analysis Report\n"]
