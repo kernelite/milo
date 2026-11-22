@@ -1,4 +1,6 @@
+#include "cpu_context.hpp"
 #include "hal/test_hooks.hpp"
+#include "process/process.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -8,7 +10,12 @@ void user_space_code();
 int64_t enter_user_mode(uintptr_t entry_point, uintptr_t user_sp);
 void trigger_svc_test();
 void el0_sysreg_test_entry() noexcept;
+void kernel_thread_trampoline() noexcept;
 void* memcpy(void* dest, const void* src, size_t count) noexcept;
+
+[[noreturn]] void kthread_exit_trampoline() noexcept {
+    Kernel::Process::exit_current_process(0);
+}
 
 extern const uint8_t el0_tty_ioctl_suite_start[];
 extern const uint8_t el0_tty_ioctl_suite_end[];
@@ -24,6 +31,10 @@ extern const uint8_t el0_fork_exec_suite_start[];
 extern const uint8_t el0_fork_exec_suite_end[];
 extern const uint8_t el0_sched_suite_start[];
 extern const uint8_t el0_sched_suite_end[];
+extern const uint8_t el0_cow_isolation_suite_start[];
+extern const uint8_t el0_cow_isolation_suite_end[];
+extern const uint8_t el0_demand_paging_suite_start[];
+extern const uint8_t el0_demand_paging_suite_end[];
 }
 
 namespace {
@@ -88,12 +99,31 @@ void trigger_user_syscall_test() noexcept {
     asm volatile("" ::: "memory"); // Prevent tail-call optimization
 }
 
+void init_kernel_thread_context(HAL::KernelContext& kctx, uintptr_t kstack_top,
+                                void (*entry)(uintptr_t) noexcept, uintptr_t arg) noexcept {
+    auto* const arch_kctx = reinterpret_cast<AArch64KernelContext*>(&kctx);
+    arch_kctx->x19 = reinterpret_cast<uint64_t>(entry);
+    arch_kctx->x20 = arg;
+    arch_kctx->x21 = 0ULL;
+    arch_kctx->x22 = 0ULL;
+    arch_kctx->x23 = 0ULL;
+    arch_kctx->x24 = 0ULL;
+    arch_kctx->x25 = 0ULL;
+    arch_kctx->x26 = 0ULL;
+    arch_kctx->x27 = 0ULL;
+    arch_kctx->x28 = 0ULL;
+    arch_kctx->x29 = 0ULL;
+    arch_kctx->x30 = reinterpret_cast<uint64_t>(&kernel_thread_trampoline);
+    arch_kctx->sp = kstack_top & ~0xFULL;
+    arch_kctx->_pad = 0ULL;
+}
+
 uintptr_t get_privileged_mmio_probe_address() noexcept {
     return 0x0000000009000000ULL; // QEMU virt PL011 UART MMIO (AP[1] == 0)
 }
 
 uintptr_t get_kernel_code_probe_address() noexcept {
-    return 0x0000000040080000ULL; // Kernel .text base (>= user_va_limit)
+    return 0x0000000040080000ULL; // Kernel .text base (non-user AP)
 }
 
 size_t write_user_exit_program(void* dst_kva, int64_t exit_code) noexcept {
@@ -203,7 +233,6 @@ size_t write_user_echo_program(void* dst_kva) noexcept {
     return size;
 }
 
-// Inside namespace HAL::Test in arch/aarch64-linux-gnu/arch_test.cpp:
 size_t write_user_proc_lifecycle_program(void* dst_kva) noexcept {
     const auto size =
         static_cast<size_t>(el0_proc_lifecycle_suite_end - el0_proc_lifecycle_suite_start);
@@ -222,4 +251,19 @@ size_t write_user_sched_suite_program(void* dst_kva) noexcept {
     memcpy(dst_kva, el0_sched_suite_start, size);
     return size;
 }
+
+size_t write_user_cow_isolation_program(void* dst_kva) noexcept {
+    const auto size =
+        static_cast<size_t>(el0_cow_isolation_suite_end - el0_cow_isolation_suite_start);
+    memcpy(dst_kva, el0_cow_isolation_suite_start, size);
+    return size;
+}
+
+size_t write_user_demand_paging_program(void* dst_kva) noexcept {
+    const auto size =
+        static_cast<size_t>(el0_demand_paging_suite_end - el0_demand_paging_suite_start);
+    memcpy(dst_kva, el0_demand_paging_suite_start, size);
+    return size;
+}
+
 } // namespace HAL::Test

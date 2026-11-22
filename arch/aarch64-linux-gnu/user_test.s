@@ -869,3 +869,195 @@ el0_sched_suite_start:
     mov     x0, #99
     svc     #0
 el0_sched_suite_end:
+
+// ==========================================================================
+// EL0 Copy-on-Write (CoW) Isolation Verification Suite
+// Entry: x0 = global_var_vaddr (pointer to uint64_t in writable user page)
+//   - Parent writes 0x1111 to global variable, calls SYS_CLONE (#220)
+//   - Child reads variable (asserts 0x1111), writes 0x2222, exits
+//   - Parent calls SYS_WAIT4 (#260) and asserts variable is still 0x1111
+// Exits via SYS_EXIT (#93) with failure count in x0 (0 == all passed)
+// ==========================================================================
+.global el0_cow_isolation_suite_start
+.global el0_cow_isolation_suite_end
+el0_cow_isolation_suite_start:
+    mov     x20, x0                 // x20 = global_var_vaddr
+    mov     x19, #0                 // x19 = failure accumulator
+
+    // 1) Parent writes 0x1111 to shared global variable
+    mov     x4, #0x1111
+    str     x4, [x20]
+
+    // 2) Parent calls SYS_CLONE (#220) with SIGCHLD (17), inheriting user stack
+    mov     x8, #220                // SYS_CLONE
+    mov     x0, #17                 // SIGCHLD
+    mov     x1, #0                  // child_stack = 0 (inherit sp_el0 via CoW)
+    mov     x2, #0                  // parent_tid = NULL
+    mov     x3, #0                  // tls = 0
+    mov     x4, #0                  // child_tid = NULL
+    svc     #0
+
+    cmp     x0, #0
+    b.lt    .Lcow_clone_fail
+    cbz     x0, .Lcow_child
+
+    // --- Parent branch (x0 == child_pid) ---
+    mov     x21, x0                 // x21 = child_pid
+
+    // 3) Parent calls SYS_WAIT4 (#260) and waits for child exit
+    sub     sp, sp, #16
+    mov     x8, #260                // SYS_WAIT4
+    mov     x0, x21                 // target_pid = child_pid
+    mov     x1, sp                  // user_wstatus
+    mov     x2, #0                  // options = 0
+    mov     x3, #0                  // user_rusage = NULL
+    svc     #0
+    cmp     x0, x21
+    b.eq    1f
+    add     x19, x19, #1
+1:
+    ldr     w4, [sp]
+    add     sp, sp, #16
+    cbz     w4, 2f                  // child exited with status 0 -> wstatus == 0
+    add     x19, x19, #1
+2:
+    // 4) Parent reads global variable after child dies: MUST still be 0x1111
+    ldr     x4, [x20]
+    mov     x5, #0x1111
+    cmp     x4, x5
+    b.eq    3f
+    add     x19, x19, #1
+3:
+    mov     x8, #93                 // SYS_EXIT
+    mov     x0, x19
+    svc     #0
+
+.Lcow_clone_fail:
+    mov     x8, #93                 // SYS_EXIT
+    mov     x0, #99
+    svc     #0
+
+    // --- Child branch (x0 == 0) ---
+.Lcow_child:
+    // Child reads global variable and asserts it is 0x1111
+    ldr     x4, [x20]
+    mov     x5, #0x1111
+    cmp     x4, x5
+    b.ne    .Lcow_child_fail
+
+    // Child writes 0x2222 (triggers CoW write fault & private frame copy)
+    mov     x6, #0x2222
+    str     x6, [x20]
+
+    // Verify child's private copy reads back 0x2222
+    ldr     x4, [x20]
+    cmp     x4, x6
+    b.ne    .Lcow_child_fail
+
+    mov     x8, #93                 // SYS_EXIT
+    mov     x0, #0
+    svc     #0
+
+.Lcow_child_fail:
+    mov     x8, #93                 // SYS_EXIT
+    mov     x0, #1
+    svc     #0
+el0_cow_isolation_suite_end:
+
+// ==========================================================================
+// EL0 Demand-Zero 1 GiB Capacity Verification Suite
+// Entry: x0 = unused
+//   - Calls SYS_MMAP (#222) for 1 GiB (0x40000000 bytes, exceeding 256 MiB RAM)
+//   - Asserts valid pointer returned (!= -ENOMEM)
+//   - Touches strictly 3 pages (first, middle, last), writes 0xBEEF, reads back
+// Exits via SYS_EXIT (#93) with failure count in x0 (0 == all passed)
+// ==========================================================================
+.global el0_demand_paging_suite_start
+.global el0_demand_paging_suite_end
+el0_demand_paging_suite_start:
+    mov     x19, #0                 // x19 = failure accumulator
+
+    // 1) SYS_MMAP (#222) for 1 GiB (0x40000000 bytes)
+    mov     x8, #222                // SYS_MMAP
+    mov     x0, #0                  // addr = NULL
+    movz    x1, #0x4000, lsl #16    // length = 1 GiB (0x40000000)
+    mov     x2, #0x3                // PROT_READ | PROT_WRITE
+    mov     x3, #0x22               // MAP_PRIVATE | MAP_ANONYMOUS
+    mov     x4, #-1                 // fd = -1
+    mov     x5, #0                  // offset = 0
+    svc     #0
+
+    // Assert SYS_MMAP did not return -ENOMEM (-12) and returned a valid page-aligned pointer
+    cmn     x0, #12
+    b.eq    .Ldp_mmap_fail
+    cmp     x0, #0
+    b.le    .Ldp_mmap_fail
+    tst     x0, #0xFFF
+    b.ne    .Ldp_mmap_fail
+
+    mov     x20, x0                 // x20 = first page vaddr (offset 0)
+
+    // Compute middle page vaddr (offset 512 MiB = 0x20000000)
+    movz    x4, #0x2000, lsl #16
+    add     x21, x20, x4            // x21 = middle page vaddr
+
+    // Compute last page vaddr (offset 1 GiB - 4096 = 0x3FFFF000)
+    movz    x4, #0x4000, lsl #16
+    sub     x4, x4, #0x1000
+    add     x22, x20, x4            // x22 = last page vaddr
+
+    // 2) Touch first page: verify zero-initialized, then write 0xBEEF
+    ldr     x4, [x20]
+    cbz     x4, 1f
+    add     x19, x19, #1
+1:
+    mov     x5, #0xBEEF
+    str     x5, [x20]
+
+    // 3) Touch middle page: verify zero-initialized, then write 0xBEEF
+    ldr     x4, [x21]
+    cbz     x4, 2f
+    add     x19, x19, #1
+2:
+    str     x5, [x21]
+
+    // 4) Touch last page: verify zero-initialized, then write 0xBEEF
+    ldr     x4, [x22]
+    cbz     x4, 3f
+    add     x19, x19, #1
+3:
+    str     x5, [x22]
+
+    // 5) Read back all three pages and verify 0xBEEF persists
+    ldr     x4, [x20]
+    cmp     x4, x5
+    b.eq    4f
+    add     x19, x19, #1
+4:
+    ldr     x4, [x21]
+    cmp     x4, x5
+    b.eq    5f
+    add     x19, x19, #1
+5:
+    ldr     x4, [x22]
+    cmp     x4, x5
+    b.eq    6f
+    add     x19, x19, #1
+6:
+    // 6) Unmap the 1 GiB allocation via SYS_MUNMAP (#215)
+    mov     x8, #215                // SYS_MUNMAP
+    mov     x0, x20
+    movz    x1, #0x4000, lsl #16    // length = 1 GiB (0x40000000)
+    svc     #0
+    cbz     x0, 7f
+    add     x19, x19, #1
+7:
+    mov     x8, #93                 // SYS_EXIT
+    mov     x0, x19
+    svc     #0
+
+.Ldp_mmap_fail:
+    mov     x8, #93                 // SYS_EXIT
+    mov     x0, #99
+    svc     #0
+el0_demand_paging_suite_end:

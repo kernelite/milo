@@ -85,11 +85,13 @@ int64_t copy_from_user(uintptr_t root_paddr, void* dst, uintptr_t user_src, size
     while (remaining > 0U) {
         uintptr_t out_paddr = 0U;
         HAL::PageFlags out_flags = HAL::PageFlags::None;
-        if (!AddressSpace::query_user_page(root_paddr, curr_vaddr, out_paddr, out_flags)) {
-            return ERR_EFAULT;
-        }
-        if (!HAL::has_flag(out_flags, HAL::PageFlags::User) ||
-            !HAL::has_flag(out_flags, HAL::PageFlags::Read)) {
+        if (AddressSpace::query_user_page(root_paddr, curr_vaddr, out_paddr, out_flags)) {
+            if (!HAL::has_flag(out_flags, HAL::PageFlags::User) ||
+                !HAL::has_flag(out_flags, HAL::PageFlags::Read)) {
+                return ERR_EFAULT;
+            }
+        } else if (!HAL::AddressSpaceBackend::resolve_demand_zero_page(root_paddr, curr_vaddr,
+                                                                       false, out_paddr)) {
             return ERR_EFAULT;
         }
 
@@ -131,11 +133,16 @@ int64_t copy_to_user(uintptr_t root_paddr, uintptr_t user_dst, const void* src,
     while (remaining > 0U) {
         uintptr_t out_paddr = 0U;
         HAL::PageFlags out_flags = HAL::PageFlags::None;
-        if (!AddressSpace::query_user_page(root_paddr, curr_vaddr, out_paddr, out_flags)) {
-            return ERR_EFAULT;
-        }
-        if (!HAL::has_flag(out_flags, HAL::PageFlags::User) ||
-            !HAL::has_flag(out_flags, HAL::PageFlags::Write)) {
+        if (AddressSpace::query_user_page(root_paddr, curr_vaddr, out_paddr, out_flags)) {
+            if (!HAL::has_flag(out_flags, HAL::PageFlags::User)) {
+                return ERR_EFAULT;
+            }
+            if (!HAL::has_flag(out_flags, HAL::PageFlags::Write) &&
+                !HAL::AddressSpaceBackend::resolve_cow_page(root_paddr, curr_vaddr, out_paddr)) {
+                return ERR_EFAULT;
+            }
+        } else if (!HAL::AddressSpaceBackend::resolve_demand_zero_page(root_paddr, curr_vaddr, true,
+                                                                       out_paddr)) {
             return ERR_EFAULT;
         }
 

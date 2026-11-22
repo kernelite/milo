@@ -763,6 +763,7 @@ void unmap_and_free_range(Kernel::MM::AddressSpace& adrsp, uintptr_t start_vaddr
 
 bool validate_user_range(uintptr_t root_paddr, uintptr_t user_buf, size_t count,
                          HAL::PageFlags required_perm) noexcept {
+    constexpr uint64_t DESC_COW = 1ULL << 55U;
     constexpr uint64_t PTE_DEMAND_ZERO = 1ULL << 56U;
     constexpr uint64_t PTE_DZ_FLAGS_SHIFT = 8U;
     constexpr uint64_t PTE_DZ_FLAGS_MASK = 0xFFULL << PTE_DZ_FLAGS_SHIFT;
@@ -794,6 +795,12 @@ bool validate_user_range(uintptr_t root_paddr, uintptr_t user_buf, size_t count,
             }
             flags =
                 static_cast<HAL::PageFlags>((raw_pte & PTE_DZ_FLAGS_MASK) >> PTE_DZ_FLAGS_SHIFT);
+        } else if (!HAL::has_flag(flags, HAL::PageFlags::Write)) {
+            uint64_t raw_pte = 0ULL;
+            if (Kernel::MM::AddressSpace::query_pte_flags(root_paddr, page_vaddr, raw_pte) &&
+                (raw_pte & DESC_COW) != 0ULL) {
+                flags |= HAL::PageFlags::Write;
+            }
         }
         if (!HAL::has_flag(flags, HAL::PageFlags::User) || !HAL::has_flag(flags, required_perm)) {
             return false;
@@ -2971,7 +2978,7 @@ int64_t sys_brk(uintptr_t addr) noexcept {
     const uintptr_t stack_floor =
         platform.user_stack_top - Kernel::Process::DEFAULT_USER_STACK_SIZE;
     uintptr_t brk_ceiling = (MMAP_ARENA_FLOOR < stack_floor) ? MMAP_ARENA_FLOOR : stack_floor;
-    if (proc->mmap_next_vaddr < brk_ceiling) {
+    if (proc->mmap_next_vaddr != 0U && proc->mmap_next_vaddr < brk_ceiling) {
         brk_ceiling = proc->mmap_next_vaddr;
     }
 
@@ -3027,6 +3034,9 @@ int64_t sys_times(uintptr_t user_buf) noexcept {
 
 int64_t sys_mmap(uintptr_t addr, uint64_t length, uint64_t prot, uint64_t flags, uint64_t raw_fd,
                  uint64_t offset) noexcept {
+    constexpr uintptr_t HIGH_MMAP_ARENA_FLOOR = 0x0000000080000000ULL;
+    constexpr uintptr_t HIGH_MMAP_SEARCH_STEP = 0x0000000000200000ULL; // 2 MiB L2 step
+
     auto* const proc = Kernel::Process::current_process();
     if (proc == nullptr) {
         return ERR_EINVAL;
@@ -3060,6 +3070,12 @@ int64_t sys_mmap(uintptr_t addr, uint64_t length, uint64_t prot, uint64_t flags,
     uintptr_t map_end = 0U;
     bool used_arena_bump = false;
 
+    auto is_valid_mmap_span = [&](uintptr_t start, uintptr_t end) noexcept -> bool {
+        const bool in_lower = (start >= MMAP_ARENA_FLOOR && end <= stack_floor);
+        const bool in_high = (start >= HIGH_MMAP_ARENA_FLOOR && end <= va_limit);
+        return in_lower || in_high;
+    };
+
     if (is_fixed) {
         if (addr == 0U || (addr & page_mask) != 0U || addr >= va_limit ||
             length > (va_limit - addr)) {
@@ -3067,12 +3083,13 @@ int64_t sys_mmap(uintptr_t addr, uint64_t length, uint64_t prot, uint64_t flags,
         }
         map_start = addr;
         map_end = addr + static_cast<uintptr_t>(length);
-        if (map_end > stack_floor) {
+        if (!is_valid_mmap_span(map_start, map_end)) {
             return ERR_ENOMEM;
         }
         unmap_and_free_range(proc->address_space, map_start, map_end, page_size);
-    } else if (addr != 0U && (addr & page_mask) == 0U && addr < stack_floor &&
-               length <= (stack_floor - addr) && addr >= MMAP_ARENA_FLOOR) {
+    } else if (addr != 0U && (addr & page_mask) == 0U && addr < va_limit &&
+               length <= (va_limit - addr) &&
+               is_valid_mmap_span(addr, addr + static_cast<uintptr_t>(length))) {
         bool hint_free = true;
         for (uintptr_t page = addr; page < addr + static_cast<uintptr_t>(length);
              page += page_size) {
@@ -3093,15 +3110,45 @@ int64_t sys_mmap(uintptr_t addr, uint64_t length, uint64_t prot, uint64_t flags,
 
     if (map_start == 0U) {
         const uintptr_t arena_top = proc->mmap_next_vaddr;
-        if (length > arena_top || (arena_top - static_cast<uintptr_t>(length)) < MMAP_ARENA_FLOOR) {
-            return ERR_ENOMEM;
+        if (length <= arena_top &&
+            (arena_top - static_cast<uintptr_t>(length)) >= MMAP_ARENA_FLOOR) {
+            const uintptr_t candidate_start = arena_top - static_cast<uintptr_t>(length);
+            if (candidate_start > proc->brk_current) {
+                map_start = candidate_start;
+                map_end = arena_top;
+                used_arena_bump = true;
+            }
         }
-        map_start = arena_top - static_cast<uintptr_t>(length);
-        map_end = arena_top;
-        if (map_start <= proc->brk_current) {
-            return ERR_ENOMEM;
+    }
+
+    if (map_start == 0U && va_limit > HIGH_MMAP_ARENA_FLOOR &&
+        length <= (va_limit - HIGH_MMAP_ARENA_FLOOR)) {
+        const uintptr_t max_start = va_limit - static_cast<uintptr_t>(length);
+        for (uintptr_t cand = HIGH_MMAP_ARENA_FLOOR; cand <= max_start;
+             cand += HIGH_MMAP_SEARCH_STEP) {
+            bool range_free = true;
+            for (uintptr_t probe = cand; probe < cand + static_cast<uintptr_t>(length);
+                 probe += page_size) {
+                uintptr_t tmp_pa = 0U;
+                HAL::PageFlags tmp_fl = HAL::PageFlags::None;
+                uint64_t tmp_pte = 0ULL;
+                if (proc->address_space.query_user_page(probe, tmp_pa, tmp_fl) ||
+                    proc->address_space.query_pte_flags(probe, tmp_pte)) {
+                    range_free = false;
+                    cand = probe & ~(HIGH_MMAP_SEARCH_STEP - 1U);
+                    break;
+                }
+            }
+            if (range_free) {
+                map_start = cand;
+                map_end = cand + static_cast<uintptr_t>(length);
+                break;
+            }
         }
-        used_arena_bump = true;
+    }
+
+    if (map_start == 0U) {
+        return ERR_ENOMEM;
     }
 
     HAL::PageFlags page_flags = HAL::PageFlags::None;
@@ -3132,6 +3179,8 @@ int64_t sys_mmap(uintptr_t addr, uint64_t length, uint64_t prot, uint64_t flags,
 }
 
 int64_t sys_munmap(uintptr_t addr, uint64_t length) noexcept {
+    constexpr uintptr_t HIGH_MMAP_ARENA_FLOOR = 0x0000000080000000ULL;
+
     auto* const proc = Kernel::Process::current_process();
     if (proc == nullptr) {
         return ERR_EINVAL;
@@ -3152,13 +3201,15 @@ int64_t sys_munmap(uintptr_t addr, uint64_t length) noexcept {
     }
 
     const uintptr_t end_addr = addr + static_cast<uintptr_t>(length);
-    if (addr < MMAP_ARENA_FLOOR || end_addr > stack_floor) {
+    const bool in_lower_arena = (addr >= MMAP_ARENA_FLOOR && end_addr <= stack_floor);
+    const bool in_high_arena = (addr >= HIGH_MMAP_ARENA_FLOOR && end_addr <= va_limit);
+    if (!in_lower_arena && !in_high_arena) {
         return ERR_EINVAL;
     }
 
     unmap_and_free_range(proc->address_space, addr, end_addr, page_size);
 
-    if (addr == proc->mmap_next_vaddr) {
+    if (in_lower_arena && addr == proc->mmap_next_vaddr) {
         proc->mmap_next_vaddr = end_addr;
     }
 
@@ -3432,7 +3483,10 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
     auto abi_res = Kernel::Process::UserStackBuilder::build_abi_layout(
         new_stack, argc, argv_kptrs, envp_kptrs, auxv, auxv_count);
     if (!abi_res.is_ok()) {
-        free_frames(new_stack.phys_base, new_stack.num_pages);
+        if (!loaded.address_space.is_valid() && new_stack.phys_base != 0U &&
+            new_stack.num_pages > 0U) {
+            free_frames(new_stack.phys_base, new_stack.num_pages);
+        }
         loaded.address_space.destroy();
         free_frame(scratch_paddr);
         return ERR_E2BIG;
@@ -3440,7 +3494,10 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
 
     if (proc->fd_table == nullptr &&
         !Kernel::Process::init_fd_table(*proc, Kernel::Process::INITIAL_FD_CAPACITY)) {
-        free_frames(new_stack.phys_base, new_stack.num_pages);
+        if (!loaded.address_space.is_valid() && new_stack.phys_base != 0U &&
+            new_stack.num_pages > 0U) {
+            free_frames(new_stack.phys_base, new_stack.num_pages);
+        }
         loaded.address_space.destroy();
         free_frame(scratch_paddr);
         return ERR_ENOMEM;
@@ -3448,7 +3505,8 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
 
     loaded.address_space.activate();
 
-    if (proc->user_stack.phys_base != 0U && proc->user_stack.num_pages > 0U) {
+    if (!proc->address_space.is_valid() && proc->user_stack.phys_base != 0U &&
+        proc->user_stack.num_pages > 0U) {
         free_frames(proc->user_stack.phys_base, proc->user_stack.num_pages);
     }
     proc->address_space = static_cast<Kernel::MM::AddressSpace&&>(loaded.address_space);

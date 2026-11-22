@@ -236,6 +236,18 @@ cpu_switch_context:
     ret
 
 // ==========================================================================
+// EL1 Kernel Thread Bootstrap Trampoline
+// Expects x19 = entry function pointer, x20 = uintptr_t argument
+// ==========================================================================
+.global kernel_thread_trampoline
+kernel_thread_trampoline:
+    msr     daifclr, #2         // Unmask IRQs so timer ticks can preempt EL1 worker threads
+    isb
+    mov     x0, x20             // arg0 = uintptr_t arg
+    blr     x19                 // Invoke entry(arg)
+    bl      kthread_exit_trampoline
+
+// ==========================================================================
 // Legacy EL0 Context Transition Procedures (used by raw HAL::Test hooks)
 // ==========================================================================
 
