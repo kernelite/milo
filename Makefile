@@ -19,7 +19,7 @@ INITRD             ?= $(BUSYBOX_CPIO)
 
 # Freestanding C++ flags
 CXXFLAGS := -std=c++20 -ffreestanding -fsized-deallocation -O2 -Wall -Wextra -fno-use-cxa-atexit \
-            -fno-exceptions -fno-rtti -fno-threadsafe-statics -MMD -MP -g
+            -fno-exceptions -fno-rtti -fno-threadsafe-statics -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -MMD -MP -g
 ASFLAGS  := -g
 LDFLAGS  := -nostdlib -T arch/$(ARCH)/linker.ld
 
@@ -53,11 +53,13 @@ HOST_COV_CXXFLAGS := -std=c++20 -O0 -g --coverage -Wall -Wextra -Werror -Wpedant
 HOST_COV_LDFLAGS  := --coverage -L/usr/local/lib -lsnitch
 
 HOST_ONLY_TEST_SRCS := \
-	tests/host/mocks/host_hal.cpp \
-	tests/host/pfa_test.cpp \
-	tests/host/stack_builder_test.cpp
+    tests/host/mocks/host_hal.cpp \
+    tests/host/pfa_test.cpp \
+    tests/host/vfs_test.cpp \
+    tests/host/stack_builder_test.cpp
 
 HOST_KERNEL_SRCS := \
+	kernel/fs/vfs.cpp \
 	kernel/mm/pfa.cpp \
 	kernel/mm/address_space.cpp \
 	kernel/process/stack_builder.cpp
