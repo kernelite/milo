@@ -9,6 +9,7 @@ LD      := $(PREFIX)ld
 OBJCOPY := $(PREFIX)objcopy
 
 BUILD_DIR          := build
+REPORTS_DIR        := $(BUILD_DIR)/reports
 INITRDS_DIR        := initrds
 BUSYBOX_ROOTFS_DIR := $(BUILD_DIR)/rootfs-busybox
 BASH_ROOTFS_DIR    := $(BUILD_DIR)/rootfs-bash
@@ -36,15 +37,20 @@ OBJS := $(patsubst %.cpp, $(BUILD_DIR)/%.o, $(SRCS_CXX)) \
         $(patsubst %.s, $(BUILD_DIR)/%.o, $(SRCS_ASM))
 DEPS := $(OBJS:.o=.d)
 
-# --- Host Unit Testing Toolchain (snitch pre-installed in /usr/local) ---
+# --- Host Unit Testing Toolchain (snitch & gcovr pre-installed in devcontainer) ---
 HOST_CXX       ?= g++
 HOST_BUILD_DIR := $(BUILD_DIR)/host-tests
+HOST_COV_DIR   := $(BUILD_DIR)/host-coverage
 
 HOST_CXXFLAGS := -std=c++20 -O1 -g -Wall -Wextra -Werror -Wpedantic \
                  -fno-exceptions -fno-rtti -DSNITCH_WITH_EXCEPTIONS=0 \
                  -fsanitize=address,undefined -fno-omit-frame-pointer -MMD -MP
 HOST_LDFLAGS  := -fsanitize=address,undefined -L/usr/local/lib -lsnitch
 HOST_INCLUDES := -Ikernel -Iarch/$(ARCH) -Itests/host
+
+HOST_COV_CXXFLAGS := -std=c++20 -O0 -g --coverage -Wall -Wextra -Werror -Wpedantic \
+                     -fno-exceptions -fno-rtti -DSNITCH_WITH_EXCEPTIONS=0 -MMD -MP
+HOST_COV_LDFLAGS  := --coverage -L/usr/local/lib -lsnitch
 
 HOST_ONLY_TEST_SRCS := \
 	tests/host/mocks/host_hal.cpp \
@@ -61,6 +67,10 @@ HOST_ONLY_TEST_OBJS := $(patsubst %.cpp, $(HOST_BUILD_DIR)/%.o, $(HOST_ONLY_TEST
 HOST_TEST_OBJS      := $(patsubst %.cpp, $(HOST_BUILD_DIR)/%.o, $(HOST_TEST_SRCS))
 HOST_TEST_DEPS      := $(HOST_TEST_OBJS:.o=.d)
 HOST_TEST_BIN       := $(HOST_BUILD_DIR)/kernel_host_tests
+
+HOST_COV_OBJS := $(patsubst %.cpp, $(HOST_COV_DIR)/%.o, $(HOST_TEST_SRCS))
+HOST_COV_DEPS := $(HOST_COV_OBJS:.o=.d)
+HOST_COV_BIN  := $(HOST_COV_DIR)/kernel_host_coverage
 
 .PHONY: all clean clean-tests run debug gdb lint format format-check lint-report quality \
         test-host compile_commands.json ai-dump setup-musl setup-busybox setup-bash
@@ -88,7 +98,7 @@ $(BUILD_DIR)/%.o: %.s
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) $< -o $@
 
-# --- Host Unit Tests (snitch + ASan/UBSan) ---
+# --- Host Unit Tests (snitch) ---
 $(HOST_BUILD_DIR)/%.o: %.cpp arch/memory_config.hpp
 	@mkdir -p $(dir $@)
 	$(HOST_CXX) $(HOST_CXXFLAGS) $(HOST_INCLUDES) -c $< -o $@
@@ -97,12 +107,33 @@ $(HOST_TEST_BIN): $(HOST_TEST_OBJS)
 	@mkdir -p $(dir $@)
 	$(HOST_CXX) $^ $(HOST_LDFLAGS) -o $@
 
-test-host: $(HOST_TEST_BIN)
-	@echo "[TEST-HOST] Running hardware-independent kernel unit tests..."
+# --- Host Test Coverage (gcov instrumentation) ---
+$(HOST_COV_DIR)/%.o: %.cpp arch/memory_config.hpp
+	@mkdir -p $(dir $@)
+	$(HOST_CXX) $(HOST_COV_CXXFLAGS) $(HOST_INCLUDES) -c $< -o $@
+
+$(HOST_COV_BIN): $(HOST_COV_OBJS)
+	@mkdir -p $(dir $@)
+	$(HOST_CXX) $^ $(HOST_COV_LDFLAGS) -o $@
+
+# --- Unified Test Execution & Reporting ---
+test-host: $(HOST_TEST_BIN) $(HOST_COV_BIN)
+	@mkdir -p $(REPORTS_DIR)
+	@echo "[TEST-HOST] Running ASan/UBSan test suite..."
 	./$(HOST_TEST_BIN)
+	@echo "[COVERAGE] Capturing gcov traces and XML test report..."
+	@find $(HOST_COV_DIR) -name '*.gcda' -delete
+	./$(HOST_COV_BIN) -r xml -o $(REPORTS_DIR)/test_report.xml
+	@echo "[GCOVR] Generating terminal summary, HTML dashboard, and CI XML artifacts..."
+	gcovr -r . --object-directory $(HOST_COV_DIR) --filter 'kernel/' \
+		--txt \
+		--html-details $(REPORTS_DIR)/coverage_report.html \
+		--cobertura $(REPORTS_DIR)/cobertura.xml \
+		--jacoco $(REPORTS_DIR)/jacoco.xml
+	@echo "Test and coverage reports generated in $(REPORTS_DIR)/"
 
 clean-tests:
-	rm -rf $(HOST_BUILD_DIR)
+	rm -rf $(HOST_BUILD_DIR) $(HOST_COV_DIR)
 
 MUSL_CC       ?= $(shell command -v aarch64-linux-musl-gcc 2>/dev/null || echo /opt/aarch64-musl/bin/musl-gcc)
 HAS_MUSL_CC   := $(wildcard $(MUSL_CC))
@@ -206,6 +237,7 @@ setup-bash: $(BASH_CPIO)
 
 -include $(DEPS)
 -include $(HOST_TEST_DEPS)
+-include $(HOST_COV_DEPS)
 
 clean:
 	rm -rf $(BUILD_DIR) arch/memory_config.hpp
@@ -251,11 +283,10 @@ format-check:
 lint-report: compile_commands.json
 	@python3 scripts/generate_quality_report.py
 
-quality: format-check test-host lint-report
+quality: format-check lint-report test-host
 
 commit: quality
 	git commit
 
 ai-dump:
 	@python3 scripts/ai_dump.py arch/ kernel/ user/ tests/ Makefile
-	

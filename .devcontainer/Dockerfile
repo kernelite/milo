@@ -6,7 +6,7 @@ ARG SNITCH_VER=1.3.2
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# 1. Install AArch64 bare-metal toolchain, CMake, linters, build utilities, and QEMU/GDB
+# 1. Install AArch64 bare-metal toolchain, CMake, linters, gcovr, and utilities
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ca-certificates \
@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gzip \
     cpio \
     python3 \
+    gcovr \
     git \
     gcc-aarch64-linux-gnu \
     g++-aarch64-linux-gnu \
