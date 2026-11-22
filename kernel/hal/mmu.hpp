@@ -75,6 +75,10 @@ struct AddressSpaceBackend {
                               PageFlags flags) noexcept;
     static bool map_demand_zero(uintptr_t root_paddr, uintptr_t vaddr,
                                 PageFlags expected_flags) noexcept;
+    static bool resolve_cow_page(uintptr_t root_paddr, uintptr_t vaddr,
+                                 uintptr_t& out_paddr) noexcept;
+    static bool resolve_demand_zero_page(uintptr_t root_paddr, uintptr_t vaddr, bool require_write,
+                                         uintptr_t& out_paddr) noexcept;
     static bool unmap_user_page(uintptr_t root_paddr, uintptr_t vaddr) noexcept;
     static bool protect_user_page(uintptr_t root_paddr, uintptr_t vaddr, PageFlags flags) noexcept;
     static bool query_user_page(uintptr_t root_paddr, uintptr_t vaddr, uintptr_t& out_paddr,

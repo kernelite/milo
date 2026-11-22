@@ -353,10 +353,11 @@ void release_process(Process& proc) noexcept {
     // Idempotent teardown of dynamic fd_table, user stack, address space, kstack, and PCB
     destroy_fd_table(proc);
 
-    if (proc.user_stack.phys_base != 0U && proc.user_stack.num_pages > 0U) {
+    if (!proc.address_space.is_valid() && proc.user_stack.phys_base != 0U &&
+        proc.user_stack.num_pages > 0U) {
         free_frames(proc.user_stack.phys_base, proc.user_stack.num_pages);
-        proc.user_stack = UserStack{};
     }
+    proc.user_stack = UserStack{};
 
     proc.address_space.destroy();
 
@@ -782,6 +783,9 @@ void attach_loaded_elf(Process& proc, Loader::LoadedElf&& loaded) noexcept {
     if (loaded.max_vaddr != 0U) {
         proc.brk_start = loaded.max_vaddr;
         proc.brk_current = loaded.max_vaddr;
+    }
+    if (proc.mmap_next_vaddr == 0U) {
+        proc.mmap_next_vaddr = HAL::get_platform_info().user_mmap_base;
     }
 }
 

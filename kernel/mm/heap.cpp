@@ -11,9 +11,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <thread>
 #else
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
+#include "hal/test_hooks.hpp"
+#include "process/process.hpp"
+#include "process/scheduler.hpp"
 #endif
 
 namespace {
@@ -332,6 +336,28 @@ void compound_free_locked(Page* page, uintptr_t paddr) noexcept {
     free_frames(paddr, num_pages);
 }
 
+struct RefcountStressWorkerArgs {
+    uintptr_t shared_paddr{0U};
+    uint32_t iterations{0U};
+    uint32_t completed_iterations{0U};
+};
+
+void refcount_stress_worker_entry(uintptr_t raw_arg) noexcept {
+    auto* const args = reinterpret_cast<RefcountStressWorkerArgs*>(raw_arg);
+    if (args == nullptr || args->shared_paddr == 0U) {
+        return;
+    }
+
+    for (uint32_t i = 0U; i < args->iterations; ++i) {
+        page_get(args->shared_paddr);
+        page_put(args->shared_paddr);
+    }
+
+    // Release this worker's hold on the shared frame
+    page_put(args->shared_paddr);
+    __atomic_store_n(&args->completed_iterations, args->iterations, __ATOMIC_RELEASE);
+}
+
 } // namespace
 
 namespace Kernel::MM {
@@ -473,6 +499,94 @@ void kfree(void* ptr) noexcept {
 HeapStats heap_get_stats() noexcept {
     IrqLockGuard lock;
     return g_heap_stats;
+}
+
+bool run_concurrent_refcount_test() noexcept {
+    constexpr uint32_t OPS_PER_WORKER = 500000U; // 2 * 500,000 = 1,000,000 parallel get/put pairs
+    const size_t free_before = pfa_free_pages_count();
+
+    const uintptr_t shared_frame = alloc_frame();
+    if (shared_frame == 0U || page_ref_count(shared_frame) != 1U) {
+        return false;
+    }
+
+    // Acquire one extra reference per concurrent worker (ref_count == 3)
+    page_get(shared_frame);
+    page_get(shared_frame);
+    if (page_ref_count(shared_frame) != 3U) {
+        free_frame(shared_frame);
+        return false;
+    }
+
+    RefcountStressWorkerArgs worker_a_args{
+        .shared_paddr = shared_frame,
+        .iterations = OPS_PER_WORKER,
+        .completed_iterations = 0U,
+    };
+    RefcountStressWorkerArgs worker_b_args{
+        .shared_paddr = shared_frame,
+        .iterations = OPS_PER_WORKER,
+        .completed_iterations = 0U,
+    };
+
+#ifdef HOST_TEST
+    std::thread t1(refcount_stress_worker_entry, reinterpret_cast<uintptr_t>(&worker_a_args));
+    std::thread t2(refcount_stress_worker_entry, reinterpret_cast<uintptr_t>(&worker_b_args));
+    t1.join();
+    t2.join();
+#else
+    auto* const thread_a = Kernel::Process::allocate_process(0U);
+    if (thread_a == nullptr) {
+        page_put(shared_frame);
+        page_put(shared_frame);
+        page_put(shared_frame);
+        return false;
+    }
+
+    auto* const thread_b = Kernel::Process::allocate_process(0U);
+    if (thread_b == nullptr) {
+        Kernel::Process::release_process(*thread_a);
+        page_put(shared_frame);
+        page_put(shared_frame);
+        page_put(shared_frame);
+        return false;
+    }
+
+    HAL::Test::init_kernel_thread_context(thread_a->kctx, thread_a->kstack_top,
+                                          &refcount_stress_worker_entry,
+                                          reinterpret_cast<uintptr_t>(&worker_a_args));
+    thread_a->kctx_initialized = true;
+
+    HAL::Test::init_kernel_thread_context(thread_b->kctx, thread_b->kstack_top,
+                                          &refcount_stress_worker_entry,
+                                          reinterpret_cast<uintptr_t>(&worker_b_args));
+    thread_b->kctx_initialized = true;
+
+    Kernel::Scheduler::enqueue(thread_a);
+    Kernel::Scheduler::enqueue(thread_b);
+    Kernel::Scheduler::run_until_idle();
+
+    Kernel::Process::release_process(*thread_a);
+    Kernel::Process::release_process(*thread_b);
+#endif
+
+    const bool workers_ok =
+        (__atomic_load_n(&worker_a_args.completed_iterations, __ATOMIC_ACQUIRE) ==
+         OPS_PER_WORKER) &&
+        (__atomic_load_n(&worker_b_args.completed_iterations, __ATOMIC_ACQUIRE) == OPS_PER_WORKER);
+
+    // Frame must still be held by coordinator's single reference (ref_count == 1)
+    const bool still_held =
+        (page_ref_count(shared_frame) == 1U) && pfa_is_page_allocated(shared_frame);
+
+    // Final release must reclaim the frame cleanly without a double-free panic
+    page_put(shared_frame);
+
+    const bool reclaimed_cleanly = (page_ref_count(shared_frame) == 0U) &&
+                                   !pfa_is_page_allocated(shared_frame) &&
+                                   (pfa_free_pages_count() == free_before);
+
+    return workers_ok && still_held && reclaimed_cleanly;
 }
 
 } // namespace Kernel::MM

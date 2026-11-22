@@ -1,5 +1,7 @@
 #pragma once
 
+#include "hal/cpu.hpp"
+
 #include <cstddef>
 #include <cstdint>
 
@@ -35,6 +37,11 @@ struct ForkExecSuiteArgs {
     uint64_t canary_vaddr;
 };
 
+struct SchedSuiteArgs {
+    uint32_t worker_a_pid;
+    uint32_t worker_b_pid;
+};
+
 // Read-Only (.rodata) fault test hooks
 uintptr_t get_ro_target_address() noexcept;
 void trigger_ro_fault() noexcept;
@@ -47,6 +54,10 @@ void trigger_nx_fault() noexcept;
 void trigger_privileged_sysreg_fault() noexcept;
 int64_t run_user_mode_test() noexcept;
 void trigger_user_syscall_test() noexcept;
+
+// Kernel thread context initialization for preemptive EL1 test workers
+void init_kernel_thread_context(HAL::KernelContext& kctx, uintptr_t kstack_top,
+                                void (*entry)(uintptr_t) noexcept, uintptr_t arg) noexcept;
 
 // Architecture-specific EL0 test payload & address probes
 uintptr_t get_privileged_mmio_probe_address() noexcept;
@@ -62,12 +73,8 @@ size_t write_user_echo_program(void* dst_kva) noexcept;
 size_t write_user_mm_suite_program(void* dst_kva) noexcept;
 size_t write_user_proc_lifecycle_program(void* dst_kva) noexcept;
 size_t write_user_fork_exec_program(void* dst_kva) noexcept;
-
-// Add struct SchedSuiteArgs and declaration inside namespace HAL::Test:
-struct SchedSuiteArgs {
-    uint32_t worker_a_pid;
-    uint32_t worker_b_pid;
-};
-
 size_t write_user_sched_suite_program(void* dst_kva) noexcept;
+size_t write_user_cow_isolation_program(void* dst_kva) noexcept;
+size_t write_user_demand_paging_program(void* dst_kva) noexcept;
+
 } // namespace HAL::Test
