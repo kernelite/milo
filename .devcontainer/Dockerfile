@@ -2,13 +2,15 @@ FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04
 
 ARG MUSL_VER=1.2.5
 ARG LINUX_VER=6.6.63
+ARG SNITCH_VER=1.3.2
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# 1. Install AArch64 bare-metal toolchain, linters, build utilities, and QEMU/GDB
+# 1. Install AArch64 bare-metal toolchain, CMake, linters, build utilities, and QEMU/GDB
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ca-certificates \
+    cmake \
     curl \
     tar \
     xz-utils \
@@ -48,3 +50,16 @@ RUN ln -sf /opt/aarch64-musl/bin/musl-gcc /usr/local/bin/aarch64-linux-musl-gcc 
     && for tool in ar ld nm objcopy objdump ranlib strip; do \
         ln -sf "/usr/bin/aarch64-linux-gnu-${tool}" "/usr/local/bin/aarch64-linux-musl-${tool}"; \
     done
+
+# 5. Build and install snitch C++20 unit testing framework into /usr/local
+RUN curl -fL "https://github.com/snitch-org/snitch/archive/refs/tags/v${SNITCH_VER}.tar.gz" | tar -xz -C /tmp \
+    && cmake -S "/tmp/snitch-${SNITCH_VER}" -B "/tmp/snitch-${SNITCH_VER}/build" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CXX_COMPILER=g++ \
+        -DCMAKE_CXX_FLAGS="-fno-exceptions -fno-rtti" \
+        -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DSNITCH_WITH_EXCEPTIONS=OFF \
+        -DSNITCH_DO_TEST=OFF \
+    && cmake --build "/tmp/snitch-${SNITCH_VER}/build" -j"$(nproc)" \
+    && cmake --install "/tmp/snitch-${SNITCH_VER}/build" \
+    && rm -rf "/tmp/snitch-${SNITCH_VER}"

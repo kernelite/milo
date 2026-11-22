@@ -36,7 +36,34 @@ OBJS := $(patsubst %.cpp, $(BUILD_DIR)/%.o, $(SRCS_CXX)) \
         $(patsubst %.s, $(BUILD_DIR)/%.o, $(SRCS_ASM))
 DEPS := $(OBJS:.o=.d)
 
-.PHONY: all clean run debug gdb lint format format-check lint-report quality test-host compile_commands.json ai-dump setup-musl setup-busybox setup-bash
+# --- Host Unit Testing Toolchain (snitch pre-installed in /usr/local) ---
+HOST_CXX       ?= g++
+HOST_BUILD_DIR := $(BUILD_DIR)/host-tests
+
+HOST_CXXFLAGS := -std=c++20 -O1 -g -Wall -Wextra -Werror -Wpedantic \
+                 -fno-exceptions -fno-rtti -DSNITCH_WITH_EXCEPTIONS=0 \
+                 -fsanitize=address,undefined -fno-omit-frame-pointer -MMD -MP
+HOST_LDFLAGS  := -fsanitize=address,undefined -L/usr/local/lib -lsnitch
+HOST_INCLUDES := -Ikernel -Iarch/$(ARCH) -Itests/host
+
+HOST_ONLY_TEST_SRCS := \
+	tests/host/mocks/host_hal.cpp \
+	tests/host/pfa_test.cpp \
+	tests/host/stack_builder_test.cpp
+
+HOST_KERNEL_SRCS := \
+	kernel/mm/pfa.cpp \
+	kernel/mm/address_space.cpp \
+	kernel/process/stack_builder.cpp
+
+HOST_TEST_SRCS      := $(HOST_ONLY_TEST_SRCS) $(HOST_KERNEL_SRCS)
+HOST_ONLY_TEST_OBJS := $(patsubst %.cpp, $(HOST_BUILD_DIR)/%.o, $(HOST_ONLY_TEST_SRCS))
+HOST_TEST_OBJS      := $(patsubst %.cpp, $(HOST_BUILD_DIR)/%.o, $(HOST_TEST_SRCS))
+HOST_TEST_DEPS      := $(HOST_TEST_OBJS:.o=.d)
+HOST_TEST_BIN       := $(HOST_BUILD_DIR)/kernel_host_tests
+
+.PHONY: all clean clean-tests run debug gdb lint format format-check lint-report quality \
+        test-host compile_commands.json ai-dump setup-musl setup-busybox setup-bash
 
 all: $(BUILD_DIR)/$(TARGET) $(INITRD)
 
@@ -60,6 +87,22 @@ $(BUILD_DIR)/%.o: %.cpp arch/memory_config.hpp
 $(BUILD_DIR)/%.o: %.s
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) $< -o $@
+
+# --- Host Unit Tests (snitch + ASan/UBSan) ---
+$(HOST_BUILD_DIR)/%.o: %.cpp arch/memory_config.hpp
+	@mkdir -p $(dir $@)
+	$(HOST_CXX) $(HOST_CXXFLAGS) $(HOST_INCLUDES) -c $< -o $@
+
+$(HOST_TEST_BIN): $(HOST_TEST_OBJS)
+	@mkdir -p $(dir $@)
+	$(HOST_CXX) $^ $(HOST_LDFLAGS) -o $@
+
+test-host: $(HOST_TEST_BIN)
+	@echo "[TEST-HOST] Running hardware-independent kernel unit tests..."
+	./$(HOST_TEST_BIN)
+
+clean-tests:
+	rm -rf $(HOST_BUILD_DIR)
 
 MUSL_CC       ?= $(shell command -v aarch64-linux-musl-gcc 2>/dev/null || echo /opt/aarch64-musl/bin/musl-gcc)
 HAS_MUSL_CC   := $(wildcard $(MUSL_CC))
@@ -162,6 +205,7 @@ $(BASH_CPIO): $(BUILD_DIR)/user/hello $(MUSL_USER_BIN) $(BASH_BIN)
 setup-bash: $(BASH_CPIO)
 
 -include $(DEPS)
+-include $(HOST_TEST_DEPS)
 
 clean:
 	rm -rf $(BUILD_DIR) arch/memory_config.hpp
@@ -182,26 +226,27 @@ debug: $(BUILD_DIR)/$(TARGET) $(INITRD)
 gdb: $(BUILD_DIR)/kernel.elf
 	$(GDB) $(BUILD_DIR)/kernel.elf -ex "target remote localhost:1234" -ex "layout split"
 
-# Find all header files for formatting/linting targets
-HDRS := $(shell find kernel arch -name '*.hpp' -o -name '*.h')
+# Find all project source/header files for formatting/linting targets
+HDRS := $(shell find kernel arch tests -name '*.hpp' -o -name '*.h' 2>/dev/null)
+TEST_FORMAT_SRCS := $(shell find tests -name '*.cpp' 2>/dev/null)
 
 # --- Compilation Database Generation ---
 compile_commands.json: clean
 	@echo "[BEAR] Generating compilation database..."
-	bear -- $(MAKE) $(BUILD_DIR)/$(TARGET)
+	bear -- $(MAKE) $(BUILD_DIR)/$(TARGET) $(HOST_ONLY_TEST_OBJS)
 
 # --- Code Quality Targets ---
 lint: compile_commands.json
 	@echo "[LINT] Running clang-tidy on C++ sources..."
-	clang-tidy -p . $(SRCS_CXX)
+	clang-tidy -p . $(SRCS_CXX) $(TEST_FORMAT_SRCS)
 
 format:
 	@echo "[FORMAT] Formatting sources with clang-format..."
-	clang-format -i $(SRCS_CXX) $(SRCS_C) $(HDRS)
+	clang-format -i $(SRCS_CXX) $(TEST_FORMAT_SRCS) $(SRCS_C) $(HDRS)
 
 format-check:
 	@echo "[FORMAT-CHECK] Checking source formatting..."
-	clang-format --dry-run --Werror $(SRCS_CXX) $(SRCS_C) $(HDRS)
+	clang-format --dry-run --Werror $(SRCS_CXX) $(TEST_FORMAT_SRCS) $(SRCS_C) $(HDRS)
 
 lint-report: compile_commands.json
 	@python3 scripts/generate_quality_report.py
@@ -212,4 +257,5 @@ commit: quality
 	git commit
 
 ai-dump:
-	@python3 scripts/ai_dump.py arch/ kernel/ user/ Makefile
+	@python3 scripts/ai_dump.py arch/ kernel/ user/ tests/ Makefile
+	

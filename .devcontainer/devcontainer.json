@@ -1,6 +1,6 @@
 {
   "name": "Arm64 Microkernel Dev Environment",
-"build": {
+  "build": {
     "dockerfile": "Dockerfile"
   },
   "customizations": {
@@ -27,7 +27,8 @@
         "C_Cpp.default.includePath": [
           "${workspaceFolder}",
           "${workspaceFolder}/kernel",
-          "${workspaceFolder}/arch/aarch64-linux-gnu"
+          "${workspaceFolder}/arch/aarch64-linux-gnu",
+          "/usr/local/include"
         ],
         "C_Cpp.codeAnalysis.runAutomatically": true,
         "C_Cpp.codeAnalysis.clangTidy.enabled": true,

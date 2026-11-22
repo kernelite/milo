@@ -1,0 +1,31 @@
+Checks: >
+  bugprone-*,
+  -bugprone-chained-comparison,
+  -bugprone-easily-swappable-parameters,
+  cert-*,
+  -cert-err58-cpp,
+  clang-analyzer-*,
+  performance-*,
+  readability-*,
+  -modernize-use-std-print,
+  -performance-no-int-to-ptr,
+  -readability-magic-numbers,
+  -readability-function-cognitive-complexity
+
+WarningsAsErrors: ''
+HeaderFilterRegex: 'tests/host/.*'
+FormatStyle: 'file'
+SystemHeaders: false
+
+CheckOptions:
+  - key: performance-noexcept-destructor.AnalysisDepth
+    value: '3'
+  - key: performance-noexcept-move-constructor.AnalysisDepth
+    value: '3'
+  - key: readability-redundant-access-specifiers.CheckFinalClasses
+    value: 'true'
+
+ExtraArgs:
+  - '-fno-exceptions'
+  - '-fno-rtti'
+  - '-std=c++20'
