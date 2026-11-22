@@ -19,5 +19,6 @@ void heap_init() noexcept;
 void kfree(void* ptr) noexcept;
 
 [[nodiscard]] HeapStats heap_get_stats() noexcept;
+[[nodiscard]] bool run_concurrent_refcount_test() noexcept;
 
 } // namespace Kernel::MM

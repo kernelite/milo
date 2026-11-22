@@ -1092,7 +1092,6 @@ void cmd_test_user_echo() noexcept {
     // Allocate stack and build System V ABI layout
     auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(address_space);
     if (!stack_res) {
-        free_frame(code_frame);
         address_space.destroy();
         print_str("[FAIL] Stack creation failed\r\n");
         return;
@@ -1120,7 +1119,6 @@ void cmd_test_user_echo() noexcept {
     assert_test(exit_status == 0,
                 "EL0 Echo process received argc/argv, printed payload, and exited status 0");
 
-    free_frame(code_frame);
     address_space.destroy();
 }
 
@@ -1168,7 +1166,6 @@ void cmd_test_uxn_fault() noexcept {
     assert_test(exit_status == -1,
                 "UXN Instruction Abort caught by Trap Handler! Process terminated safely.");
 
-    free_frame(code_frame);
     address_space.destroy();
 }
 
@@ -1331,10 +1328,6 @@ void cmd_test_syscall() noexcept {
                 "EL0 TTY ioctl (TCGETS/TCSETS/TIOCGWINSZ/-ENOTTY/-EINVAL/-EBADF) & sys_read "
                 "validation verified");
 
-    free_frame(code_paddr);
-    free_frame(data_paddr0);
-    free_frame(data_paddr1);
-    free_frame(ro_paddr);
     Kernel::Process::release_process(*proc);
 
     assert_test(Kernel::Process::active_process_count() == procs_before,
@@ -1402,8 +1395,6 @@ void cmd_test_tty_echo() noexcept {
 
     auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space);
     if (!stack_res.is_ok()) {
-        free_frame(code_paddr);
-        free_frame(data_paddr);
         Kernel::Process::release_process(*proc);
         print_str("[FAIL] Failed to allocate user stack\r\n");
         return;
@@ -1420,8 +1411,6 @@ void cmd_test_tty_echo() noexcept {
     const int64_t exit_status = Kernel::Process::execute_process(*proc);
     assert_test(exit_status == 0, "EL0 interactive TTY read/write echo completed cleanly");
 
-    free_frame(code_paddr);
-    free_frame(data_paddr);
     Kernel::Process::release_process(*proc);
 }
 
@@ -1570,7 +1559,6 @@ void cmd_test_proc_exit() noexcept {
 
     auto stack1_res = Kernel::Process::UserStackBuilder::create_and_map(proc1->address_space);
     if (!stack1_res.is_ok()) {
-        free_frame(code1_paddr);
         Kernel::Process::release_process(*proc1);
         print_str("[FAIL] Failed to allocate user stack for PCB 1\r\n");
         return;
@@ -1591,7 +1579,6 @@ void cmd_test_proc_exit() noexcept {
     assert_test(Kernel::MM::AddressSpace::current_root_paddr() == kernel_root,
                 "TTBR0_EL1 restored to kernel root after SYS_EXIT");
 
-    free_frame(code1_paddr);
     Kernel::Process::release_process(*proc1);
     assert_test(Kernel::Process::find_process_by_pid(pid1) == nullptr &&
                     pfa_allocated_pages_count() == pages_before,
@@ -1748,8 +1735,6 @@ void cmd_test_fork_exec() noexcept {
 
     auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(parent->address_space);
     if (!stack_res.is_ok()) {
-        free_frame(code_paddr);
-        free_frame(data_paddr);
         Kernel::Process::release_process(*parent);
         print_str("[FAIL] Failed to allocate user stack\r\n");
         return;
@@ -1767,8 +1752,6 @@ void cmd_test_fork_exec() noexcept {
     assert_test(exit_status == 0,
                 "EL0 clone(), failed execve(-ENOENT), execve(/bin/hello), and wait4() verified");
 
-    free_frame(code_paddr);
-    free_frame(data_paddr);
     Kernel::Process::release_process(*parent);
 
     assert_test(Kernel::Process::active_process_count() == procs_before,
@@ -1896,8 +1879,6 @@ void cmd_test_sched() noexcept {
 
     auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(parent->address_space);
     if (!stack_res.is_ok()) {
-        free_frame(code_paddr);
-        free_frame(data_paddr);
         Kernel::Process::release_process(*parent);
         print_str("[FAIL] Failed to allocate user stack\r\n");
         return;
@@ -1926,8 +1907,6 @@ void cmd_test_sched() noexcept {
     assert_test(exit_status == 0,
                 "Parent blocked on WaitQueue in wait4() and reaped both workers cleanly");
 
-    free_frame(code_paddr);
-    free_frame(data_paddr);
     Kernel::Process::release_process(*parent);
 
     assert_test(Kernel::Process::active_process_count() == procs_before,
@@ -2072,6 +2051,186 @@ void cmd_test_heap() noexcept {
                 "PFA free page count returned strictly to baseline after teardown");
 }
 
+void cmd_test_concurrent_refcount() noexcept {
+    print_str("\r\n[TEST] Running Concurrent PFA Refcount Validation (1,000,000 ops)...\r\n");
+
+    const size_t free_before = pfa_free_pages_count();
+    const size_t procs_before = Kernel::Process::active_process_count();
+
+    const bool refcount_ok = Kernel::MM::run_concurrent_refcount_test();
+    assert_test(refcount_ok,
+                "1,000,000 parallel page_get()/page_put() ops reclaimed frame without double-free");
+
+    const size_t free_after = pfa_free_pages_count();
+    assert_test(Kernel::Process::active_process_count() == procs_before &&
+                    free_after == free_before,
+                "PFA free page count returned strictly to pre-test baseline");
+}
+
+void cmd_test_cow_isolation() noexcept {
+    print_str("\r\n[TEST] Running EL0 Copy-on-Write (CoW) Isolation Suite...\r\n");
+
+    const size_t free_before = pfa_free_pages_count();
+    const size_t procs_before = Kernel::Process::active_process_count();
+
+    auto* const parent = Kernel::Process::allocate_process(0U);
+    assert_test(parent != nullptr, "Allocated parent PCB for CoW isolation test");
+    if (parent == nullptr) {
+        return;
+    }
+
+    auto as_res = Kernel::MM::AddressSpace::create();
+    if (!as_res.is_ok()) {
+        Kernel::Process::release_process(*parent);
+        print_str("[FAIL] Failed to create parent AddressSpace\r\n");
+        return;
+    }
+    parent->address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
+
+    constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
+    constexpr uintptr_t DATA_VADDR = 0x0000000000500000ULL;
+    const uintptr_t code_paddr = alloc_frame();
+    const uintptr_t data_paddr = alloc_frame();
+    if (code_paddr == 0U || data_paddr == 0U) {
+        if (code_paddr != 0U) {
+            free_frame(code_paddr);
+        }
+        if (data_paddr != 0U) {
+            free_frame(data_paddr);
+        }
+        Kernel::Process::release_process(*parent);
+        print_str("[FAIL] Failed to allocate test frames\r\n");
+        return;
+    }
+
+    parent->address_space.map_user_page(CODE_VADDR, code_paddr,
+                                        HAL::PageFlags::User | HAL::PageFlags::Read |
+                                            HAL::PageFlags::Execute);
+    parent->address_space.map_user_page(DATA_VADDR, data_paddr,
+                                        HAL::PageFlags::User | HAL::PageFlags::Read |
+                                            HAL::PageFlags::Write);
+
+    auto* const k_code = reinterpret_cast<void*>(Kernel::MM::phys_to_virt(code_paddr));
+    const size_t code_bytes = HAL::Test::write_user_cow_isolation_program(k_code);
+    HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(k_code), code_bytes);
+    HAL::get_cpu().invalidate_icache();
+
+    auto* const k_data = reinterpret_cast<uint64_t*>(Kernel::MM::phys_to_virt(data_paddr));
+    *k_data = 0ULL;
+    HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(k_data), sizeof(uint64_t));
+
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(parent->address_space);
+    if (!stack_res.is_ok()) {
+        Kernel::Process::release_process(*parent);
+        print_str("[FAIL] Failed to allocate user stack\r\n");
+        return;
+    }
+    parent->user_stack = stack_res.value();
+
+    const char* const argv[] = {"cow_isolation_test"};
+    Kernel::Process::UserStackBuilder::build_abi_layout(parent->user_stack, 1, argv);
+
+    parent->entry_point = CODE_VADDR;
+    Kernel::Process::init_user_cpu_context(parent->context, CODE_VADDR,
+                                           parent->user_stack.final_sp_el0, DATA_VADDR, 0ULL);
+
+    const int64_t exit_status = Kernel::Process::execute_process(*parent);
+    assert_test(exit_status == 0,
+                "CoW isolation verified: child wrote 0x2222 while parent retained 0x1111");
+
+    Kernel::Process::release_process(*parent);
+
+    const size_t free_after = pfa_free_pages_count();
+    assert_test(Kernel::Process::active_process_count() == procs_before &&
+                    free_after == free_before,
+                "All CoW shared/copied frames and page tables reclaimed to baseline");
+}
+
+void cmd_test_demand_paging() noexcept {
+    print_str("\r\n[TEST] Running EL0 Demand-Zero 1 GiB Capacity Suite...\r\n");
+
+    const size_t free_before = pfa_free_pages_count();
+    const size_t procs_before = Kernel::Process::active_process_count();
+
+    auto* const proc = Kernel::Process::allocate_process(0U);
+    assert_test(proc != nullptr, "Allocated PCB for 1 GiB demand-paging capacity test");
+    if (proc == nullptr) {
+        return;
+    }
+
+    auto as_res = Kernel::MM::AddressSpace::create();
+    if (!as_res.is_ok()) {
+        Kernel::Process::release_process(*proc);
+        print_str("[FAIL] Failed to create AddressSpace\r\n");
+        return;
+    }
+    proc->address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
+
+    constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
+    const uintptr_t code_paddr = alloc_frame();
+    if (code_paddr == 0U) {
+        Kernel::Process::release_process(*proc);
+        print_str("[FAIL] Failed to allocate code frame\r\n");
+        return;
+    }
+
+    proc->address_space.map_user_page(CODE_VADDR, code_paddr,
+                                      HAL::PageFlags::User | HAL::PageFlags::Read |
+                                          HAL::PageFlags::Execute);
+
+    auto* const k_code = reinterpret_cast<void*>(Kernel::MM::phys_to_virt(code_paddr));
+    const size_t code_bytes = HAL::Test::write_user_demand_paging_program(k_code);
+    HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(k_code), code_bytes);
+    HAL::get_cpu().invalidate_icache();
+
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space);
+    if (!stack_res.is_ok()) {
+        Kernel::Process::release_process(*proc);
+        print_str("[FAIL] Failed to allocate user stack\r\n");
+        return;
+    }
+    proc->user_stack = stack_res.value();
+
+    const char* const argv[] = {"demand_paging_test"};
+    Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack, 1, argv);
+
+    proc->entry_point = CODE_VADDR;
+    Kernel::Process::init_user_cpu_context(proc->context, CODE_VADDR, proc->user_stack.final_sp_el0,
+                                           0ULL, 0ULL);
+
+    const int64_t exit_status = Kernel::Process::execute_process(*proc);
+    assert_test(
+        exit_status == 0,
+        "1 GiB SYS_MMAP (>256 MiB RAM) succeeded & persisted 0xBEEF across first/mid/last pages");
+
+    Kernel::Process::release_process(*proc);
+
+    const size_t free_after = pfa_free_pages_count();
+    assert_test(Kernel::Process::active_process_count() == procs_before &&
+                    free_after == free_before,
+                "All demand-zero page tables and touched frames reclaimed to baseline");
+}
+
+void run_lazy_memory_acceptance_suite() noexcept {
+    print_str("\r\n=============================================\r\n");
+    print_str("  Lazy Memory Verification & Acceptance Suite\r\n");
+    print_str("=============================================\r\n");
+
+    if (auto* const warmup = Kernel::Process::allocate_process(0U); warmup != nullptr) {
+        Kernel::Process::release_process(*warmup);
+    }
+
+    const size_t suite_baseline_free = pfa_free_pages_count();
+
+    cmd_test_concurrent_refcount();
+    cmd_test_cow_isolation();
+    cmd_test_demand_paging();
+
+    const size_t suite_final_free = pfa_free_pages_count();
+    assert_test(suite_final_free == suite_baseline_free,
+                "ZERO MEMORY LEAKS: pfa_free_pages_count() matches pre-test baseline");
+}
+
 void cmd_sh() noexcept {
     if (g_initrd_loc.valid && g_initrd_loc.start_paddr != 0U && g_initrd_loc.size > 0U) {
         CpioEntry bash_entry{};
@@ -2109,7 +2268,7 @@ void print_help() noexcept {
     print_str("  test vmm        - Test AddressSpace lifecycle and page mappings\r\n");
     print_str("  test loader     - Test ELF segment loading and OOM rollback\r\n");
     print_str("  test user       - Instantiate EL0 process and verify syscall exit\r\n");
-    print_str("  test fork_exec  - Test fork, execve and wait4");
+    print_str("  test fork_exec  - Test fork, execve and wait4\r\n");
     print_str("  test heap       - Test kernel slab/compound heap & C++ new/delete ABI\r\n");
     print_str("  test dynamic_io - Test dynamic FD growth, heap pipes & 500+ FD ppoll\r\n");
     print_str("  test sched      - Test O(1) task scheduler\r\n");
@@ -2121,8 +2280,13 @@ void print_help() noexcept {
     print_str("  test tty_echo   - Run interactive EL0 TTY read/write echo test\r\n");
     print_str("  test user_mm    - Test user heap (sys_brk) & anonymous sys_mmap/sys_munmap\r\n");
     print_str("  test proc       - Test process spae and exit functions\r\n");
-    print_str("  test musl       - Test MUSL");
-    print_str("  test all        - Run entire verification test suite\r\n");
+    print_str("  test musl          - Test MUSL\r\n");
+    print_str(
+        "  test refcount      - Run 1,000,000 parallel page_get()/page_put() stress test\r\n");
+    print_str("  test cow           - Run EL0 Copy-on-Write isolation verification suite\r\n");
+    print_str("  test demand_paging - Run EL0 1 GiB demand-zero capacity verification suite\r\n");
+    print_str("  test lazy_mm       - Run full lazy memory acceptance & zero-leak suite\r\n");
+    print_str("  test all           - Run entire verification test suite\r\n");
     print_str("  bash            - Run interactive GNU bash shell\r\n");
     print_str("  sh              - Run interactive POSIX shell (/bin/bash or BusyBox)\r\n");
     print_str("  halt            - Put CPU into low-power WFI state\r\n");
@@ -2203,6 +2367,14 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_heap();
     } else if (streq(buf, "test dynamic_io")) {
         cmd_test_dynamic_io();
+    } else if (streq(buf, "test refcount")) {
+        cmd_test_concurrent_refcount();
+    } else if (streq(buf, "test cow")) {
+        cmd_test_cow_isolation();
+    } else if (streq(buf, "test demand_paging")) {
+        cmd_test_demand_paging();
+    } else if (streq(buf, "test lazy_mm")) {
+        run_lazy_memory_acceptance_suite();
     } else if (streq(buf, "bash")) {
         cmd_bash();
     } else if (streq(buf, "sh")) {
@@ -2237,6 +2409,7 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_sched();
         cmd_test_heap();
         cmd_test_dynamic_io();
+        run_lazy_memory_acceptance_suite();
     } else if (buf[0] != '\0') {
         print_str("Unknown command: '");
         print_str(buf);
@@ -2252,6 +2425,8 @@ namespace Shell {
 void run() noexcept {
     char input_buf[INPUT_BUFFER_SIZE];
     size_t buf_pos = 0;
+
+    run_lazy_memory_acceptance_suite();
 
     print_str("\r\n=============================================\r\n");
     print_str("       milo OS Kernel Shell Ready            \r\n");
