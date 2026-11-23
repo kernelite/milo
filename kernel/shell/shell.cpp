@@ -1,11 +1,14 @@
 #include "boot/fdt.hpp"
 #include "fs/cpio.hpp"
+#include "fs/devfs/devfs.hpp"
+#include "fs/vfs.hpp"
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
 #include "hal/targets/qemu_virt/gicv2.hpp"
 #include "hal/targets/qemu_virt/timer.hpp"
 #include "hal/test_hooks.hpp"
+#include "ipc/pipe.hpp"
 #include "loader/elf64.hpp"
 #include "loader/elf_loader.hpp"
 #include "mm/address_space.hpp"
@@ -828,34 +831,25 @@ void cmd_test_dynamic_io() noexcept {
             pipes_ok = false;
             break;
         }
-        proc->fd_table[rfd].in_use = true;
+
+        kernel::fs::File* read_file = nullptr;
+        kernel::fs::File* write_file = nullptr;
+        if (Kernel::IPC::create_pipe_files(&read_file, &write_file) != kernel::fs::kOk) {
+            pipes_ok = false;
+            break;
+        }
+
+        proc->fd_table[rfd] = Kernel::Process::FileDescriptor{.file = read_file, .fd_flags = 0U};
 
         const int wfd = Kernel::Process::allocate_fd(*proc, static_cast<size_t>(rfd) + 1U);
         if (wfd < 0) {
-            proc->fd_table[rfd].in_use = false;
+            Kernel::Process::close_fd(*proc, static_cast<size_t>(rfd));
+            (void)kernel::fs::vfs_close(write_file);
             pipes_ok = false;
             break;
         }
 
-        Kernel::FS::Pipe* const pipe = Kernel::FS::allocate_pipe();
-        if (pipe == nullptr) {
-            proc->fd_table[rfd].in_use = false;
-            pipes_ok = false;
-            break;
-        }
-
-        proc->fd_table[rfd] = Kernel::Process::FileDescriptor{
-            .type = Kernel::Process::FdType::PipeRead,
-            .flags = Kernel::Process::FD_FLAG_READ,
-            .in_use = true,
-            .pipe = pipe,
-        };
-        proc->fd_table[wfd] = Kernel::Process::FileDescriptor{
-            .type = Kernel::Process::FdType::PipeWrite,
-            .flags = Kernel::Process::FD_FLAG_WRITE,
-            .in_use = true,
-            .pipe = pipe,
-        };
+        proc->fd_table[wfd] = Kernel::Process::FileDescriptor{.file = write_file, .fd_flags = 0U};
         read_fds[i] = rfd;
         write_fds[i] = wfd;
     }
@@ -1280,29 +1274,34 @@ void cmd_test_syscall() noexcept {
     // 3. Execute EL0 TTY ioctl & non-blocking sys_read verification suite
     assert_test(Kernel::Process::init_fd_table(*proc, Kernel::Process::INITIAL_FD_CAPACITY),
                 "Re-initialized dynamic fd_table for TTY ioctl verification suite");
-    proc->fd_table[0] = Kernel::Process::FileDescriptor{
-        .type = Kernel::Process::FdType::ConsoleTty,
-        .flags = Kernel::Process::FD_FLAG_READ,
-        .in_use = true,
-    };
-    proc->fd_table[1] = Kernel::Process::FileDescriptor{
-        .type = Kernel::Process::FdType::ConsoleTty,
-        .flags = Kernel::Process::FD_FLAG_WRITE,
-        .in_use = true,
-    };
-    proc->fd_table[2] = Kernel::Process::FileDescriptor{
-        .type = Kernel::Process::FdType::ConsoleTty,
-        .flags = Kernel::Process::FD_FLAG_WRITE,
-        .in_use = true,
-    };
+    kernel::fs::File* tty_in = nullptr;
+    kernel::fs::File* tty_out = nullptr;
+    kernel::fs::File* tty_err = nullptr;
+    (void)kernel::fs::devfs_open_console(kernel::fs::kOpenReadOnly, &tty_in);
+    (void)kernel::fs::devfs_open_console(kernel::fs::kOpenWriteOnly, &tty_out);
+    (void)kernel::fs::devfs_open_console(kernel::fs::kOpenWriteOnly, &tty_err);
+    proc->fd_table[0] = Kernel::Process::FileDescriptor{.file = tty_in, .fd_flags = 0U};
+    proc->fd_table[1] = Kernel::Process::FileDescriptor{.file = tty_out, .fd_flags = 0U};
+    proc->fd_table[2] = Kernel::Process::FileDescriptor{.file = tty_err, .fd_flags = 0U};
 
     constexpr uint64_t NON_TTY_FD = 3ULL;
-    proc->fd_table[NON_TTY_FD] = Kernel::Process::FileDescriptor{
-        .type = Kernel::Process::FdType::InitrdFile,
-        .flags = Kernel::Process::FD_FLAG_READ,
-        .offset = 0U,
-        .in_use = true,
-    };
+    kernel::fs::File* non_tty_file = nullptr;
+    (void)kernel::fs::vfs_open("/init.txt", kernel::fs::kOpenReadOnly, 0U, &non_tty_file);
+    if (non_tty_file == nullptr) {
+        kernel::fs::Inode* dummy_ino = kernel::fs::vfs_alloc_inode(nullptr);
+        if (dummy_ino != nullptr) {
+            dummy_ino->mode = kernel::fs::kModeReg | 0444U;
+            non_tty_file = kernel::fs::vfs_alloc_file();
+            if (non_tty_file != nullptr) {
+                non_tty_file->inode = dummy_ino;
+                non_tty_file->flags = kernel::fs::kOpenReadOnly;
+            } else {
+                kernel::fs::inode_put(dummy_ino);
+            }
+        }
+    }
+    proc->fd_table[NON_TTY_FD] =
+        Kernel::Process::FileDescriptor{.file = non_tty_file, .fd_flags = 0U};
 
     constexpr uintptr_t IOCTL_ARGS_VADDR = DATA_PAGE0_VADDR + 0x100ULL;
     const HAL::Test::TtyIoctlSuiteArgs ioctl_args{

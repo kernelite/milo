@@ -43,26 +43,36 @@ HOST_BUILD_DIR := $(BUILD_DIR)/host-tests
 HOST_COV_DIR   := $(BUILD_DIR)/host-coverage
 
 HOST_CXXFLAGS := -std=c++20 -O1 -g -Wall -Wextra -Werror -Wpedantic \
-                 -fno-exceptions -fno-rtti -DSNITCH_WITH_EXCEPTIONS=0 \
+                 -fno-exceptions -fno-rtti -DHOST_TEST -DSNITCH_WITH_EXCEPTIONS=0 \
                  -fsanitize=address,undefined -fno-omit-frame-pointer -MMD -MP
 HOST_LDFLAGS  := -fsanitize=address,undefined -L/usr/local/lib -lsnitch
 HOST_INCLUDES := -Ikernel -Iarch/$(ARCH) -Itests/host
 
 HOST_COV_CXXFLAGS := -std=c++20 -O0 -g --coverage -Wall -Wextra -Werror -Wpedantic \
-                     -fno-exceptions -fno-rtti -DSNITCH_WITH_EXCEPTIONS=0 -MMD -MP
+                     -fno-exceptions -fno-rtti -DHOST_TEST -DSNITCH_WITH_EXCEPTIONS=0 -MMD -MP
 HOST_COV_LDFLAGS  := --coverage -L/usr/local/lib -lsnitch
 
 HOST_ONLY_TEST_SRCS := \
     tests/host/mocks/host_hal.cpp \
     tests/host/pfa_test.cpp \
     tests/host/vfs_test.cpp \
+    tests/host/rootfs_test.cpp \
     tests/host/stack_builder_test.cpp
 
 HOST_KERNEL_SRCS := \
-	kernel/fs/vfs.cpp \
-	kernel/mm/pfa.cpp \
-	kernel/mm/address_space.cpp \
-	kernel/process/stack_builder.cpp
+    kernel/fs/cpio.cpp \
+    kernel/fs/vfs.cpp \
+    kernel/fs/rootfs/rootfs.cpp \
+    kernel/fs/devfs/devfs.cpp \
+    kernel/ipc/pipe.cpp \
+    kernel/mm/pfa.cpp \
+    kernel/mm/heap.cpp \
+    kernel/mm/address_space.cpp \
+    kernel/process/process.cpp \
+    kernel/process/resource.cpp \
+    kernel/process/scheduler.cpp \
+    kernel/process/stack_builder.cpp \
+    kernel/process/wait_queue.cpp
 
 HOST_TEST_SRCS      := $(HOST_ONLY_TEST_SRCS) $(HOST_KERNEL_SRCS)
 HOST_ONLY_TEST_OBJS := $(patsubst %.cpp, $(HOST_BUILD_DIR)/%.o, $(HOST_ONLY_TEST_SRCS))

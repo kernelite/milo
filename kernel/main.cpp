@@ -1,4 +1,6 @@
 #include "boot/fdt.hpp"
+#include "fs/devfs/devfs.hpp"
+#include "fs/rootfs/rootfs.hpp"
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
@@ -91,6 +93,13 @@ extern "C" void kmain(uintptr_t dtb_paddr) {
 
     // Stage 6: Kernel Slab & Compound Heap Allocator Initialization
     Kernel::MM::heap_init();
+    // Stage 6b: Mount read-only CPIO rootfs at `/` and devfs at `/dev`
+    if (kernel::fs::rootfs_mount_from_initrd(g_initrd_loc) == kernel::fs::kOk &&
+        kernel::fs::devfs_init_and_mount() == kernel::fs::kOk) {
+        print_str("[KERNEL] VFS rootfs (/) and devfs (/dev) mounted.\r\n");
+    } else {
+        print_str("[KERNEL] Warning: VFS initialization failed.\r\n");
+    }
     print_str("[KERNEL] Kernel Heap Allocator initialized.\r\n");
 
     // Stage 7: Initialize GICv2, 100Hz Timer, and Preemptive Scheduler

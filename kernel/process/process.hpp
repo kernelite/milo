@@ -1,8 +1,7 @@
 #pragma once
 
-#include "fs/cpio.hpp"
-#include "fs/pipe.hpp"
 #include "hal/cpu.hpp"
+#include "ipc/pipe.hpp"
 #include "loader/elf_loader.hpp"
 #include "mm/address_space.hpp"
 #include "process/resource.hpp"
@@ -52,27 +51,31 @@ struct SigAction {
 
 enum class ProcessState : uint8_t { Unused = 0, Ready, Running, Blocked, Stopped, Zombie };
 
-enum class FdType : uint8_t { None = 0, ConsoleTty, DevNull, InitrdFile, PipeRead, PipeWrite };
-
 struct FileDescriptor {
-    FdType type{FdType::None};
-    uint32_t flags{0U};
-    size_t offset{0U};
-    bool in_use{false};
-    CpioEntry cpio_entry{};
-    char path[MAX_PATH_LEN]{};
-    FS::Pipe* pipe{nullptr};
+    kernel::fs::File* file{nullptr};
+    uint32_t fd_flags{0U};
 
-    [[nodiscard]] constexpr bool is_readable() const noexcept {
-        return in_use && ((flags & FD_FLAG_READ) != 0U);
+    [[nodiscard]] bool is_open() const noexcept { return file != nullptr && file->active; }
+
+    [[nodiscard]] bool is_readable() const noexcept {
+        if (!is_open()) {
+            return false;
+        }
+        const uint32_t acc = file->flags & kernel::fs::kOpenAccessMask;
+        return acc == kernel::fs::kOpenReadOnly || acc == kernel::fs::kOpenReadWrite;
     }
 
-    [[nodiscard]] constexpr bool is_writable() const noexcept {
-        return in_use && ((flags & FD_FLAG_WRITE) != 0U);
+    [[nodiscard]] bool is_writable() const noexcept {
+        if (!is_open()) {
+            return false;
+        }
+        const uint32_t acc = file->flags & kernel::fs::kOpenAccessMask;
+        return acc == kernel::fs::kOpenWriteOnly || acc == kernel::fs::kOpenReadWrite;
     }
 
-    [[nodiscard]] constexpr bool is_tty() const noexcept {
-        return in_use && (type == FdType::ConsoleTty);
+    [[nodiscard]] bool is_tty() const noexcept {
+        return is_open() && file->inode != nullptr && file->inode->is_chr() &&
+               file->f_ops != nullptr && file->f_ops->ioctl != nullptr;
     }
 };
 

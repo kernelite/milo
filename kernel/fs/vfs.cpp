@@ -4,6 +4,10 @@ namespace kernel::fs {
 
 namespace {
 
+constexpr int16_t kPollInMask = 0x0041;  // POLLIN | POLLRDNORM
+constexpr int16_t kPollOutMask = 0x0104; // POLLOUT | POLLWRNORM
+constexpr int16_t kPollNval = 0x0020;
+
 struct VfsState {
     Superblock superblocks[kMaxSuperblocks]{};
     Mount mounts[kMaxMounts]{};
@@ -152,6 +156,145 @@ void ascend_parent(Dentry*& curr, Mount*& curr_mount) noexcept {
         cur = cur->parent;
     }
     return false;
+}
+
+[[nodiscard]] int32_t namei_depth(StringView path, Dentry* cwd, bool follow_symlinks, size_t depth,
+                                  Dentry** out_dentry) noexcept {
+    if (out_dentry == nullptr) {
+        return kEinval;
+    }
+    *out_dentry = nullptr;
+
+    if (depth > kMaxSymlinkDepth) {
+        return kEloop;
+    }
+    if (path.empty()) {
+        return kEnoent;
+    }
+
+    Dentry* start = nullptr;
+    Mount* curr_mount = nullptr;
+
+    if (path.front() == '/') {
+        start = vfs_root_dentry();
+        curr_mount = g_vfs.root_mount;
+    } else {
+        start = (cwd != nullptr) ? cwd : vfs_root_dentry();
+        Dentry* probe = start;
+        while (probe != nullptr) {
+            Mount* mnt = find_mount_by_root(probe);
+            if (mnt != nullptr) {
+                curr_mount = mnt;
+                break;
+            }
+            probe = probe->parent;
+        }
+        if (curr_mount == nullptr) {
+            curr_mount = g_vfs.root_mount;
+        }
+    }
+
+    if (start == nullptr || start->inode == nullptr) {
+        return kEnoent;
+    }
+
+    Dentry* curr = start;
+    dentry_get(curr);
+    descend_mounts(curr, curr_mount);
+
+    size_t pos = 0U;
+    while (pos < path.size()) {
+        while (pos < path.size() && path[pos] == '/') {
+            ++pos;
+        }
+        if (pos >= path.size()) {
+            break;
+        }
+
+        const size_t start_tok = pos;
+        while (pos < path.size() && path[pos] != '/') {
+            ++pos;
+        }
+        const StringView token = path.substr(start_tok, pos - start_tok);
+
+        size_t lookahead = pos;
+        while (lookahead < path.size() && path[lookahead] == '/') {
+            ++lookahead;
+        }
+        const bool is_last_component = (lookahead >= path.size());
+        const bool has_trailing_slash = (pos < path.size() && path[pos] == '/');
+
+        if (curr->inode == nullptr || !curr->inode->is_dir()) {
+            dentry_put(curr);
+            return kEnotdir;
+        }
+
+        if (token == ".") {
+            continue;
+        }
+        if (token == "..") {
+            ascend_parent(curr, curr_mount);
+            continue;
+        }
+
+        Dentry* next = nullptr;
+        const int32_t rc = lookup_component(curr, token, &next);
+        if (rc != kOk) {
+            dentry_put(curr);
+            return rc;
+        }
+
+        if (next->inode != nullptr && next->inode->is_symlink() &&
+            (!is_last_component || follow_symlinks || has_trailing_slash)) {
+            if (next->inode->i_ops == nullptr || next->inode->i_ops->readlink == nullptr) {
+                dentry_put(next);
+                dentry_put(curr);
+                return kEopnotsupp;
+            }
+            char target_buf[256]{};
+            size_t target_len = 0U;
+            const int32_t rl_rc = next->inode->i_ops->readlink(
+                next->inode, target_buf, sizeof(target_buf) - 1U, &target_len);
+            dentry_put(next);
+            if (rl_rc != kOk) {
+                dentry_put(curr);
+                return rl_rc;
+            }
+            target_buf[target_len] = '\0';
+
+            Dentry* symlink_resolved = nullptr;
+            const int32_t sym_rc = namei_depth(StringView(target_buf, target_len), curr, true,
+                                               depth + 1U, &symlink_resolved);
+            dentry_put(curr);
+            if (sym_rc != kOk) {
+                return sym_rc;
+            }
+            curr = symlink_resolved;
+            curr_mount = g_vfs.root_mount;
+            Dentry* probe = curr;
+            while (probe != nullptr) {
+                Mount* mnt = find_mount_by_root(probe);
+                if (mnt != nullptr) {
+                    curr_mount = mnt;
+                    break;
+                }
+                probe = probe->parent;
+            }
+            continue;
+        }
+
+        dentry_put(curr);
+        curr = next;
+        descend_mounts(curr, curr_mount);
+    }
+
+    if (path.back() == '/' && (curr->inode == nullptr || !curr->inode->is_dir())) {
+        dentry_put(curr);
+        return kEnotdir;
+    }
+
+    *out_dentry = curr;
+    return kOk;
 }
 
 } // namespace
@@ -501,91 +644,9 @@ int32_t vfs_umount(StringView target_path) noexcept {
     return kOk;
 }
 
-int32_t vfs_namei(StringView path, Dentry* cwd, Dentry** out_dentry) noexcept {
-    if (out_dentry == nullptr) {
-        return kEinval;
-    }
-    *out_dentry = nullptr;
-
-    if (path.empty()) {
-        return kEnoent;
-    }
-
-    Dentry* start = nullptr;
-    Mount* curr_mount = nullptr;
-
-    if (path.front() == '/') {
-        start = vfs_root_dentry();
-        curr_mount = g_vfs.root_mount;
-    } else {
-        start = (cwd != nullptr) ? cwd : vfs_root_dentry();
-        Dentry* probe = start;
-        while (probe != nullptr) {
-            Mount* mnt = find_mount_by_root(probe);
-            if (mnt != nullptr) {
-                curr_mount = mnt;
-                break;
-            }
-            probe = probe->parent;
-        }
-        if (curr_mount == nullptr) {
-            curr_mount = g_vfs.root_mount;
-        }
-    }
-
-    if (start == nullptr || start->inode == nullptr) {
-        return kEnoent;
-    }
-
-    Dentry* curr = start;
-    dentry_get(curr);
-    descend_mounts(curr, curr_mount);
-
-    size_t pos = 0U;
-    while (pos < path.size()) {
-        while (pos < path.size() && path[pos] == '/') {
-            ++pos;
-        }
-        if (pos >= path.size()) {
-            break;
-        }
-
-        const size_t start_tok = pos;
-        while (pos < path.size() && path[pos] != '/') {
-            ++pos;
-        }
-        const StringView token = path.substr(start_tok, pos - start_tok);
-
-        if (curr->inode == nullptr || !curr->inode->is_dir()) {
-            dentry_put(curr);
-            return kEnotdir;
-        }
-
-        if (token == ".") {
-            continue;
-        }
-        if (token == "..") {
-            ascend_parent(curr, curr_mount);
-            continue;
-        }
-
-        Dentry* next = nullptr;
-        const int32_t rc = lookup_component(curr, token, &next);
-        dentry_put(curr);
-        if (rc != kOk) {
-            return rc;
-        }
-        curr = next;
-        descend_mounts(curr, curr_mount);
-    }
-
-    if (path.back() == '/' && (curr->inode == nullptr || !curr->inode->is_dir())) {
-        dentry_put(curr);
-        return kEnotdir;
-    }
-
-    *out_dentry = curr;
-    return kOk;
+int32_t vfs_namei(StringView path, Dentry* cwd, Dentry** out_dentry,
+                  bool follow_symlinks) noexcept {
+    return namei_depth(path, cwd, follow_symlinks, 0U, out_dentry);
 }
 
 int32_t vfs_namei_parent(StringView path, Dentry* cwd, Dentry** out_parent, StringView* out_leaf,
@@ -655,7 +716,36 @@ int32_t vfs_namei_parent(StringView path, Dentry* cwd, Dentry** out_parent, Stri
     return kOk;
 }
 
-int32_t vfs_open(StringView path, uint32_t flags, uint32_t mode, File** out_file) noexcept {
+int32_t vfs_readlink(StringView path, Dentry* cwd, char* buf, size_t buf_size,
+                     size_t* out_len) noexcept {
+    if (buf == nullptr || buf_size == 0U || out_len == nullptr) {
+        return kEinval;
+    }
+    *out_len = 0U;
+
+    Dentry* target = nullptr;
+    const int32_t rc = vfs_namei(path, cwd, &target, false);
+    if (rc != kOk) {
+        return rc;
+    }
+
+    Inode* inode = target->inode;
+    if (inode == nullptr || !inode->is_symlink()) {
+        dentry_put(target);
+        return kEinval;
+    }
+    if (inode->i_ops == nullptr || inode->i_ops->readlink == nullptr) {
+        dentry_put(target);
+        return kEopnotsupp;
+    }
+
+    const int32_t rl_rc = inode->i_ops->readlink(inode, buf, buf_size, out_len);
+    dentry_put(target);
+    return rl_rc;
+}
+
+int32_t vfs_open_at(Dentry* cwd, StringView path, uint32_t flags, uint32_t mode,
+                    File** out_file) noexcept {
     if (out_file == nullptr) {
         return kEinval;
     }
@@ -665,13 +755,13 @@ int32_t vfs_open(StringView path, uint32_t flags, uint32_t mode, File** out_file
     const bool wants_write = (acc == kOpenWriteOnly || acc == kOpenReadWrite);
 
     Dentry* target = nullptr;
-    int32_t rc = vfs_namei(path, nullptr, &target);
+    int32_t rc = vfs_namei(path, cwd, &target, true);
 
     if (rc == kEnoent && (flags & kOpenCreate) != 0U) {
         Dentry* parent = nullptr;
         StringView leaf{};
         bool trailing_slash = false;
-        rc = vfs_namei_parent(path, nullptr, &parent, &leaf, &trailing_slash);
+        rc = vfs_namei_parent(path, cwd, &parent, &leaf, &trailing_slash);
         if (rc != kOk) {
             return rc;
         }
@@ -772,6 +862,10 @@ int32_t vfs_open(StringView path, uint32_t flags, uint32_t mode, File** out_file
     return kOk;
 }
 
+int32_t vfs_open(StringView path, uint32_t flags, uint32_t mode, File** out_file) noexcept {
+    return vfs_open_at(nullptr, path, flags, mode, out_file);
+}
+
 int32_t vfs_close(File* file) noexcept {
     if (file == nullptr || !file->active) {
         return kEbadf;
@@ -849,6 +943,34 @@ int64_t vfs_lseek(File* file, int64_t offset, SeekWhence whence) noexcept {
     }
     file->offset = static_cast<uint64_t>(target);
     return target;
+}
+
+int32_t vfs_ioctl(File* file, uint64_t request, uint64_t arg) noexcept {
+    if (file == nullptr || !file->active || file->inode == nullptr) {
+        return kEbadf;
+    }
+    if (file->f_ops == nullptr || file->f_ops->ioctl == nullptr) {
+        return kEnotty;
+    }
+    return file->f_ops->ioctl(file, request, arg);
+}
+
+int16_t vfs_poll(File* file, int16_t events) noexcept {
+    if (file == nullptr || !file->active || file->inode == nullptr) {
+        return kPollNval;
+    }
+    if (file->f_ops != nullptr && file->f_ops->poll != nullptr) {
+        return file->f_ops->poll(file, events);
+    }
+    const uint32_t acc = file->flags & kOpenAccessMask;
+    uint16_t revents = 0U;
+    if (acc == kOpenReadOnly || acc == kOpenReadWrite) {
+        revents |= static_cast<uint16_t>(events & kPollInMask);
+    }
+    if (acc == kOpenWriteOnly || acc == kOpenReadWrite) {
+        revents |= static_cast<uint16_t>(events & kPollOutMask);
+    }
+    return static_cast<int16_t>(revents);
 }
 
 int32_t vfs_readdir(File* file, DirEntryInfo* out_entry) noexcept {
