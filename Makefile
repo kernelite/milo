@@ -57,6 +57,7 @@ HOST_ONLY_TEST_SRCS := \
     tests/host/pfa_test.cpp \
     tests/host/vfs_test.cpp \
     tests/host/rootfs_test.cpp \
+	tests/host/tmpfs_test.cpp \
     tests/host/stack_builder_test.cpp
 
 HOST_KERNEL_SRCS := \
@@ -64,6 +65,7 @@ HOST_KERNEL_SRCS := \
     kernel/fs/vfs.cpp \
     kernel/fs/rootfs/rootfs.cpp \
     kernel/fs/devfs/devfs.cpp \
+	kernel/fs/tmpfs/tmpfs.cpp \
     kernel/ipc/pipe.cpp \
     kernel/mm/pfa.cpp \
     kernel/mm/heap.cpp \

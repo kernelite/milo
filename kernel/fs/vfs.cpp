@@ -809,6 +809,12 @@ int32_t vfs_open_at(Dentry* cwd, StringView path, uint32_t flags, uint32_t mode,
         return kEnoent;
     }
 
+    if (inode->is_dir() &&
+        (wants_write || (flags & kOpenTrunc) != 0U || (flags & kOpenCreate) != 0U)) {
+        dentry_put(target);
+        return kEisdir;
+    }
+
     if ((flags & kOpenDirectory) != 0U && !inode->is_dir()) {
         dentry_put(target);
         return kEnotdir;
@@ -986,10 +992,10 @@ int32_t vfs_readdir(File* file, DirEntryInfo* out_entry) noexcept {
     return file->f_ops->readdir(file, out_entry);
 }
 
-int32_t vfs_mkdir(StringView path, uint32_t mode) noexcept {
+int32_t vfs_mkdir_at(Dentry* cwd, StringView path, uint32_t mode) noexcept {
     Dentry* parent = nullptr;
     StringView leaf{};
-    const int32_t rc = vfs_namei_parent(path, nullptr, &parent, &leaf);
+    const int32_t rc = vfs_namei_parent(path, cwd, &parent, &leaf);
     if (rc != kOk) {
         return rc;
     }
@@ -1033,11 +1039,15 @@ int32_t vfs_mkdir(StringView path, uint32_t mode) noexcept {
     return kOk;
 }
 
-int32_t vfs_unlink(StringView path) noexcept {
+int32_t vfs_mkdir(StringView path, uint32_t mode) noexcept {
+    return vfs_mkdir_at(nullptr, path, mode);
+}
+
+int32_t vfs_unlink_at(Dentry* cwd, StringView path) noexcept {
     Dentry* parent = nullptr;
     StringView leaf{};
     bool trailing_slash = false;
-    const int32_t rc = vfs_namei_parent(path, nullptr, &parent, &leaf, &trailing_slash);
+    const int32_t rc = vfs_namei_parent(path, cwd, &parent, &leaf, &trailing_slash);
     if (rc != kOk) {
         return rc;
     }
@@ -1087,10 +1097,14 @@ int32_t vfs_unlink(StringView path) noexcept {
     return urc;
 }
 
-int32_t vfs_rmdir(StringView path) noexcept {
+int32_t vfs_unlink(StringView path) noexcept {
+    return vfs_unlink_at(nullptr, path);
+}
+
+int32_t vfs_rmdir_at(Dentry* cwd, StringView path) noexcept {
     Dentry* parent = nullptr;
     StringView leaf{};
-    const int32_t rc = vfs_namei_parent(path, nullptr, &parent, &leaf);
+    const int32_t rc = vfs_namei_parent(path, cwd, &parent, &leaf);
     if (rc != kOk) {
         return rc;
     }
@@ -1141,17 +1155,22 @@ int32_t vfs_rmdir(StringView path) noexcept {
     return rrc;
 }
 
-int32_t vfs_rename(StringView old_path, StringView new_path) noexcept {
+int32_t vfs_rmdir(StringView path) noexcept {
+    return vfs_rmdir_at(nullptr, path);
+}
+
+int32_t vfs_rename_at(Dentry* old_cwd, StringView old_path, Dentry* new_cwd,
+                      StringView new_path) noexcept {
     Dentry* old_parent = nullptr;
     StringView old_leaf{};
-    const int32_t orc = vfs_namei_parent(old_path, nullptr, &old_parent, &old_leaf);
+    const int32_t orc = vfs_namei_parent(old_path, old_cwd, &old_parent, &old_leaf);
     if (orc != kOk) {
         return orc;
     }
 
     Dentry* new_parent = nullptr;
     StringView new_leaf{};
-    const int32_t nrc = vfs_namei_parent(new_path, nullptr, &new_parent, &new_leaf);
+    const int32_t nrc = vfs_namei_parent(new_path, new_cwd, &new_parent, &new_leaf);
     if (nrc != kOk) {
         dentry_put(old_parent);
         return nrc;
@@ -1277,6 +1296,10 @@ int32_t vfs_rename(StringView old_path, StringView new_path) noexcept {
     dentry_put(new_parent);
     dentry_put(old_parent);
     return rrc;
+}
+
+int32_t vfs_rename(StringView old_path, StringView new_path) noexcept {
+    return vfs_rename_at(nullptr, old_path, nullptr, new_path);
 }
 
 } // namespace kernel::fs

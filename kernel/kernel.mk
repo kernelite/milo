@@ -10,6 +10,7 @@ SRCS_CXX += kernel/main.cpp \
             kernel/fs/vfs.cpp \
             kernel/fs/rootfs/rootfs.cpp \
             kernel/fs/devfs/devfs.cpp \
+            kernel/fs/tmpfs/tmpfs.cpp \
             kernel/ipc/pipe.cpp \
             kernel/loader/elf64.cpp \
             kernel/loader/elf_loader.cpp \
