@@ -78,6 +78,105 @@ bool prop_str_eq(const uint8_t* data, uint32_t len, const char* target) noexcept
     return target[idx] == '\0' && (idx == len || data[idx] == 0U);
 }
 
+bool prop_strlist_contains(const uint8_t* data, uint32_t len, const char* target) noexcept {
+    if (data == nullptr || len == 0U) {
+        return false;
+    }
+    size_t pos = 0U;
+    while (pos < len) {
+        size_t end = pos;
+        while (end < len && data[end] != 0U) {
+            ++end;
+        }
+        if (end > pos && prop_str_eq(data + pos, static_cast<uint32_t>(end - pos), target)) {
+            return true;
+        }
+        pos = end + 1U;
+    }
+    return false;
+}
+
+bool decode_first_reg_tuple(const uint8_t* reg_data, uint32_t reg_len, uint32_t address_cells,
+                            uint32_t size_cells, uintptr_t& out_base, size_t& out_size) noexcept {
+    if (reg_data == nullptr || (address_cells != 1U && address_cells != 2U) ||
+        (size_cells != 1U && size_cells != 2U)) {
+        return false;
+    }
+    const uint32_t addr_bytes = address_cells * 4U;
+    const uint32_t size_bytes = size_cells * 4U;
+    if (reg_len < addr_bytes + size_bytes) {
+        return false;
+    }
+
+    const uint64_t raw_base =
+        (address_cells == 2U) ? read_be64(reg_data) : static_cast<uint64_t>(read_be32(reg_data));
+    const uint64_t raw_size = (size_cells == 2U)
+                                  ? read_be64(reg_data + addr_bytes)
+                                  : static_cast<uint64_t>(read_be32(reg_data + addr_bytes));
+    if (raw_size == 0ULL) {
+        return false;
+    }
+
+    out_base = static_cast<uintptr_t>(raw_base);
+    out_size = static_cast<size_t>(raw_size);
+    return true;
+}
+
+void decode_gic_interrupt_spec(const uint8_t* irq_data, uint32_t irq_len, uint32_t& out_intid,
+                               uint32_t& out_trigger, bool& out_has_irq) noexcept {
+    out_intid = 0U;
+    out_trigger = 0U;
+    out_has_irq = false;
+
+    if (irq_data == nullptr) {
+        return;
+    }
+
+    constexpr uint32_t GIC_SPI_TYPE = 0U;
+    constexpr uint32_t GIC_PPI_TYPE = 1U;
+    constexpr uint32_t GIC_SPI_BASE = 32U;
+    constexpr uint32_t GIC_PPI_BASE = 16U;
+    constexpr uint32_t GIC_MAX_INTID = 1020U;
+
+    if (irq_len >= 12U) {
+        const uint32_t irq_type = read_be32(irq_data + 0U);
+        const uint32_t irq_num = read_be32(irq_data + 4U);
+        const uint32_t irq_flags = read_be32(irq_data + 8U);
+
+        if (irq_type == GIC_SPI_TYPE && irq_num <= (GIC_MAX_INTID - 1U - GIC_SPI_BASE)) {
+            out_intid = irq_num + GIC_SPI_BASE;
+            out_trigger = irq_flags;
+            out_has_irq = true;
+        } else if (irq_type == GIC_PPI_TYPE && irq_num < 16U) {
+            out_intid = irq_num + GIC_PPI_BASE;
+            out_trigger = irq_flags;
+            out_has_irq = true;
+        }
+        return;
+    }
+
+    if (irq_len == 4U) {
+        const uint32_t irq_num = read_be32(irq_data);
+        if (irq_num <= (GIC_MAX_INTID - 1U - GIC_SPI_BASE)) {
+            out_intid = irq_num + GIC_SPI_BASE;
+            out_trigger = 4U;
+            out_has_irq = true;
+        }
+    }
+}
+
+void sort_virtio_devices(FDT::VirtioMmioList& list) noexcept {
+    for (size_t idx = 1U; idx < list.count; ++idx) {
+        const FDT::VirtioMmioDevice key = list.devices[idx];
+        size_t pos = idx;
+        while (pos > 0U && list.devices[pos - 1U].base_paddr > key.base_paddr) {
+            list.devices[pos] = list.devices[pos - 1U];
+            --pos;
+        }
+        list.devices[pos] = key;
+    }
+}
+
 struct FdtHeader {
     uint32_t magic{0U};
     uint32_t totalsize{0U};
@@ -550,6 +649,155 @@ InitrdLocation find_initrd(uintptr_t dtb_paddr) noexcept {
     }
 
     return info;
+}
+
+bool find_virtio_mmio_devices(uintptr_t dtb_paddr, VirtioMmioList& out_list) noexcept {
+    out_list = VirtioMmioList{};
+
+    FdtHeader hdr{};
+    if (!parse_header(dtb_paddr, hdr, false)) {
+        return false;
+    }
+
+    const auto* const base = reinterpret_cast<const uint8_t*>(dtb_paddr);
+    const auto* const struct_base = base + hdr.off_dt_struct;
+    const auto* const strings_base = base + hdr.off_dt_strings;
+    const uint32_t struct_size = hdr.size_dt_struct;
+    const uint32_t strings_size = hdr.size_dt_strings;
+
+    constexpr size_t MAX_DTB_DEPTH = 16U;
+    struct NodeFrame {
+        const uint8_t* reg_data{nullptr};
+        const uint8_t* irq_data{nullptr};
+        uint32_t addr_cells{2U};
+        uint32_t size_cells{2U};
+        uint32_t reg_len{0U};
+        uint32_t irq_len{0U};
+        bool is_virtio_mmio{false};
+        bool is_disabled{false};
+    };
+
+    NodeFrame stack[MAX_DTB_DEPTH]{};
+    uint32_t depth = 0U;
+
+    uint32_t offset = 0U;
+    while (offset + 4U <= struct_size) {
+        const uint32_t token = read_be32(struct_base + offset);
+        offset += 4U;
+
+        if (token == FDT_NOP) {
+            continue;
+        }
+        if (token == FDT_END) {
+            break;
+        }
+        if (token == FDT_BEGIN_NODE) {
+            uint32_t name_end = offset;
+            while (name_end < struct_size && struct_base[name_end] != 0U) {
+                ++name_end;
+            }
+            if (name_end >= struct_size) {
+                break;
+            }
+            const size_t padded_len = align_up_4(static_cast<size_t>(name_end - offset) + 1U);
+            if (padded_len > struct_size - offset) {
+                break;
+            }
+            offset += static_cast<uint32_t>(padded_len);
+
+            if (depth < MAX_DTB_DEPTH) {
+                const uint32_t parent_ac = (depth > 0U) ? stack[depth - 1U].addr_cells : 2U;
+                const uint32_t parent_sc = (depth > 0U) ? stack[depth - 1U].size_cells : 2U;
+                stack[depth] = NodeFrame{
+                    .addr_cells = parent_ac,
+                    .size_cells = parent_sc,
+                };
+            }
+            ++depth;
+            continue;
+        }
+        if (token == FDT_END_NODE) {
+            if (depth > 0U) {
+                --depth;
+                if (depth < MAX_DTB_DEPTH) {
+                    const NodeFrame& frame = stack[depth];
+                    if (frame.is_virtio_mmio && !frame.is_disabled && frame.reg_data != nullptr &&
+                        out_list.count < VirtioMmioList::MAX_DEVICES) {
+                        const uint32_t parent_ac = (depth > 0U) ? stack[depth - 1U].addr_cells : 2U;
+                        const uint32_t parent_sc = (depth > 0U) ? stack[depth - 1U].size_cells : 2U;
+
+                        uintptr_t dev_base = 0U;
+                        size_t dev_size = 0U;
+                        if (decode_first_reg_tuple(frame.reg_data, frame.reg_len, parent_ac,
+                                                   parent_sc, dev_base, dev_size)) {
+                            VirtioMmioDevice dev{};
+                            dev.base_paddr = dev_base;
+                            dev.size = dev_size;
+                            decode_gic_interrupt_spec(frame.irq_data, frame.irq_len, dev.irq_intid,
+                                                      dev.irq_trigger, dev.has_irq);
+                            out_list.devices[out_list.count++] = dev;
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+        if (token == FDT_PROP) {
+            if (offset + 8U > struct_size) {
+                break;
+            }
+            const uint32_t prop_len = read_be32(struct_base + offset);
+            const uint32_t nameoff = read_be32(struct_base + offset + 4U);
+            offset += 8U;
+
+            const size_t padded_len = align_up_4(prop_len);
+            if (padded_len > struct_size - offset) {
+                break;
+            }
+            const auto* const prop_data = struct_base + offset;
+            offset += static_cast<uint32_t>(padded_len);
+
+            if (depth == 0U || depth > MAX_DTB_DEPTH) {
+                continue;
+            }
+
+            const char* const prop_name = lookup_string(strings_base, strings_size, nameoff);
+            if (prop_name == nullptr) {
+                continue;
+            }
+
+            NodeFrame& frame = stack[depth - 1U];
+            if (str_eq(prop_name, "#address-cells") && prop_len == 4U) {
+                frame.addr_cells = read_be32(prop_data);
+            } else if (str_eq(prop_name, "#size-cells") && prop_len == 4U) {
+                frame.size_cells = read_be32(prop_data);
+            } else if (str_eq(prop_name, "compatible")) {
+                if (prop_strlist_contains(prop_data, prop_len, "virtio,mmio")) {
+                    frame.is_virtio_mmio = true;
+                }
+            } else if (str_eq(prop_name, "status")) {
+                frame.is_disabled = prop_str_eq(prop_data, prop_len, "disabled") ||
+                                    prop_str_eq(prop_data, prop_len, "fail");
+            } else if (str_eq(prop_name, "reg")) {
+                frame.reg_data = prop_data;
+                frame.reg_len = prop_len;
+            } else if (str_eq(prop_name, "interrupts")) {
+                frame.irq_data = prop_data;
+                frame.irq_len = prop_len;
+            }
+            continue;
+        }
+        break;
+    }
+
+    sort_virtio_devices(out_list);
+    return true;
+}
+
+VirtioMmioList find_virtio_mmio_devices(uintptr_t dtb_paddr) noexcept {
+    VirtioMmioList list{};
+    (void)find_virtio_mmio_devices(dtb_paddr, list);
+    return list;
 }
 
 } // namespace FDT

@@ -1,11 +1,12 @@
 #include "boot/fdt.hpp"
+#include "drivers/irq/gicv2.hpp"
+#include "drivers/virtio/virtio_mmio.hpp"
 #include "fs/devfs/devfs.hpp"
 #include "fs/rootfs/rootfs.hpp"
 #include "fs/tmpfs/tmpfs.hpp"
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
-#include "hal/targets/qemu_virt/gicv2.hpp"
 #include "hal/targets/qemu_virt/timer.hpp"
 #include "mm/heap.hpp"
 #include "mm/pfa.hpp"
@@ -41,6 +42,55 @@ void print_hex64(uint64_t val) noexcept {
         val >>= 4U;
     }
     print_str(buf);
+}
+
+Kernel::Drivers::Virtio::VirtioMmioTransport
+    g_virtio_transports[FDT::VirtioMmioList::MAX_DEVICES]{};
+
+void default_virtio_spi_handler(uint32_t /*irq*/, void* context) noexcept {
+    auto* const transport = static_cast<Kernel::Drivers::Virtio::VirtioMmioTransport*>(context);
+    if (transport != nullptr && transport->is_valid()) {
+        const uint32_t isr = transport->read_interrupt_status();
+        if (isr != 0U) {
+            transport->ack_interrupt(isr);
+        }
+    }
+}
+
+void init_virtio_mmio_devices(uintptr_t dtb_paddr) noexcept {
+    const FDT::VirtioMmioList mmio_list = FDT::find_virtio_mmio_devices(dtb_paddr);
+    size_t active_count = 0U;
+
+    for (size_t idx = 0U; idx < mmio_list.count; ++idx) {
+        const FDT::VirtioMmioDevice& dev = mmio_list.devices[idx];
+        auto& transport = g_virtio_transports[idx];
+        if (!transport.init(dev.base_paddr, dev.size)) {
+            continue;
+        }
+
+        ++active_count;
+        print_str("[VIRTIO] MMIO slot ");
+        print_hex64(dev.base_paddr);
+        print_str(" DeviceID=");
+        print_hex64(transport.device_id());
+        print_str(" Status=DRIVER_OK");
+
+        if (dev.has_irq) {
+            const auto trigger = ((dev.irq_trigger & 0x3U) != 0U)
+                                     ? Kernel::Drivers::IRQ::IrqTriggerMode::EdgeRising
+                                     : Kernel::Drivers::IRQ::IrqTriggerMode::LevelHigh;
+            if (Kernel::Drivers::IRQ::GicV2::register_spi_handler(
+                    dev.irq_intid, default_virtio_spi_handler, &transport, trigger)) {
+                print_str(" IRQ=");
+                print_hex64(dev.irq_intid);
+            }
+        }
+        print_str("\r\n");
+    }
+
+    if (active_count == 0U) {
+        print_str("[VIRTIO] No active Virtio-MMIO v1.0+ devices attached.\r\n");
+    }
 }
 
 } // namespace
@@ -106,11 +156,13 @@ extern "C" void kmain(uintptr_t dtb_paddr) {
     }
 
     // Stage 7: Initialize GICv2, 100Hz Timer, and Preemptive Scheduler
-    HAL::QemuVirt::GicV2::init();
+    Kernel::Drivers::IRQ::GicV2::init();
     HAL::QemuVirt::GenericTimer::init(100U);
-    HAL::QemuVirt::GicV2::enable_irq(HAL::QemuVirt::TIMER_PPI_IRQ);
+    Kernel::Drivers::IRQ::GicV2::enable_irq(Kernel::Drivers::IRQ::TIMER_PPI_IRQ);
     Kernel::Scheduler::init();
     print_str("[KERNEL] GICv2 & 100Hz Preemptive Scheduler initialized.\r\n");
+    init_virtio_mmio_devices(dtb_paddr);
+    print_str("[KERNEL] Virtio-MMIO driver attached.");
 
     // Stage 8: Drop into interactive kernel shell
     HAL::get_cpu().disable_interrupts();
