@@ -201,7 +201,7 @@ $(BUSYBOX_CPIO): $(BUILD_DIR)/user/hello $(MUSL_USER_BIN) $(wildcard $(BUSYBOX_B
 	@if [ -f "$(BUSYBOX_BIN)" ]; then \
 		install -m 0755 $(BUSYBOX_BIN) $(BUSYBOX_ROOTFS_DIR)/bin/busybox && \
 		ln -sf busybox $(BUSYBOX_ROOTFS_DIR)/bin/sh && \
-		for app in ls cat echo pwd ps uname grep wc head tail mkdir rm cp mv sleep true false; do \
+		for app in ls cat echo pwd ps uname grep wc head tail mkdir rmdir rm cp mv touch free sleep true false; do \
 			ln -sf busybox $(BUSYBOX_ROOTFS_DIR)/bin/$$app; \
 		done; \
 	fi

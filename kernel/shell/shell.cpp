@@ -731,6 +731,10 @@ void cmd_info() noexcept {
     print_str(mmu_st.icache_enabled ? "YES\r\n" : "NO\r\n");
     print_str("  SCTLR_EL1 Register      : ");
     print_hex64(mmu_st.raw_control_reg);
+    print_str("\r\n  PFA Free Frames         : ");
+    print_dec64(pfa_free_pages_count());
+    print_str("\r\n  PFA Allocated Frames    : ");
+    print_dec64(pfa_allocated_pages_count());
     print_str("\r\n=============================================\r\n");
 }
 
