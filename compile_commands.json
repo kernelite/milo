@@ -543,6 +543,35 @@
       "-Iarch/aarch64-linux-gnu",
       "-c",
       "-o",
+      "build/kernel/fs/tmpfs/tmpfs.o",
+      "kernel/fs/tmpfs/tmpfs.cpp"
+    ],
+    "directory": "/workspaces/milo",
+    "file": "/workspaces/milo/kernel/fs/tmpfs/tmpfs.cpp",
+    "output": "/workspaces/milo/build/kernel/fs/tmpfs/tmpfs.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/aarch64-linux-gnu-g++",
+      "-std=c++20",
+      "-ffreestanding",
+      "-fsized-deallocation",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-fno-use-cxa-atexit",
+      "-fno-exceptions",
+      "-fno-rtti",
+      "-fno-threadsafe-statics",
+      "-U_FORTIFY_SOURCE",
+      "-D_FORTIFY_SOURCE=0",
+      "-g",
+      "-mcpu=cortex-a53",
+      "-mno-outline-atomics",
+      "-Ikernel",
+      "-Iarch/aarch64-linux-gnu",
+      "-c",
+      "-o",
       "build/kernel/ipc/pipe.o",
       "kernel/ipc/pipe.cpp"
     ],
@@ -893,6 +922,34 @@
     "directory": "/workspaces/milo",
     "file": "/workspaces/milo/tests/host/rootfs_test.cpp",
     "output": "/workspaces/milo/build/host-tests/tests/host/rootfs_test.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-std=c++20",
+      "-O1",
+      "-g",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-Wpedantic",
+      "-fno-exceptions",
+      "-fno-rtti",
+      "-DHOST_TEST",
+      "-DSNITCH_WITH_EXCEPTIONS=0",
+      "-fsanitize=address,undefined",
+      "-fno-omit-frame-pointer",
+      "-Ikernel",
+      "-Iarch/aarch64-linux-gnu",
+      "-Itests/host",
+      "-c",
+      "-o",
+      "build/host-tests/tests/host/tmpfs_test.o",
+      "tests/host/tmpfs_test.cpp"
+    ],
+    "directory": "/workspaces/milo",
+    "file": "/workspaces/milo/tests/host/tmpfs_test.cpp",
+    "output": "/workspaces/milo/build/host-tests/tests/host/tmpfs_test.o"
   },
   {
     "arguments": [

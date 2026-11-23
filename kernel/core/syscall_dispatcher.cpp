@@ -25,8 +25,17 @@ constexpr uint64_t SYS_DUP = 23U;
 constexpr uint64_t SYS_DUP3 = 24U;
 constexpr uint64_t SYS_FCNTL = 25U;
 constexpr uint64_t SYS_IOCTL = 29U;
+constexpr uint64_t SYS_MKDIRAT = 34U;
+constexpr uint64_t SYS_UNLINKAT = 35U;
+constexpr uint64_t SYS_RENAMEAT = 38U;
+constexpr uint64_t SYS_TRUNCATE = 45U;
+constexpr uint64_t SYS_FTRUNCATE = 46U;
 constexpr uint64_t SYS_FACCESSAT = 48U;
 constexpr uint64_t SYS_CHDIR = 49U;
+constexpr uint64_t SYS_FCHMOD = 52U;
+constexpr uint64_t SYS_FCHMODAT = 53U;
+constexpr uint64_t SYS_FCHOWNAT = 54U;
+constexpr uint64_t SYS_FCHOWN = 55U;
 constexpr uint64_t SYS_OPENAT = 56U;
 constexpr uint64_t SYS_CLOSE = 57U;
 constexpr uint64_t SYS_PIPE2 = 59U;
@@ -40,6 +49,9 @@ constexpr uint64_t SYS_PPOLL = 73U;
 constexpr uint64_t SYS_READLINKAT = 78U;
 constexpr uint64_t SYS_NEWFSTATAT = 79U;
 constexpr uint64_t SYS_FSTAT = 80U;
+constexpr uint64_t SYS_FSYNC = 82U;
+constexpr uint64_t SYS_FDATASYNC = 83U;
+constexpr uint64_t SYS_UTIMENSAT = 88U;
 constexpr uint64_t SYS_EXIT = 93U;
 constexpr uint64_t SYS_EXIT_GROUP = 94U;
 constexpr uint64_t SYS_SET_TID_ADDRESS = 96U;
@@ -73,6 +85,7 @@ constexpr uint64_t SYS_MMAP = 222U;
 constexpr uint64_t SYS_MPROTECT = 226U;
 constexpr uint64_t SYS_WAIT4 = 260U;
 constexpr uint64_t SYS_PRLIMIT64 = 261U;
+constexpr uint64_t SYS_RENAMEAT2 = 276U;
 constexpr uint64_t SYS_GETRANDOM = 278U;
 constexpr uint64_t SYS_FACCESSAT2 = 439U;
 
@@ -91,6 +104,7 @@ constexpr int64_t ERR_EAGAIN = -11;
 constexpr int64_t ERR_ENOMEM = -12;
 constexpr int64_t ERR_EACCES = -13;
 constexpr int64_t ERR_EFAULT = -14;
+constexpr int64_t ERR_EEXIST = -17;
 constexpr int64_t ERR_ENOTDIR = -20;
 constexpr int64_t ERR_EINVAL = -22;
 constexpr int64_t ERR_EROFS = -30;
@@ -101,6 +115,7 @@ constexpr int64_t ERR_ENOSYS = -38;
 constexpr int32_t AT_FDCWD = -100;
 constexpr uint64_t AT_SYMLINK_NOFOLLOW = 0x100ULL;
 constexpr uint64_t AT_EACCESS = 0x200ULL;
+constexpr uint64_t AT_REMOVEDIR = 0x200ULL;
 constexpr uint64_t AT_EMPTY_PATH = 0x1000ULL;
 
 constexpr uint64_t O_ACCMODE = 0x3ULL;
@@ -108,10 +123,16 @@ constexpr uint64_t O_RDONLY = 0x0ULL;
 constexpr uint64_t O_WRONLY = 0x1ULL;
 constexpr uint64_t O_RDWR = 0x2ULL;
 constexpr uint64_t O_CREAT = 0x40ULL;
+constexpr uint64_t O_EXCL = 0x80ULL;
 constexpr uint64_t O_TRUNC = 0x200ULL;
+constexpr uint64_t O_APPEND = 0x400ULL;
 constexpr uint64_t O_DIRECTORY = 0x4000ULL; // AArch64 O_DIRECTORY = 040000
 constexpr uint64_t O_NONBLOCK = 0x800ULL;
 constexpr uint64_t O_CLOEXEC = 0x80000ULL;
+
+constexpr uint64_t RENAME_NOREPLACE = 1ULL;
+constexpr int64_t UTIME_NOW = 0x3FFFFFFFLL;
+constexpr int64_t UTIME_OMIT = 0x3FFFFFFELL;
 
 constexpr uint64_t F_DUPFD = 0ULL;
 constexpr uint64_t F_GETFD = 1ULL;
@@ -485,6 +506,12 @@ void fill_stat_from_inode(const kernel::fs::Inode& inode, LinuxStat& stat_out) n
     stat_out.st_size = static_cast<int64_t>(inode.size);
     stat_out.st_blksize = 4096;
     stat_out.st_blocks = static_cast<int64_t>((inode.size + 511U) / 512U);
+    stat_out.st_atime_sec = static_cast<int64_t>(inode.atime_ns / 1000000000ULL);
+    stat_out.st_atime_nsec = static_cast<int64_t>(inode.atime_ns % 1000000000ULL);
+    stat_out.st_mtime_sec = static_cast<int64_t>(inode.mtime_ns / 1000000000ULL);
+    stat_out.st_mtime_nsec = static_cast<int64_t>(inode.mtime_ns % 1000000000ULL);
+    stat_out.st_ctime_sec = static_cast<int64_t>(inode.ctime_ns / 1000000000ULL);
+    stat_out.st_ctime_nsec = static_cast<int64_t>(inode.ctime_ns % 1000000000ULL);
 }
 
 void unmap_and_free_range(Kernel::MM::AddressSpace& adrsp, uintptr_t start_vaddr,
@@ -779,8 +806,14 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
     if ((flags & O_CREAT) != 0ULL) {
         vfs_flags |= kernel::fs::kOpenCreate;
     }
+    if ((flags & O_EXCL) != 0ULL) {
+        vfs_flags |= kernel::fs::kOpenExcl;
+    }
     if ((flags & O_TRUNC) != 0ULL) {
         vfs_flags |= kernel::fs::kOpenTrunc;
+    }
+    if ((flags & O_APPEND) != 0ULL) {
+        vfs_flags |= kernel::fs::kOpenAppend;
     }
     if ((flags & O_DIRECTORY) != 0ULL) {
         vfs_flags |= kernel::fs::kOpenDirectory;
@@ -797,10 +830,10 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
         return slot;
     }
 
+    const uint32_t effective_mode = static_cast<uint32_t>(mode) & ~proc->umask;
     kernel::fs::File* file = nullptr;
-    const int32_t open_rc =
-        kernel::fs::vfs_open_at(base_dentry, kernel::fs::StringView(raw_path, path_len), vfs_flags,
-                                static_cast<uint32_t>(mode), &file);
+    const int32_t open_rc = kernel::fs::vfs_open_at(
+        base_dentry, kernel::fs::StringView(raw_path, path_len), vfs_flags, effective_mode, &file);
     if (base_dentry != nullptr) {
         kernel::fs::dentry_put(base_dentry);
     }
@@ -814,6 +847,491 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
         .fd_flags = fd_flags,
     };
     return slot;
+}
+
+uint64_t monotonic_now_ns() noexcept {
+    const uint64_t freq = HAL::QemuVirt::GenericTimer::frequency_hz();
+    const uint64_t ticks = HAL::QemuVirt::GenericTimer::counter_ticks();
+    if (freq == 0ULL) {
+        return 0ULL;
+    }
+    const uint64_t secs = ticks / freq;
+    const uint64_t rem = ticks % freq;
+    return (secs * 1000000000ULL) + ((rem * 1000000000ULL) / freq);
+}
+
+int64_t sys_mkdirat(int32_t dirfd, uintptr_t user_pathname, uint64_t mode) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+
+    char raw_path[Kernel::Process::MAX_PATH_LEN]{};
+    size_t path_len = 0U;
+    const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
+                                               raw_path, sizeof(raw_path), path_len);
+    if (copy_res < 0) {
+        return copy_res;
+    }
+
+    kernel::fs::Dentry* base_dentry = nullptr;
+    if (raw_path[0] != '/') {
+        const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
+        if (dir_res < 0) {
+            return dir_res;
+        }
+    }
+
+    const uint32_t effective_mode = static_cast<uint32_t>(mode) & ~proc->umask;
+    const int32_t vfs_res = kernel::fs::vfs_mkdir_at(
+        base_dentry, kernel::fs::StringView(raw_path, path_len), effective_mode);
+    if (base_dentry != nullptr) {
+        kernel::fs::dentry_put(base_dentry);
+    }
+    return vfs_res;
+}
+
+int64_t sys_unlinkat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+    if ((flags & ~AT_REMOVEDIR) != 0ULL) {
+        return ERR_EINVAL;
+    }
+
+    char raw_path[Kernel::Process::MAX_PATH_LEN]{};
+    size_t path_len = 0U;
+    const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
+                                               raw_path, sizeof(raw_path), path_len);
+    if (copy_res < 0) {
+        return copy_res;
+    }
+
+    kernel::fs::Dentry* base_dentry = nullptr;
+    if (raw_path[0] != '/') {
+        const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
+        if (dir_res < 0) {
+            return dir_res;
+        }
+    }
+
+    const kernel::fs::StringView path_view(raw_path, path_len);
+    const int32_t vfs_res = ((flags & AT_REMOVEDIR) != 0ULL)
+                                ? kernel::fs::vfs_rmdir_at(base_dentry, path_view)
+                                : kernel::fs::vfs_unlink_at(base_dentry, path_view);
+    if (base_dentry != nullptr) {
+        kernel::fs::dentry_put(base_dentry);
+    }
+    return vfs_res;
+}
+
+int64_t sys_renameat2(int32_t olddirfd, uintptr_t user_oldpath, int32_t newdirfd,
+                      uintptr_t user_newpath, uint64_t flags) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+    if ((flags & ~RENAME_NOREPLACE) != 0ULL) {
+        return ERR_EINVAL;
+    }
+
+    char old_path[Kernel::Process::MAX_PATH_LEN]{};
+    size_t old_len = 0U;
+    const int64_t old_copy = copy_user_cstring(proc->address_space.root_paddr(), user_oldpath,
+                                               old_path, sizeof(old_path), old_len);
+    if (old_copy < 0) {
+        return old_copy;
+    }
+
+    char new_path[Kernel::Process::MAX_PATH_LEN]{};
+    size_t new_len = 0U;
+    const int64_t new_copy = copy_user_cstring(proc->address_space.root_paddr(), user_newpath,
+                                               new_path, sizeof(new_path), new_len);
+    if (new_copy < 0) {
+        return new_copy;
+    }
+
+    kernel::fs::Dentry* old_base = nullptr;
+    if (old_path[0] != '/') {
+        const int64_t dir_res = resolve_dirfd_dentry(*proc, olddirfd, old_base);
+        if (dir_res < 0) {
+            return dir_res;
+        }
+    }
+
+    kernel::fs::Dentry* new_base = nullptr;
+    if (new_path[0] != '/') {
+        const int64_t dir_res = resolve_dirfd_dentry(*proc, newdirfd, new_base);
+        if (dir_res < 0) {
+            if (old_base != nullptr) {
+                kernel::fs::dentry_put(old_base);
+            }
+            return dir_res;
+        }
+    }
+
+    if ((flags & RENAME_NOREPLACE) != 0ULL) {
+        kernel::fs::Dentry* existing = nullptr;
+        if (kernel::fs::vfs_namei(kernel::fs::StringView(new_path, new_len), new_base, &existing,
+                                  false) == kernel::fs::kOk) {
+            kernel::fs::dentry_put(existing);
+            if (new_base != nullptr) {
+                kernel::fs::dentry_put(new_base);
+            }
+            if (old_base != nullptr) {
+                kernel::fs::dentry_put(old_base);
+            }
+            return ERR_EEXIST;
+        }
+    }
+
+    const int32_t vfs_res =
+        kernel::fs::vfs_rename_at(old_base, kernel::fs::StringView(old_path, old_len), new_base,
+                                  kernel::fs::StringView(new_path, new_len));
+    if (new_base != nullptr) {
+        kernel::fs::dentry_put(new_base);
+    }
+    if (old_base != nullptr) {
+        kernel::fs::dentry_put(old_base);
+    }
+    return vfs_res;
+}
+
+int64_t sys_renameat(int32_t olddirfd, uintptr_t user_oldpath, int32_t newdirfd,
+                     uintptr_t user_newpath) noexcept {
+    return sys_renameat2(olddirfd, user_oldpath, newdirfd, user_newpath, 0ULL);
+}
+
+int64_t sys_ftruncate(uint64_t raw_fd, int64_t length) noexcept {
+    if (length < 0) {
+        return ERR_EINVAL;
+    }
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr || proc->fd_table == nullptr || raw_fd >= proc->fd_capacity) {
+        return ERR_EBADF;
+    }
+    const auto& desc = proc->fd_table[static_cast<size_t>(raw_fd)];
+    if (!desc.is_open() || !desc.is_writable() || desc.file->inode == nullptr) {
+        return ERR_EBADF;
+    }
+    kernel::fs::Inode* inode = desc.file->inode;
+    if (inode->sb != nullptr && inode->sb->is_read_only()) {
+        return ERR_EROFS;
+    }
+    if (inode->i_ops == nullptr || inode->i_ops->truncate == nullptr) {
+        return ERR_EINVAL;
+    }
+    return inode->i_ops->truncate(inode, static_cast<uint64_t>(length));
+}
+
+int64_t sys_truncate(uintptr_t user_pathname, int64_t length) noexcept {
+    if (length < 0) {
+        return ERR_EINVAL;
+    }
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+
+    char raw_path[Kernel::Process::MAX_PATH_LEN]{};
+    size_t path_len = 0U;
+    const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
+                                               raw_path, sizeof(raw_path), path_len);
+    if (copy_res < 0) {
+        return copy_res;
+    }
+
+    kernel::fs::Dentry* base_dentry = nullptr;
+    if (raw_path[0] != '/') {
+        const int64_t dir_res = resolve_dirfd_dentry(*proc, AT_FDCWD, base_dentry);
+        if (dir_res < 0) {
+            return dir_res;
+        }
+    }
+
+    kernel::fs::Dentry* target = nullptr;
+    const int32_t vfs_res = kernel::fs::vfs_namei(kernel::fs::StringView(raw_path, path_len),
+                                                  base_dentry, &target, true);
+    if (base_dentry != nullptr) {
+        kernel::fs::dentry_put(base_dentry);
+    }
+    if (vfs_res != kernel::fs::kOk || target == nullptr || target->inode == nullptr) {
+        if (target != nullptr) {
+            kernel::fs::dentry_put(target);
+        }
+        return (vfs_res != kernel::fs::kOk) ? vfs_res : ERR_ENOENT;
+    }
+
+    kernel::fs::Inode* inode = target->inode;
+    int64_t res = 0;
+    if (inode->sb != nullptr && inode->sb->is_read_only()) {
+        res = ERR_EROFS;
+    } else if (inode->i_ops == nullptr || inode->i_ops->truncate == nullptr) {
+        res = ERR_EINVAL;
+    } else {
+        res = inode->i_ops->truncate(inode, static_cast<uint64_t>(length));
+    }
+    kernel::fs::dentry_put(target);
+    return res;
+}
+
+int64_t sys_utimensat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_times,
+                      uint64_t flags) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+    if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) != 0ULL) {
+        return ERR_EINVAL;
+    }
+
+    LinuxTimespec times[2]{
+        {.tv_sec = 0, .tv_nsec = UTIME_NOW},
+        {.tv_sec = 0, .tv_nsec = UTIME_NOW},
+    };
+    if (user_times != 0U) {
+        if (Kernel::MM::copy_from_user(proc->address_space, times, user_times, sizeof(times)) < 0) {
+            return ERR_EFAULT;
+        }
+        for (const auto& time_val : times) {
+            if (time_val.tv_nsec != UTIME_NOW && time_val.tv_nsec != UTIME_OMIT &&
+                (time_val.tv_nsec < 0 || time_val.tv_nsec >= 1000000000LL)) {
+                return ERR_EINVAL;
+            }
+        }
+    }
+
+    kernel::fs::Inode* inode = nullptr;
+    kernel::fs::Dentry* target = nullptr;
+
+    if (user_pathname == 0U) {
+        kernel::fs::File* file = get_proc_file(proc, static_cast<uint64_t>(dirfd));
+        if (file == nullptr || file->inode == nullptr) {
+            return ERR_EBADF;
+        }
+        inode = file->inode;
+    } else {
+        char raw_path[Kernel::Process::MAX_PATH_LEN]{};
+        size_t path_len = 0U;
+        const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
+                                                   raw_path, sizeof(raw_path), path_len);
+        if (copy_res < 0) {
+            return copy_res;
+        }
+
+        if (path_len == 0U && (flags & AT_EMPTY_PATH) != 0ULL) {
+            kernel::fs::File* file = get_proc_file(proc, static_cast<uint64_t>(dirfd));
+            if (file == nullptr || file->inode == nullptr) {
+                return ERR_EBADF;
+            }
+            inode = file->inode;
+        } else {
+            kernel::fs::Dentry* base_dentry = nullptr;
+            if (raw_path[0] != '/') {
+                const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
+                if (dir_res < 0) {
+                    return dir_res;
+                }
+            }
+            const bool follow = (flags & AT_SYMLINK_NOFOLLOW) == 0ULL;
+            const int32_t vfs_res = kernel::fs::vfs_namei(
+                kernel::fs::StringView(raw_path, path_len), base_dentry, &target, follow);
+            if (base_dentry != nullptr) {
+                kernel::fs::dentry_put(base_dentry);
+            }
+            if (vfs_res != kernel::fs::kOk || target == nullptr || target->inode == nullptr) {
+                if (target != nullptr) {
+                    kernel::fs::dentry_put(target);
+                }
+                return (vfs_res != kernel::fs::kOk) ? vfs_res : ERR_ENOENT;
+            }
+            inode = target->inode;
+        }
+    }
+
+    int64_t res = 0;
+    if (inode->sb != nullptr && inode->sb->is_read_only()) {
+        res = ERR_EROFS;
+    } else {
+        const uint64_t now_ns = monotonic_now_ns();
+        if (times[0].tv_nsec == UTIME_NOW) {
+            inode->atime_ns = now_ns;
+        } else if (times[0].tv_nsec != UTIME_OMIT) {
+            inode->atime_ns = (static_cast<uint64_t>(times[0].tv_sec) * 1000000000ULL) +
+                              static_cast<uint64_t>(times[0].tv_nsec);
+        }
+        if (times[1].tv_nsec == UTIME_NOW) {
+            inode->mtime_ns = now_ns;
+        } else if (times[1].tv_nsec != UTIME_OMIT) {
+            inode->mtime_ns = (static_cast<uint64_t>(times[1].tv_sec) * 1000000000ULL) +
+                              static_cast<uint64_t>(times[1].tv_nsec);
+        }
+        inode->ctime_ns = now_ns;
+    }
+
+    if (target != nullptr) {
+        kernel::fs::dentry_put(target);
+    }
+    return res;
+}
+
+int64_t sys_fsync(uint64_t raw_fd, int32_t datasync) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    kernel::fs::File* file = get_proc_file(proc, raw_fd);
+    if (file == nullptr) {
+        return ERR_EBADF;
+    }
+    if (file->f_ops != nullptr && file->f_ops->fsync != nullptr) {
+        return file->f_ops->fsync(file, datasync);
+    }
+    return 0;
+}
+
+int64_t sys_fchmod(uint64_t raw_fd, uint64_t mode) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    kernel::fs::File* file = get_proc_file(proc, raw_fd);
+    if (file == nullptr || file->inode == nullptr) {
+        return ERR_EBADF;
+    }
+    if (file->inode->sb != nullptr && file->inode->sb->is_read_only()) {
+        return ERR_EROFS;
+    }
+    file->inode->mode =
+        (file->inode->mode & kernel::fs::kModeTypeMask) | (static_cast<uint32_t>(mode) & 07777U);
+    file->inode->ctime_ns = monotonic_now_ns();
+    return 0;
+}
+
+int64_t sys_fchmodat(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
+                     uint64_t flags) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+    if ((flags & ~AT_SYMLINK_NOFOLLOW) != 0ULL) {
+        return ERR_EINVAL;
+    }
+
+    char raw_path[Kernel::Process::MAX_PATH_LEN]{};
+    size_t path_len = 0U;
+    const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
+                                               raw_path, sizeof(raw_path), path_len);
+    if (copy_res < 0) {
+        return copy_res;
+    }
+
+    kernel::fs::Dentry* base_dentry = nullptr;
+    if (raw_path[0] != '/') {
+        const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
+        if (dir_res < 0) {
+            return dir_res;
+        }
+    }
+
+    const bool follow = (flags & AT_SYMLINK_NOFOLLOW) == 0ULL;
+    kernel::fs::Dentry* target = nullptr;
+    const int32_t vfs_res = kernel::fs::vfs_namei(kernel::fs::StringView(raw_path, path_len),
+                                                  base_dentry, &target, follow);
+    if (base_dentry != nullptr) {
+        kernel::fs::dentry_put(base_dentry);
+    }
+    if (vfs_res != kernel::fs::kOk || target == nullptr || target->inode == nullptr) {
+        if (target != nullptr) {
+            kernel::fs::dentry_put(target);
+        }
+        return (vfs_res != kernel::fs::kOk) ? vfs_res : ERR_ENOENT;
+    }
+
+    int64_t res = 0;
+    if (target->inode->sb != nullptr && target->inode->sb->is_read_only()) {
+        res = ERR_EROFS;
+    } else {
+        target->inode->mode = (target->inode->mode & kernel::fs::kModeTypeMask) |
+                              (static_cast<uint32_t>(mode) & 07777U);
+        target->inode->ctime_ns = monotonic_now_ns();
+    }
+    kernel::fs::dentry_put(target);
+    return res;
+}
+
+int64_t sys_fchown(uint64_t raw_fd, uint32_t owner, uint32_t group) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    kernel::fs::File* file = get_proc_file(proc, raw_fd);
+    if (file == nullptr || file->inode == nullptr) {
+        return ERR_EBADF;
+    }
+    if (file->inode->sb != nullptr && file->inode->sb->is_read_only()) {
+        return ERR_EROFS;
+    }
+    if (owner != static_cast<uint32_t>(-1)) {
+        file->inode->uid = owner;
+    }
+    if (group != static_cast<uint32_t>(-1)) {
+        file->inode->gid = group;
+    }
+    file->inode->ctime_ns = monotonic_now_ns();
+    return 0;
+}
+
+int64_t sys_fchownat(int32_t dirfd, uintptr_t user_pathname, uint32_t owner, uint32_t group,
+                     uint64_t flags) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+    if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) != 0ULL) {
+        return ERR_EINVAL;
+    }
+
+    char raw_path[Kernel::Process::MAX_PATH_LEN]{};
+    size_t path_len = 0U;
+    const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
+                                               raw_path, sizeof(raw_path), path_len);
+    if (copy_res < 0) {
+        return copy_res;
+    }
+
+    if (path_len == 0U && (flags & AT_EMPTY_PATH) != 0ULL) {
+        return sys_fchown(static_cast<uint64_t>(dirfd), owner, group);
+    }
+
+    kernel::fs::Dentry* base_dentry = nullptr;
+    if (raw_path[0] != '/') {
+        const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
+        if (dir_res < 0) {
+            return dir_res;
+        }
+    }
+
+    const bool follow = (flags & AT_SYMLINK_NOFOLLOW) == 0ULL;
+    kernel::fs::Dentry* target = nullptr;
+    const int32_t vfs_res = kernel::fs::vfs_namei(kernel::fs::StringView(raw_path, path_len),
+                                                  base_dentry, &target, follow);
+    if (base_dentry != nullptr) {
+        kernel::fs::dentry_put(base_dentry);
+    }
+    if (vfs_res != kernel::fs::kOk || target == nullptr || target->inode == nullptr) {
+        if (target != nullptr) {
+            kernel::fs::dentry_put(target);
+        }
+        return (vfs_res != kernel::fs::kOk) ? vfs_res : ERR_ENOENT;
+    }
+
+    int64_t res = 0;
+    if (target->inode->sb != nullptr && target->inode->sb->is_read_only()) {
+        res = ERR_EROFS;
+    } else {
+        if (owner != static_cast<uint32_t>(-1)) {
+            target->inode->uid = owner;
+        }
+        if (group != static_cast<uint32_t>(-1)) {
+            target->inode->gid = group;
+        }
+        target->inode->ctime_ns = monotonic_now_ns();
+    }
+    kernel::fs::dentry_put(target);
+    return res;
 }
 
 int64_t sys_close(uint64_t raw_fd) noexcept {
@@ -1221,6 +1739,9 @@ int64_t sys_fcntl(uint64_t raw_fd, uint64_t cmd, uint64_t arg) noexcept {
         if ((desc.file->flags & kernel::fs::kOpenNonBlock) != 0U) {
             flags |= O_NONBLOCK;
         }
+        if ((desc.file->flags & kernel::fs::kOpenAppend) != 0U) {
+            flags |= O_APPEND;
+        }
         return static_cast<int64_t>(flags);
     }
 
@@ -1229,6 +1750,11 @@ int64_t sys_fcntl(uint64_t raw_fd, uint64_t cmd, uint64_t arg) noexcept {
             proc->fd_table[fd_idx].file->flags |= kernel::fs::kOpenNonBlock;
         } else {
             proc->fd_table[fd_idx].file->flags &= ~kernel::fs::kOpenNonBlock;
+        }
+        if ((arg & O_APPEND) != 0ULL) {
+            proc->fd_table[fd_idx].file->flags |= kernel::fs::kOpenAppend;
+        } else {
+            proc->fd_table[fd_idx].file->flags &= ~kernel::fs::kOpenAppend;
         }
         return 0;
 
@@ -3228,6 +3754,68 @@ class SyscallDispatcher : public HAL::TrapHandler {
         case SYS_CHDIR:
             ret_val = sys_chdir(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)));
             break;
+        case SYS_MKDIRAT:
+            ret_val = sys_mkdirat(
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)), cpu.get_syscall_arg(ctx, 2U));
+            break;
+
+        case SYS_UNLINKAT:
+            ret_val = sys_unlinkat(
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)), cpu.get_syscall_arg(ctx, 2U));
+            break;
+
+        case SYS_RENAMEAT:
+            ret_val = sys_renameat(
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 2U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 3U)));
+            break;
+
+        case SYS_RENAMEAT2:
+            ret_val = sys_renameat2(
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 2U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 3U)), cpu.get_syscall_arg(ctx, 4U));
+            break;
+
+        case SYS_TRUNCATE:
+            ret_val = sys_truncate(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)),
+                                   static_cast<int64_t>(cpu.get_syscall_arg(ctx, 1U)));
+            break;
+
+        case SYS_FTRUNCATE:
+            ret_val = sys_ftruncate(cpu.get_syscall_arg(ctx, 0U),
+                                    static_cast<int64_t>(cpu.get_syscall_arg(ctx, 1U)));
+            break;
+
+        case SYS_FCHMOD:
+            ret_val = sys_fchmod(cpu.get_syscall_arg(ctx, 0U), cpu.get_syscall_arg(ctx, 1U));
+            break;
+
+        case SYS_FCHMODAT:
+            ret_val = sys_fchmodat(
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)), cpu.get_syscall_arg(ctx, 2U),
+                cpu.get_syscall_arg(ctx, 3U));
+            break;
+
+        case SYS_FCHOWNAT:
+            ret_val = sys_fchownat(
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
+                static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 2U)),
+                static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 3U)), cpu.get_syscall_arg(ctx, 4U));
+            break;
+
+        case SYS_FCHOWN:
+            ret_val = sys_fchown(cpu.get_syscall_arg(ctx, 0U),
+                                 static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 1U)),
+                                 static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 2U)));
+            break;
 
         case SYS_OPENAT:
             ret_val = sys_openat(
@@ -3309,6 +3897,21 @@ class SyscallDispatcher : public HAL::TrapHandler {
         case SYS_FSTAT:
             ret_val = sys_fstat(cpu.get_syscall_arg(ctx, 0U),
                                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)));
+            break;
+
+        case SYS_FSYNC:
+            ret_val = sys_fsync(cpu.get_syscall_arg(ctx, 0U), 0);
+            break;
+
+        case SYS_FDATASYNC:
+            ret_val = sys_fsync(cpu.get_syscall_arg(ctx, 0U), 1);
+            break;
+
+        case SYS_UTIMENSAT:
+            ret_val = sys_utimensat(
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 2U)), cpu.get_syscall_arg(ctx, 3U));
             break;
 
         case SYS_EXIT:

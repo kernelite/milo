@@ -322,9 +322,14 @@ void file_put(File* file) noexcept;
 [[nodiscard]] int32_t vfs_ioctl(File* file, uint64_t request, uint64_t arg) noexcept;
 [[nodiscard]] int16_t vfs_poll(File* file, int16_t events) noexcept;
 [[nodiscard]] int32_t vfs_readdir(File* file, DirEntryInfo* out_entry) noexcept;
+[[nodiscard]] int32_t vfs_mkdir_at(Dentry* cwd, StringView path, uint32_t mode) noexcept;
 [[nodiscard]] int32_t vfs_mkdir(StringView path, uint32_t mode) noexcept;
+[[nodiscard]] int32_t vfs_unlink_at(Dentry* cwd, StringView path) noexcept;
 [[nodiscard]] int32_t vfs_unlink(StringView path) noexcept;
+[[nodiscard]] int32_t vfs_rmdir_at(Dentry* cwd, StringView path) noexcept;
 [[nodiscard]] int32_t vfs_rmdir(StringView path) noexcept;
+[[nodiscard]] int32_t vfs_rename_at(Dentry* old_cwd, StringView old_path, Dentry* new_cwd,
+                                    StringView new_path) noexcept;
 [[nodiscard]] int32_t vfs_rename(StringView old_path, StringView new_path) noexcept;
 
 } // namespace kernel::fs
