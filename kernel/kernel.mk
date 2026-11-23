@@ -19,4 +19,7 @@ SRCS_CXX += kernel/main.cpp \
             kernel/process/resource.cpp \
             kernel/process/scheduler.cpp \
             kernel/process/wait_queue.cpp \
+            kernel/drivers/irq/gicv2.cpp \
+            kernel/drivers/virtio/virtio_ring.cpp \
+            kernel/drivers/virtio/virtio_mmio.cpp \
             kernel/mm/heap.cpp

@@ -58,15 +58,21 @@ HOST_ONLY_TEST_SRCS := \
     tests/host/pfa_test.cpp \
     tests/host/vfs_test.cpp \
     tests/host/rootfs_test.cpp \
-	tests/host/tmpfs_test.cpp \
-    tests/host/stack_builder_test.cpp
+    tests/host/tmpfs_test.cpp \
+    tests/host/stack_builder_test.cpp \
+    tests/host/fdt_test.cpp \
+    tests/host/virtio_ring_test.cpp
 
 HOST_KERNEL_SRCS := \
+    kernel/boot/fdt.cpp \
+    kernel/drivers/irq/gicv2.cpp \
+    kernel/drivers/virtio/virtio_ring.cpp \
+    kernel/drivers/virtio/virtio_mmio.cpp \
     kernel/fs/cpio.cpp \
     kernel/fs/vfs.cpp \
     kernel/fs/rootfs/rootfs.cpp \
     kernel/fs/devfs/devfs.cpp \
-	kernel/fs/tmpfs/tmpfs.cpp \
+    kernel/fs/tmpfs/tmpfs.cpp \
     kernel/ipc/pipe.cpp \
     kernel/mm/pfa.cpp \
     kernel/mm/heap.cpp \
