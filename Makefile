@@ -1,5 +1,6 @@
 ARCH ?= aarch64-linux-gnu
 TARGET := kernel.bin
+NPROC ?= $(shell nproc 2>/dev/null || echo 4)
 
 # Toolchain targeting bare-metal
 PREFIX  := $(ARCH)-
@@ -86,8 +87,8 @@ HOST_COV_OBJS := $(patsubst %.cpp, $(HOST_COV_DIR)/%.o, $(HOST_TEST_SRCS))
 HOST_COV_DEPS := $(HOST_COV_OBJS:.o=.d)
 HOST_COV_BIN  := $(HOST_COV_DIR)/kernel_host_coverage
 
-.PHONY: all clean clean-tests run debug gdb lint format format-check lint-report quality \
-        test-host compile_commands.json ai-dump setup-musl setup-busybox setup-bash
+.PHONY: all clean distclean clean-tests run debug gdb lint format format-check lint-report quality \
+        test-host compile_commands.json ai-dump setup-musl setup-busybox setup-bash setup-hooks
 
 all: $(BUILD_DIR)/$(TARGET) $(INITRD)
 
@@ -139,7 +140,7 @@ test-host: $(HOST_TEST_BIN) $(HOST_COV_BIN)
 	@find $(HOST_COV_DIR) -name '*.gcda' -delete
 	./$(HOST_COV_BIN) -r xml -o $(REPORTS_DIR)/test_report.xml
 	@echo "[GCOVR] Generating terminal summary, HTML dashboard, and CI XML artifacts..."
-	gcovr -r . --object-directory $(HOST_COV_DIR) --filter 'kernel/' \
+	gcovr -j $(NPROC) -r . --object-directory $(HOST_COV_DIR) --filter 'kernel/' \
 		--txt \
 		--html-details $(REPORTS_DIR)/coverage_report.html \
 		--cobertura $(REPORTS_DIR)/cobertura.xml \
@@ -254,7 +255,13 @@ setup-bash: $(BASH_CPIO)
 -include $(HOST_COV_DEPS)
 
 clean:
-	rm -rf $(BUILD_DIR) arch/memory_config.hpp
+	rm -rf $(BUILD_DIR)/kernel $(BUILD_DIR)/arch \
+	       $(BUILD_DIR)/$(TARGET) $(BUILD_DIR)/kernel.elf \
+	       $(HOST_BUILD_DIR) $(HOST_COV_DIR) $(REPORTS_DIR) \
+	       $(BUSYBOX_ROOTFS_DIR) $(BASH_ROOTFS_DIR) arch/memory_config.hpp
+
+distclean:
+	rm -rf $(BUILD_DIR) arch/memory_config.hpp compile_commands.json
 
 # QEMU Executable & Flags
 QEMU      ?= qemu-system-aarch64
@@ -276,15 +283,26 @@ gdb: $(BUILD_DIR)/kernel.elf
 HDRS := $(shell find kernel arch tests -name '*.hpp' -o -name '*.h' 2>/dev/null)
 TEST_FORMAT_SRCS := $(shell find tests -name '*.cpp' 2>/dev/null)
 
-# --- Compilation Database Generation ---
-compile_commands.json: clean
-	@echo "[BEAR] Generating compilation database..."
-	bear -- $(MAKE) $(BUILD_DIR)/$(TARGET) $(HOST_ONLY_TEST_OBJS)
+# --- Compilation Database Generation (incremental, without clean rebuilds) ---
+compile_commands.json: Makefile kernel/kernel.mk arch/$(ARCH)/arch.mk arch/memory_config.hpp scripts/generate_compile_commands.py
+	@echo "[COMPILE-DB] Updating compile_commands.json..."
+	@python3 scripts/generate_compile_commands.py \
+		--cxx "$(CXX)" \
+		--cxxflags "$(CXXFLAGS)" \
+		--kernel-includes "-Ikernel -Iarch/$(ARCH)" \
+		--build-dir "$(BUILD_DIR)" \
+		--kernel-srcs $(SRCS_CXX) \
+		--host-cxx "$(HOST_CXX)" \
+		--host-cxxflags "$(HOST_CXXFLAGS)" \
+		--host-includes "$(HOST_INCLUDES)" \
+		--host-build-dir "$(HOST_BUILD_DIR)" \
+		--host-srcs $(HOST_ONLY_TEST_SRCS) \
+		--output $@
 
 # --- Code Quality Targets ---
 lint: compile_commands.json
 	@echo "[LINT] Running clang-tidy on C++ sources..."
-	clang-tidy -p . $(SRCS_CXX) $(TEST_FORMAT_SRCS)
+	@python3 scripts/generate_quality_report.py -j $(NPROC)
 
 format:
 	@echo "[FORMAT] Formatting sources with clang-format..."
@@ -295,12 +313,15 @@ format-check:
 	clang-format --dry-run --Werror $(SRCS_CXX) $(TEST_FORMAT_SRCS) $(SRCS_C) $(HDRS)
 
 lint-report: compile_commands.json
-	@python3 scripts/generate_quality_report.py
+	@python3 scripts/generate_quality_report.py -j $(NPROC)
 
-quality: format-check lint-report test-host
+quality:
+	@$(MAKE) $(if $(findstring -j,$(MAKEFLAGS)),,-j$(NPROC)) format-check lint-report test-host
+
+setup-hooks:
+	git config core.hooksPath .githooks
+	chmod +x .githooks/pre_commit
+	@echo "[HOOKS] Configured git core.hooksPath -> .githooks"
 
 commit: quality
 	git commit
-
-ai-dump:
-	@python3 scripts/ai_dump.py arch/ kernel/ user/ tests/ Makefile
