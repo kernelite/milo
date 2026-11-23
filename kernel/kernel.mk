@@ -7,8 +7,10 @@ SRCS_CXX += kernel/main.cpp \
             kernel/mm/address_space.cpp \
             kernel/boot/fdt.cpp \
             kernel/fs/cpio.cpp \
-            kernel/fs/pipe.cpp \
             kernel/fs/vfs.cpp \
+            kernel/fs/rootfs/rootfs.cpp \
+            kernel/fs/devfs/devfs.cpp \
+            kernel/ipc/pipe.cpp \
             kernel/loader/elf64.cpp \
             kernel/loader/elf_loader.cpp \
             kernel/process/stack_builder.cpp \

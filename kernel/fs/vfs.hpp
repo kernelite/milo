@@ -82,10 +82,13 @@ class StringView {
 inline constexpr int32_t kOk = 0;
 inline constexpr int32_t kEperm = -1;
 inline constexpr int32_t kEnoent = -2;
+inline constexpr int32_t kEintr = -4;
 inline constexpr int32_t kEio = -5;
 inline constexpr int32_t kEbadf = -9;
+inline constexpr int32_t kEagain = -11;
 inline constexpr int32_t kEnomem = -12;
 inline constexpr int32_t kEacces = -13;
+inline constexpr int32_t kEfault = -14;
 inline constexpr int32_t kEbusy = -16;
 inline constexpr int32_t kEexist = -17;
 inline constexpr int32_t kExdev = -18;
@@ -94,8 +97,11 @@ inline constexpr int32_t kEisdir = -21;
 inline constexpr int32_t kEinval = -22;
 inline constexpr int32_t kEnfile = -23;
 inline constexpr int32_t kEmfile = -24;
+inline constexpr int32_t kEnotty = -25;
 inline constexpr int32_t kEnospc = -28;
+inline constexpr int32_t kEspipe = -29;
 inline constexpr int32_t kErofs = -30;
+inline constexpr int32_t kEpipe = -32;
 inline constexpr int32_t kEnametoolong = -36;
 inline constexpr int32_t kEnosys = -38;
 inline constexpr int32_t kEnotempty = -39;
@@ -120,7 +126,9 @@ inline constexpr uint32_t kOpenCreate = 0x0040U;
 inline constexpr uint32_t kOpenExcl = 0x0080U;
 inline constexpr uint32_t kOpenTrunc = 0x0200U;
 inline constexpr uint32_t kOpenAppend = 0x0400U;
+inline constexpr uint32_t kOpenNonBlock = 0x0800U;
 inline constexpr uint32_t kOpenDirectory = 0x10000U;
+inline constexpr uint32_t kOpenCloexec = 0x80000U;
 
 // Superblock flags.
 inline constexpr uint64_t kSbReadOnly = (1ULL << 0U);
@@ -133,9 +141,10 @@ inline constexpr uint32_t kDentryMounted = (1U << 1U);
 inline constexpr size_t kMaxNameLen = 63U;
 inline constexpr size_t kMaxSuperblocks = 16U;
 inline constexpr size_t kMaxMounts = 16U;
-inline constexpr size_t kMaxInodes = 512U;
-inline constexpr size_t kMaxDentries = 512U;
-inline constexpr size_t kMaxFiles = 256U;
+inline constexpr size_t kMaxInodes = 1024U;
+inline constexpr size_t kMaxDentries = 1024U;
+inline constexpr size_t kMaxFiles = 512U;
+inline constexpr size_t kMaxSymlinkDepth = 8U;
 
 enum class SeekWhence : int32_t {
     kSet = 0,
@@ -169,6 +178,7 @@ struct InodeOperations {
     int32_t (*rename)(Inode* old_dir, Dentry* old_dentry, Inode* new_dir,
                       Dentry* new_dentry){nullptr};
     int32_t (*truncate)(Inode* inode, uint64_t new_size){nullptr};
+    int32_t (*readlink)(Inode* inode, char* buf, size_t buf_size, size_t* out_len){nullptr};
 };
 
 struct FileOperations {
@@ -180,6 +190,7 @@ struct FileOperations {
     int32_t (*ioctl)(File* file, uint64_t request, uint64_t arg){nullptr};
     int32_t (*fsync)(File* file, int32_t datasync){nullptr};
     int32_t (*readdir)(File* file, DirEntryInfo* out_entry){nullptr};
+    int16_t (*poll)(File* file, int16_t events){nullptr};
 };
 
 struct Superblock {
@@ -200,6 +211,7 @@ struct Inode {
     uint32_t uid{0U};
     uint32_t gid{0U};
     uint64_t size{0U};
+    uint64_t rdev{0U};
     uint32_t nlink{1U};
     uint64_t atime_ns{0U};
     uint64_t mtime_ns{0U};
@@ -215,6 +227,7 @@ struct Inode {
     [[nodiscard]] bool is_reg() const noexcept { return (mode & kModeTypeMask) == kModeReg; }
     [[nodiscard]] bool is_chr() const noexcept { return (mode & kModeTypeMask) == kModeChr; }
     [[nodiscard]] bool is_fifo() const noexcept { return (mode & kModeTypeMask) == kModeFifo; }
+    [[nodiscard]] bool is_symlink() const noexcept { return (mode & kModeTypeMask) == kModeLnk; }
 };
 
 struct Dentry {
@@ -230,9 +243,7 @@ struct Dentry {
     bool active{false};
 
     [[nodiscard]] StringView name_view() const noexcept { return {name, name_len}; }
-
     [[nodiscard]] bool is_mounted() const noexcept { return (flags & kDentryMounted) != 0U; }
-
     [[nodiscard]] bool is_root() const noexcept { return (flags & kDentryRoot) != 0U; }
 };
 
@@ -291,18 +302,25 @@ void file_put(File* file) noexcept;
 [[nodiscard]] Dentry* vfs_root_dentry() noexcept;
 
 // Path resolution (namei).
-[[nodiscard]] int32_t vfs_namei(StringView path, Dentry* cwd, Dentry** out_dentry) noexcept;
+[[nodiscard]] int32_t vfs_namei(StringView path, Dentry* cwd, Dentry** out_dentry,
+                                bool follow_symlinks = true) noexcept;
 [[nodiscard]] int32_t vfs_namei_parent(StringView path, Dentry* cwd, Dentry** out_parent,
                                        StringView* out_leaf,
                                        bool* out_trailing_slash = nullptr) noexcept;
+[[nodiscard]] int32_t vfs_readlink(StringView path, Dentry* cwd, char* buf, size_t buf_size,
+                                   size_t* out_len) noexcept;
 
 // High-level VFS file & namespace operations.
+[[nodiscard]] int32_t vfs_open_at(Dentry* cwd, StringView path, uint32_t flags, uint32_t mode,
+                                  File** out_file) noexcept;
 [[nodiscard]] int32_t vfs_open(StringView path, uint32_t flags, uint32_t mode,
                                File** out_file) noexcept;
 [[nodiscard]] int32_t vfs_close(File* file) noexcept;
 [[nodiscard]] int64_t vfs_read(File* file, void* buf, size_t count) noexcept;
 [[nodiscard]] int64_t vfs_write(File* file, const void* buf, size_t count) noexcept;
 [[nodiscard]] int64_t vfs_lseek(File* file, int64_t offset, SeekWhence whence) noexcept;
+[[nodiscard]] int32_t vfs_ioctl(File* file, uint64_t request, uint64_t arg) noexcept;
+[[nodiscard]] int16_t vfs_poll(File* file, int16_t events) noexcept;
 [[nodiscard]] int32_t vfs_readdir(File* file, DirEntryInfo* out_entry) noexcept;
 [[nodiscard]] int32_t vfs_mkdir(StringView path, uint32_t mode) noexcept;
 [[nodiscard]] int32_t vfs_unlink(StringView path) noexcept;

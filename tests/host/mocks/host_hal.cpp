@@ -3,6 +3,7 @@
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
+#include "hal/targets/qemu_virt/timer.hpp"
 #include "memory_config.hpp"
 
 #include <algorithm>
@@ -477,6 +478,18 @@ void AddressSpaceBackend::destroy_root(uintptr_t root_paddr) noexcept {
 }
 
 } // namespace HAL
+
+namespace HAL::QemuVirt {
+
+uint64_t GenericTimer::frequency_hz() noexcept {
+    return 62500000ULL;
+}
+
+uint64_t GenericTimer::counter_ticks() noexcept {
+    return 0ULL;
+}
+
+} // namespace HAL::QemuVirt
 
 namespace HostTest {
 
