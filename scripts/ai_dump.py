@@ -3,7 +3,7 @@ import glob
 import os
 import sys
 
-# ~100 KB per-attachment context extraction cap; 10 max attachments (1 index + 9 chunks)
+# ~100 KB per-attachment context extraction cap; 10 max attachments per prompt (1 index + 9 chunks)
 MAX_CHUNK_SIZE = 90 * 1024  # 90 KB
 MAX_CHUNKS = 9
 EXCLUDED_EXTS = (".o", ".d", ".elf", ".bin", ".cpio", ".gz", ".tar", ".xz", ".bz2")
@@ -44,7 +44,6 @@ def main() -> None:
 
     chunk_idx = 1
     current_chunk_size = 0
-    truncated_files = 0
     index_rows: list[tuple[str, int, str]] = []
     current_file = open(f"dump-for-ai-{chunk_idx}.txt", "w", encoding="utf-8")
 
@@ -59,10 +58,6 @@ def main() -> None:
         if current_chunk_size + entry_size > MAX_CHUNK_SIZE and current_chunk_size > 0:
             current_file.close()
             chunk_idx += 1
-            if chunk_idx > MAX_CHUNKS:
-                truncated_files += 1
-                index_rows.append(("OMITTED (limit)", os.path.getsize(path), path))
-                continue
             current_file = open(f"dump-for-ai-{chunk_idx}.txt", "w", encoding="utf-8")
             current_chunk_size = 0
 
@@ -78,7 +73,7 @@ def main() -> None:
     with open("dump-index.txt", "w", encoding="utf-8") as index_file:
         index_file.write(
             f"Total files: {len(valid_files)} | Total source size: {total_bytes} bytes "
-            f"| Chunks: {min(chunk_idx, MAX_CHUNKS)}/{MAX_CHUNKS} (max {MAX_CHUNK_SIZE // 1024} KB each)\n\n"
+            f"| Chunks: {chunk_idx} (max {MAX_CHUNK_SIZE // 1024} KB each)\n\n"
         )
         index_file.write(f"{'Chunk':<20} | {'Bytes':>8} | File Path\n")
         index_file.write("-" * 80 + "\n")
@@ -86,13 +81,13 @@ def main() -> None:
             index_file.write(f"{chunk_name:<20} | {size:>8} | {path}\n")
 
     print(
-        f"[AI-DUMP] Generated dump-index.txt and {min(chunk_idx, MAX_CHUNKS)} chunk(s) "
+        f"[AI-DUMP] Generated dump-index.txt and {chunk_idx} chunk(s) "
         f"({total_bytes / 1024:.1f} KB total)."
     )
-    if truncated_files:
+    if chunk_idx > MAX_CHUNKS:
         print(
-            f"[AI-DUMP] Warning: {truncated_files} file(s) omitted after reaching "
-            f"{MAX_CHUNKS} chunks. Check dump-index.txt."
+            f"[AI-DUMP] Warning: Generated {chunk_idx} chunks, exceeding the "
+            f"{MAX_CHUNKS}-chunk single-prompt limit. Upload them across multiple prompts."
         )
 
 
