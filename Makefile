@@ -55,6 +55,7 @@ HOST_COV_LDFLAGS  := --coverage -L/usr/local/lib -lsnitch
 
 HOST_ONLY_TEST_SRCS := \
     tests/host/mocks/host_hal.cpp \
+	tests/host/ext2_test.cpp \
     tests/host/pfa_test.cpp \
     tests/host/vfs_test.cpp \
     tests/host/rootfs_test.cpp \
@@ -70,6 +71,7 @@ HOST_KERNEL_SRCS := \
     kernel/drivers/virtio/virtio_mmio.cpp \
 	kernel/drivers/virtio/virtio_blk.cpp \
     kernel/fs/cpio.cpp \
+	kernel/fs/ext2/ext2.cpp \
     kernel/fs/vfs.cpp \
     kernel/fs/rootfs/rootfs.cpp \
     kernel/fs/devfs/devfs.cpp \
@@ -288,6 +290,7 @@ DISK_SIZE_MB ?= 4
 
 $(DISK_IMG):
 	dd if=/dev/zero of=$@ bs=1M count=$(DISK_SIZE_MB)
+	mkfs.ext2 -F -q -b 1024 $@
 
 .PHONY: disk
 disk: $(DISK_IMG)

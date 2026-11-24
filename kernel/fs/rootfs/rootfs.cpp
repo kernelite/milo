@@ -417,6 +417,7 @@ int32_t rootfs_create_from_cpio(const void* cpio_base, size_t cpio_size,
     (void)ensure_dir_path(superblock, root_dentry, "dev", nullptr);
     (void)ensure_dir_path(superblock, root_dentry, "proc", nullptr);
     (void)ensure_dir_path(superblock, root_dentry, "tmp", nullptr);
+    (void)ensure_dir_path(superblock, root_dentry, "mnt/disk", nullptr);
 
     *out_sb = superblock;
     return kOk;
