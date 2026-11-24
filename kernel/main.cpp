@@ -4,6 +4,7 @@
 #include "drivers/virtio/virtio_blk.hpp"
 #include "drivers/virtio/virtio_mmio.hpp"
 #include "fs/devfs/devfs.hpp"
+#include "fs/ext2/ext2.hpp"
 #include "fs/rootfs/rootfs.hpp"
 #include "fs/tmpfs/tmpfs.hpp"
 #include "hal/console.hpp"
@@ -208,6 +209,15 @@ extern "C" void kmain(uintptr_t dtb_paddr) {
     init_virtio_mmio_devices(dtb_paddr);
     print_str("[KERNEL] Virtio-MMIO driver attached.");
     HAL::Platform::init_block_devices(dtb_paddr);
+    if (auto* const blk = HAL::Platform::primary_block_device(); blk != nullptr) {
+        if (kernel::fs::ext2_mount(blk, "/mnt/disk") == kernel::fs::kOk) {
+            print_str("[KERNEL] Mounted ext2 block device at /mnt/disk.\r\n");
+        } else {
+            print_str("[KERNEL] Warning: Primary block device is not a valid ext2 image.\r\n");
+        }
+    } else {
+        print_str("[KERNEL] No primary block device detected.\r\n");
+    }
     verify_primary_block_device();
     print_str("[KERNEL] Block device driver attached.");
 
