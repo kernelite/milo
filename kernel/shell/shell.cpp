@@ -1,10 +1,12 @@
 #include "boot/fdt.hpp"
+#include "drivers/block/block_device.hpp"
 #include "fs/cpio.hpp"
 #include "fs/devfs/devfs.hpp"
 #include "fs/vfs.hpp"
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
+#include "hal/platform.hpp"
 #include "hal/targets/qemu_virt/gicv2.hpp"
 #include "hal/targets/qemu_virt/timer.hpp"
 #include "hal/test_hooks.hpp"
@@ -19,6 +21,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <new>
 
 extern "C" void cmd_test_uxn_fault();
@@ -208,6 +211,68 @@ void launch_initrd_shell(const char* bin_path, const char* argv0, const char* sh
     print_str(" exited with status ");
     print_dec64(static_cast<uint64_t>(exit_status));
     print_str("\r\n");
+}
+
+void cmd_test_blk() noexcept {
+    print_str("\r\n[TEST] Running Virtio Block Device & Async IRQ Verification...\r\n");
+
+    Kernel::Drivers::Block::BlockDevice* const blk = HAL::Platform::primary_block_device();
+    assert_test(blk != nullptr, "Primary block device discovered via HAL::Platform");
+    if (blk == nullptr) {
+        return;
+    }
+
+    const size_t sec_size = blk->sector_size();
+    assert_test(sec_size == 512U && blk->sector_count() > 0ULL,
+                "Block device geometry is valid (512-byte sectors, non-zero capacity)");
+    if (sec_size != 512U || blk->sector_count() == 0ULL) {
+        return;
+    }
+
+    alignas(16) uint8_t tx_buf[512]{};
+    alignas(16) uint8_t rx_buf[512]{};
+    for (size_t i = 0U; i < sizeof(tx_buf); ++i) {
+        tx_buf[i] = static_cast<uint8_t>((i * 7U) ^ 0x3DU);
+    }
+
+    const auto* const cur = Kernel::Process::current_process();
+    const uint64_t ticks_before = Kernel::Scheduler::timer_ticks();
+    const uint64_t sleeps_before = blk->sleep_count();
+    const uint64_t irqs_before = blk->irq_completions();
+
+    const int write_rc = blk->write_sectors(0ULL, 1U, tx_buf);
+    assert_test(write_rc == 0, "Async write_sectors(LBA 0, 1 sector) returned 0 (VIRTIO_BLK_S_OK)");
+
+    const int read_rc = blk->read_sectors(0ULL, 1U, rx_buf);
+    assert_test(read_rc == 0, "Async read_sectors(LBA 0, 1 sector) returned 0 (VIRTIO_BLK_S_OK)");
+
+    const uint64_t elapsed_ticks = Kernel::Scheduler::timer_ticks() - ticks_before;
+    const uint64_t delta_sleeps = blk->sleep_count() - sleeps_before;
+    const uint64_t delta_irqs = blk->irq_completions() - irqs_before;
+    const bool data_match = (std::memcmp(tx_buf, rx_buf, sizeof(tx_buf)) == 0);
+
+    assert_test(data_match, "DMA payload match: rx_buf == tx_buf");
+    assert_test(delta_irqs == 2ULL, "GICv2 SPI handler completed both requests");
+
+    if (cur != nullptr) {
+        assert_test(delta_sleeps >= 2ULL,
+                    "Requesting process slept on WaitQueue while I/O was in flight");
+        assert_test(blk->last_woken_pid() == cur->pid,
+                    "GICv2 IRQ handler woke the exact waiting PID");
+    } else {
+        print_str("  [INFO] Running in boot context (current_process == nullptr); "
+                  "sleeps=");
+        print_dec64(delta_sleeps);
+        print_str(", irqs=");
+        print_dec64(delta_irqs);
+        print_str("\r\n");
+    }
+
+    if (data_match && write_rc == 0 && read_rc == 0) {
+        print_str("  [PASS] Async I/O successful. Elapsed scheduler ticks during I/O: ");
+        print_dec64(elapsed_ticks);
+        print_str("\r\n");
+    }
 }
 
 void cmd_bash() noexcept {
@@ -2289,6 +2354,7 @@ void print_help() noexcept {
     print_str("  test cow           - Run EL0 Copy-on-Write isolation verification suite\r\n");
     print_str("  test demand_paging - Run EL0 1 GiB demand-zero capacity verification suite\r\n");
     print_str("  test lazy_mm       - Run full lazy memory acceptance & zero-leak suite\r\n");
+    print_str("  test blk           - Test Virtio-MMIO block device async I/O & IRQ wakeup\r\n");
     print_str("  test all           - Run entire verification test suite\r\n");
     print_str("  bash            - Run interactive GNU bash shell\r\n");
     print_str("  sh              - Run interactive POSIX shell (/bin/bash or BusyBox)\r\n");
@@ -2384,6 +2450,8 @@ void dispatch_command(const char* buf) noexcept {
         cmd_sh();
     } else if (streq(buf, "clear")) {
         print_str("\033[2J\033[H");
+    } else if (streq(buf, "test blk")) {
+        cmd_test_blk();
     } else if (streq(buf, "help")) {
         print_help();
     } else if (streq(buf, "test all")) {
@@ -2412,6 +2480,7 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_sched();
         cmd_test_heap();
         cmd_test_dynamic_io();
+        cmd_test_blk();
         run_lazy_memory_acceptance_suite();
     } else if (buf[0] != '\0') {
         print_str("Unknown command: '");

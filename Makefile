@@ -68,6 +68,7 @@ HOST_KERNEL_SRCS := \
     kernel/drivers/irq/gicv2.cpp \
     kernel/drivers/virtio/virtio_ring.cpp \
     kernel/drivers/virtio/virtio_mmio.cpp \
+	kernel/drivers/virtio/virtio_blk.cpp \
     kernel/fs/cpio.cpp \
     kernel/fs/vfs.cpp \
     kernel/fs/rootfs/rootfs.cpp \
@@ -267,14 +268,31 @@ clean:
 	       $(BUSYBOX_ROOTFS_DIR) $(BASH_ROOTFS_DIR) arch/memory_config.hpp
 
 distclean:
-	rm -rf $(BUILD_DIR) arch/memory_config.hpp compile_commands.json
+	rm -rf $(BUILD_DIR) arch/memory_config.hpp compile_commands.json $(DISK_IMG)
 
 # QEMU Executable & Flags
 QEMU      ?= qemu-system-aarch64
-QEMUFLAGS := -M virt -cpu cortex-a53 -m 256M -nographic -kernel $(BUILD_DIR)/$(TARGET) -initrd $(INITRD)
+QEMUFLAGS := -M virt \
+             -cpu cortex-a57 \
+			 -m 256M \
+			 -nographic \
+			 -kernel $(BUILD_DIR)/$(TARGET) \
+             -initrd $(INITRD) \
+			 -global virtio-mmio.force-legacy=false \
+			 -drive file=disk.img,format=raw,if=none,id=hd0 \
+			 -device virtio-blk-device,drive=hd0
 GDB       ?= gdb-multiarch
 
-run: $(BUILD_DIR)/$(TARGET) $(INITRD)
+DISK_IMG ?= disk.img
+DISK_SIZE_MB ?= 4
+
+$(DISK_IMG):
+	dd if=/dev/zero of=$@ bs=1M count=$(DISK_SIZE_MB)
+
+.PHONY: disk
+disk: $(DISK_IMG)
+
+run: $(BUILD_DIR)/$(TARGET) $(INITRD) $(DISK_IMG)
 	$(QEMU) $(QEMUFLAGS)
 
 debug: $(BUILD_DIR)/$(TARGET) $(INITRD)

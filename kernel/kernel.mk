@@ -22,4 +22,7 @@ SRCS_CXX += kernel/main.cpp \
             kernel/drivers/irq/gicv2.cpp \
             kernel/drivers/virtio/virtio_ring.cpp \
             kernel/drivers/virtio/virtio_mmio.cpp \
+            kernel/drivers/virtio/virtio_blk.cpp \
+            kernel/drivers/virtio/virtio_blk.cpp \
+            kernel/hal/targets/qemu_virt/platform_block.cpp \
             kernel/mm/heap.cpp
