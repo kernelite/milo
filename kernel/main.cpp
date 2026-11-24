@@ -1,5 +1,7 @@
 #include "boot/fdt.hpp"
+#include "drivers/block/block_device.hpp"
 #include "drivers/irq/gicv2.hpp"
+#include "drivers/virtio/virtio_blk.hpp"
 #include "drivers/virtio/virtio_mmio.hpp"
 #include "fs/devfs/devfs.hpp"
 #include "fs/rootfs/rootfs.hpp"
@@ -7,13 +9,17 @@
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
+#include "hal/platform.hpp"
 #include "hal/targets/qemu_virt/timer.hpp"
 #include "mm/heap.hpp"
 #include "mm/pfa.hpp"
+#include "process/process.hpp"
 #include "process/scheduler.hpp"
 #include "shell/shell.hpp"
 
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 uintptr_t g_dtb_paddr = 0;
 FDT::InitrdLocation g_initrd_loc{};
@@ -93,6 +99,44 @@ void init_virtio_mmio_devices(uintptr_t dtb_paddr) noexcept {
     }
 }
 
+void verify_primary_block_device() noexcept {
+    Kernel::Drivers::Block::BlockDevice* const blk = HAL::Platform::primary_block_device();
+    if (blk == nullptr) {
+        print_str("[block] No block device detected\r\n");
+        return;
+    }
+
+    const size_t sec_size = blk->sector_size();
+    if (sec_size != 512U || blk->sector_count() == 0ULL) {
+        print_str("[block] Invalid block device geometry\r\n");
+        return;
+    }
+
+    alignas(16) uint8_t tx_buf[512]{};
+    alignas(16) uint8_t rx_buf[512]{};
+
+    for (size_t i = 0U; i < sizeof(tx_buf); ++i) {
+        tx_buf[i] = static_cast<uint8_t>((i * 3U) ^ 0xA5U);
+    }
+
+    const int write_rc = blk->write_sectors(0ULL, 1U, tx_buf);
+    if (write_rc != 0) {
+        print_str("[block] Sector write failed\r\n");
+        return;
+    }
+
+    const int read_rc = blk->read_sectors(0ULL, 1U, rx_buf);
+    if (read_rc != 0) {
+        print_str("[block] Sector read failed\r\n");
+        return;
+    }
+
+    if (std::memcmp(tx_buf, rx_buf, sizeof(tx_buf)) == 0) {
+        print_str("[block] Raw sector read/write verification PASSED\r\n");
+    } else {
+        print_str("[block] Raw sector read/write data mismatch\r\n");
+    }
+}
 } // namespace
 
 extern "C" void kmain(uintptr_t dtb_paddr) {
@@ -163,6 +207,9 @@ extern "C" void kmain(uintptr_t dtb_paddr) {
     print_str("[KERNEL] GICv2 & 100Hz Preemptive Scheduler initialized.\r\n");
     init_virtio_mmio_devices(dtb_paddr);
     print_str("[KERNEL] Virtio-MMIO driver attached.");
+    HAL::Platform::init_block_devices(dtb_paddr);
+    verify_primary_block_device();
+    print_str("[KERNEL] Block device driver attached.");
 
     // Stage 8: Drop into interactive kernel shell
     HAL::get_cpu().disable_interrupts();
