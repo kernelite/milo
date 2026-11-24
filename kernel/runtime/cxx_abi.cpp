@@ -24,6 +24,15 @@ namespace {
 
 namespace std {
 const nothrow_t nothrow{};
+
+// NOLINTNEXTLINE(cert-dcl58-cpp)
+void terminate() noexcept {
+    constexpr char msg[] = "\r\n[PANIC] std::terminate called\r\n";
+    HAL::get_console().write(msg, sizeof(msg) - 1U);
+    while (true) {
+        HAL::get_cpu().halt();
+    }
+}
 } // namespace std
 
 extern "C" {

@@ -270,7 +270,6 @@ void run_until_idle() noexcept {
         if (!g_runqueue.empty()) {
             schedule();
         } else {
-            Process::poll_console_tty();
             if (!g_runqueue.empty()) {
                 continue;
             }

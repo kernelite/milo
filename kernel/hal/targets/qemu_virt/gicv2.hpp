@@ -1,20 +1,13 @@
 #pragma once
 
-#include <cstdint>
+#include "drivers/irq/gicv2.hpp"
 
 namespace HAL::QemuVirt {
 
-constexpr uintptr_t GICD_BASE = 0x08000000ULL;
-constexpr uintptr_t GICC_BASE = 0x08010000ULL;
-constexpr uint32_t TIMER_PPI_IRQ = 30U;
+constexpr uintptr_t GICD_BASE = Kernel::Drivers::IRQ::GICD_DEFAULT_BASE;
+constexpr uintptr_t GICC_BASE = Kernel::Drivers::IRQ::GICC_DEFAULT_BASE;
+constexpr uint32_t TIMER_PPI_IRQ = Kernel::Drivers::IRQ::TIMER_PPI_IRQ;
 
-class GicV2 {
-  public:
-    static void init() noexcept;
-    static void enable_irq(uint32_t irq) noexcept;
-    static void disable_irq(uint32_t irq) noexcept;
-    static uint32_t acknowledge_irq() noexcept;
-    static void end_of_interrupt(uint32_t irq) noexcept;
-};
+using GicV2 = Kernel::Drivers::IRQ::GicV2;
 
 } // namespace HAL::QemuVirt

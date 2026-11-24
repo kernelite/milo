@@ -1,5 +1,6 @@
 #include "process/process.hpp"
 
+#include "fs/devfs/devfs.hpp"
 #include "hal/cpu.hpp"
 #include "mm/heap.hpp"
 #include "mm/pfa.hpp"
@@ -100,7 +101,7 @@ void destroy_fd_table(Process& proc) noexcept {
     }
 
     for (size_t idx = 0U; idx < proc.fd_capacity; ++idx) {
-        if (proc.fd_table[idx].in_use) {
+        if (proc.fd_table[idx].is_open()) {
             close_fd(proc, idx);
         }
     }
@@ -162,7 +163,7 @@ int allocate_fd(Process& proc, size_t min_fd) noexcept {
 
     const size_t search_limit = (proc.fd_capacity < max_fds) ? proc.fd_capacity : max_fds;
     for (size_t idx = min_fd; idx < search_limit; ++idx) {
-        if (!proc.fd_table[idx].in_use) {
+        if (!proc.fd_table[idx].is_open()) {
             return static_cast<int>(idx);
         }
     }
@@ -185,30 +186,22 @@ void close_fd(Process& proc, size_t fd_idx) noexcept {
     }
 
     auto& desc = proc.fd_table[fd_idx];
-    if (!desc.in_use) {
+    if (!desc.is_open()) {
+        desc = FileDescriptor{};
         return;
     }
 
-    if (desc.type == FdType::PipeRead && desc.pipe != nullptr) {
-        FS::release_pipe_reader(desc.pipe);
-    } else if (desc.type == FdType::PipeWrite && desc.pipe != nullptr) {
-        FS::release_pipe_writer(desc.pipe);
-    }
-
+    (void)kernel::fs::vfs_close(desc.file);
     desc = FileDescriptor{};
 }
 
 void copy_fd_slot(FileDescriptor& dst, const FileDescriptor& src, bool clear_cloexec) noexcept {
     dst = src;
     if (clear_cloexec) {
-        dst.flags &= ~FD_FLAG_CLOEXEC;
+        dst.fd_flags &= ~FD_FLAG_CLOEXEC;
     }
-    if (dst.in_use) {
-        if (dst.type == FdType::PipeRead && dst.pipe != nullptr) {
-            FS::retain_pipe_reader(dst.pipe);
-        } else if (dst.type == FdType::PipeWrite && dst.pipe != nullptr) {
-            FS::retain_pipe_writer(dst.pipe);
-        }
+    if (dst.is_open()) {
+        kernel::fs::file_get(dst.file);
     }
 }
 
@@ -217,11 +210,12 @@ void close_cloexec_fds(Process& proc) noexcept {
         return;
     }
     for (size_t idx = 0U; idx < proc.fd_capacity; ++idx) {
-        if (proc.fd_table[idx].in_use && (proc.fd_table[idx].flags & FD_FLAG_CLOEXEC) != 0U) {
+        if (proc.fd_table[idx].is_open() && (proc.fd_table[idx].fd_flags & FD_FLAG_CLOEXEC) != 0U) {
             close_fd(proc, idx);
         }
     }
 }
+
 Process* allocate_process(uint32_t ppid) noexcept {
     auto& cpu = HAL::get_cpu();
     const bool irq_was_enabled = cpu.interrupts_enabled();
@@ -285,24 +279,35 @@ Process* allocate_process(uint32_t ppid) noexcept {
     proc->rlim_nproc_cur = default_rlimit_nproc();
     proc->rlim_nproc_max = default_rlimit_nproc();
 
-    proc->fd_table[0] = FileDescriptor{
-        .type = FdType::ConsoleTty,
-        .flags = FD_FLAG_READ,
-        .offset = 0U,
-        .in_use = true,
-    };
-    proc->fd_table[1] = FileDescriptor{
-        .type = FdType::ConsoleTty,
-        .flags = FD_FLAG_WRITE,
-        .offset = 0U,
-        .in_use = true,
-    };
-    proc->fd_table[2] = FileDescriptor{
-        .type = FdType::ConsoleTty,
-        .flags = FD_FLAG_WRITE,
-        .offset = 0U,
-        .in_use = true,
-    };
+    kernel::fs::File* stdin_file = nullptr;
+    kernel::fs::File* stdout_file = nullptr;
+    kernel::fs::File* stderr_file = nullptr;
+    if (kernel::fs::devfs_open_console(kernel::fs::kOpenReadOnly, &stdin_file) != kernel::fs::kOk ||
+        kernel::fs::devfs_open_console(kernel::fs::kOpenWriteOnly, &stdout_file) !=
+            kernel::fs::kOk ||
+        kernel::fs::devfs_open_console(kernel::fs::kOpenWriteOnly, &stderr_file) !=
+            kernel::fs::kOk) {
+        if (stdin_file != nullptr) {
+            (void)kernel::fs::vfs_close(stdin_file);
+        }
+        if (stdout_file != nullptr) {
+            (void)kernel::fs::vfs_close(stdout_file);
+        }
+        if (stderr_file != nullptr) {
+            (void)kernel::fs::vfs_close(stderr_file);
+        }
+        destroy_fd_table(*proc);
+        free_frames(kstack_pa, KERNEL_STACK_PAGES);
+        proc->~Process();
+        MM::kfree(proc);
+        if (irq_was_enabled) {
+            cpu.enable_interrupts();
+        }
+        return nullptr;
+    }
+    proc->fd_table[0] = FileDescriptor{.file = stdin_file, .fd_flags = 0U};
+    proc->fd_table[1] = FileDescriptor{.file = stdout_file, .fd_flags = 0U};
+    proc->fd_table[2] = FileDescriptor{.file = stderr_file, .fd_flags = 0U};
 
     proc->global_prev = g_process_list_tail;
     proc->global_next = nullptr;

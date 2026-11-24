@@ -1,5 +1,6 @@
 ARCH ?= aarch64-linux-gnu
 TARGET := kernel.bin
+NPROC ?= $(shell nproc 2>/dev/null || echo 4)
 
 # Toolchain targeting bare-metal
 PREFIX  := $(ARCH)-
@@ -19,7 +20,7 @@ INITRD             ?= $(BUSYBOX_CPIO)
 
 # Freestanding C++ flags
 CXXFLAGS := -std=c++20 -ffreestanding -fsized-deallocation -O2 -Wall -Wextra -fno-use-cxa-atexit \
-            -fno-exceptions -fno-rtti -fno-threadsafe-statics -MMD -MP -g
+            -fno-exceptions -fno-rtti -fno-threadsafe-statics -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -MMD -MP -g
 ASFLAGS  := -g
 LDFLAGS  := -nostdlib -T arch/$(ARCH)/linker.ld
 
@@ -43,24 +44,47 @@ HOST_BUILD_DIR := $(BUILD_DIR)/host-tests
 HOST_COV_DIR   := $(BUILD_DIR)/host-coverage
 
 HOST_CXXFLAGS := -std=c++20 -O1 -g -Wall -Wextra -Werror -Wpedantic \
-                 -fno-exceptions -fno-rtti -DSNITCH_WITH_EXCEPTIONS=0 \
+                 -fno-exceptions -fno-rtti -DHOST_TEST -DSNITCH_WITH_EXCEPTIONS=0 \
                  -fsanitize=address,undefined -fno-omit-frame-pointer -MMD -MP
 HOST_LDFLAGS  := -fsanitize=address,undefined -L/usr/local/lib -lsnitch
 HOST_INCLUDES := -Ikernel -Iarch/$(ARCH) -Itests/host
 
 HOST_COV_CXXFLAGS := -std=c++20 -O0 -g --coverage -Wall -Wextra -Werror -Wpedantic \
-                     -fno-exceptions -fno-rtti -DSNITCH_WITH_EXCEPTIONS=0 -MMD -MP
+                     -fno-exceptions -fno-rtti -DHOST_TEST -DSNITCH_WITH_EXCEPTIONS=0 -MMD -MP
 HOST_COV_LDFLAGS  := --coverage -L/usr/local/lib -lsnitch
 
 HOST_ONLY_TEST_SRCS := \
-	tests/host/mocks/host_hal.cpp \
-	tests/host/pfa_test.cpp \
-	tests/host/stack_builder_test.cpp
+    tests/host/mocks/host_hal.cpp \
+	tests/host/ext2_test.cpp \
+    tests/host/pfa_test.cpp \
+    tests/host/vfs_test.cpp \
+    tests/host/rootfs_test.cpp \
+    tests/host/tmpfs_test.cpp \
+    tests/host/stack_builder_test.cpp \
+    tests/host/fdt_test.cpp \
+    tests/host/virtio_ring_test.cpp
 
 HOST_KERNEL_SRCS := \
-	kernel/mm/pfa.cpp \
-	kernel/mm/address_space.cpp \
-	kernel/process/stack_builder.cpp
+    kernel/boot/fdt.cpp \
+    kernel/drivers/irq/gicv2.cpp \
+    kernel/drivers/virtio/virtio_ring.cpp \
+    kernel/drivers/virtio/virtio_mmio.cpp \
+	kernel/drivers/virtio/virtio_blk.cpp \
+    kernel/fs/cpio.cpp \
+	kernel/fs/ext2/ext2.cpp \
+    kernel/fs/vfs.cpp \
+    kernel/fs/rootfs/rootfs.cpp \
+    kernel/fs/devfs/devfs.cpp \
+    kernel/fs/tmpfs/tmpfs.cpp \
+    kernel/ipc/pipe.cpp \
+    kernel/mm/pfa.cpp \
+    kernel/mm/heap.cpp \
+    kernel/mm/address_space.cpp \
+    kernel/process/process.cpp \
+    kernel/process/resource.cpp \
+    kernel/process/scheduler.cpp \
+    kernel/process/stack_builder.cpp \
+    kernel/process/wait_queue.cpp
 
 HOST_TEST_SRCS      := $(HOST_ONLY_TEST_SRCS) $(HOST_KERNEL_SRCS)
 HOST_ONLY_TEST_OBJS := $(patsubst %.cpp, $(HOST_BUILD_DIR)/%.o, $(HOST_ONLY_TEST_SRCS))
@@ -72,8 +96,8 @@ HOST_COV_OBJS := $(patsubst %.cpp, $(HOST_COV_DIR)/%.o, $(HOST_TEST_SRCS))
 HOST_COV_DEPS := $(HOST_COV_OBJS:.o=.d)
 HOST_COV_BIN  := $(HOST_COV_DIR)/kernel_host_coverage
 
-.PHONY: all clean clean-tests run debug gdb lint format format-check lint-report quality \
-        test-host compile_commands.json ai-dump setup-musl setup-busybox setup-bash
+.PHONY: all clean distclean clean-tests run debug gdb lint format format-check lint-report quality \
+        test-host compile_commands.json ai-dump setup-musl setup-busybox setup-bash setup-hooks
 
 all: $(BUILD_DIR)/$(TARGET) $(INITRD)
 
@@ -125,7 +149,7 @@ test-host: $(HOST_TEST_BIN) $(HOST_COV_BIN)
 	@find $(HOST_COV_DIR) -name '*.gcda' -delete
 	./$(HOST_COV_BIN) -r xml -o $(REPORTS_DIR)/test_report.xml
 	@echo "[GCOVR] Generating terminal summary, HTML dashboard, and CI XML artifacts..."
-	gcovr -r . --object-directory $(HOST_COV_DIR) --filter 'kernel/' \
+	gcovr -j $(NPROC) -r . --object-directory $(HOST_COV_DIR) --filter 'kernel/' \
 		--txt \
 		--html-details $(REPORTS_DIR)/coverage_report.html \
 		--cobertura $(REPORTS_DIR)/cobertura.xml \
@@ -187,7 +211,7 @@ $(BUSYBOX_CPIO): $(BUILD_DIR)/user/hello $(MUSL_USER_BIN) $(wildcard $(BUSYBOX_B
 	@if [ -f "$(BUSYBOX_BIN)" ]; then \
 		install -m 0755 $(BUSYBOX_BIN) $(BUSYBOX_ROOTFS_DIR)/bin/busybox && \
 		ln -sf busybox $(BUSYBOX_ROOTFS_DIR)/bin/sh && \
-		for app in ls cat echo pwd ps uname grep wc head tail mkdir rm cp mv sleep true false; do \
+		for app in ls cat echo pwd ps uname grep wc head tail mkdir rmdir rm cp mv touch free sleep true false; do \
 			ln -sf busybox $(BUSYBOX_ROOTFS_DIR)/bin/$$app; \
 		done; \
 	fi
@@ -240,14 +264,38 @@ setup-bash: $(BASH_CPIO)
 -include $(HOST_COV_DEPS)
 
 clean:
-	rm -rf $(BUILD_DIR) arch/memory_config.hpp
+	rm -rf $(BUILD_DIR)/kernel $(BUILD_DIR)/arch \
+	       $(BUILD_DIR)/$(TARGET) $(BUILD_DIR)/kernel.elf \
+	       $(HOST_BUILD_DIR) $(HOST_COV_DIR) $(REPORTS_DIR) \
+	       $(BUSYBOX_ROOTFS_DIR) $(BASH_ROOTFS_DIR) arch/memory_config.hpp
+
+distclean:
+	rm -rf $(BUILD_DIR) arch/memory_config.hpp compile_commands.json $(DISK_IMG)
 
 # QEMU Executable & Flags
 QEMU      ?= qemu-system-aarch64
-QEMUFLAGS := -M virt -cpu cortex-a53 -m 256M -nographic -kernel $(BUILD_DIR)/$(TARGET) -initrd $(INITRD)
+QEMUFLAGS := -M virt \
+             -cpu cortex-a57 \
+			 -m 256M \
+			 -nographic \
+			 -kernel $(BUILD_DIR)/$(TARGET) \
+             -initrd $(INITRD) \
+			 -global virtio-mmio.force-legacy=false \
+			 -drive file=disk.img,format=raw,if=none,id=hd0 \
+			 -device virtio-blk-device,drive=hd0
 GDB       ?= gdb-multiarch
 
-run: $(BUILD_DIR)/$(TARGET) $(INITRD)
+DISK_IMG ?= disk.img
+DISK_SIZE_MB ?= 4
+
+$(DISK_IMG):
+	dd if=/dev/zero of=$@ bs=1M count=$(DISK_SIZE_MB)
+	mkfs.ext2 -F -q -b 1024 $@
+
+.PHONY: disk
+disk: $(DISK_IMG)
+
+run: $(BUILD_DIR)/$(TARGET) $(INITRD) $(DISK_IMG)
 	$(QEMU) $(QEMUFLAGS)
 
 debug: $(BUILD_DIR)/$(TARGET) $(INITRD)
@@ -262,15 +310,26 @@ gdb: $(BUILD_DIR)/kernel.elf
 HDRS := $(shell find kernel arch tests -name '*.hpp' -o -name '*.h' 2>/dev/null)
 TEST_FORMAT_SRCS := $(shell find tests -name '*.cpp' 2>/dev/null)
 
-# --- Compilation Database Generation ---
-compile_commands.json: clean
-	@echo "[BEAR] Generating compilation database..."
-	bear -- $(MAKE) $(BUILD_DIR)/$(TARGET) $(HOST_ONLY_TEST_OBJS)
+# --- Compilation Database Generation (incremental, without clean rebuilds) ---
+compile_commands.json: Makefile kernel/kernel.mk arch/$(ARCH)/arch.mk arch/memory_config.hpp scripts/generate_compile_commands.py
+	@echo "[COMPILE-DB] Updating compile_commands.json..."
+	@python3 scripts/generate_compile_commands.py \
+		--cxx "$(CXX)" \
+		--cxxflags "$(CXXFLAGS)" \
+		--kernel-includes "-Ikernel -Iarch/$(ARCH)" \
+		--build-dir "$(BUILD_DIR)" \
+		--kernel-srcs $(SRCS_CXX) \
+		--host-cxx "$(HOST_CXX)" \
+		--host-cxxflags "$(HOST_CXXFLAGS)" \
+		--host-includes "$(HOST_INCLUDES)" \
+		--host-build-dir "$(HOST_BUILD_DIR)" \
+		--host-srcs $(HOST_ONLY_TEST_SRCS) \
+		--output $@
 
 # --- Code Quality Targets ---
 lint: compile_commands.json
 	@echo "[LINT] Running clang-tidy on C++ sources..."
-	clang-tidy -p . $(SRCS_CXX) $(TEST_FORMAT_SRCS)
+	@python3 scripts/generate_quality_report.py -j $(NPROC)
 
 format:
 	@echo "[FORMAT] Formatting sources with clang-format..."
@@ -281,12 +340,15 @@ format-check:
 	clang-format --dry-run --Werror $(SRCS_CXX) $(TEST_FORMAT_SRCS) $(SRCS_C) $(HDRS)
 
 lint-report: compile_commands.json
-	@python3 scripts/generate_quality_report.py
+	@python3 scripts/generate_quality_report.py -j $(NPROC)
 
-quality: format-check lint-report test-host
+quality:
+	@$(MAKE) $(if $(findstring -j,$(MAKEFLAGS)),,-j$(NPROC)) format-check lint-report test-host
+
+setup-hooks:
+	git config core.hooksPath .githooks
+	chmod +x .githooks/pre_commit
+	@echo "[HOOKS] Configured git core.hooksPath -> .githooks"
 
 commit: quality
 	git commit
-
-ai-dump:
-	@python3 scripts/ai_dump.py arch/ kernel/ user/ tests/ Makefile

@@ -7,7 +7,12 @@ SRCS_CXX += kernel/main.cpp \
             kernel/mm/address_space.cpp \
             kernel/boot/fdt.cpp \
             kernel/fs/cpio.cpp \
-            kernel/fs/pipe.cpp \
+            kernel/fs/vfs.cpp \
+            kernel/fs/rootfs/rootfs.cpp \
+            kernel/fs/devfs/devfs.cpp \
+            kernel/fs/tmpfs/tmpfs.cpp \
+            kernel/fs/ext2/ext2.cpp \
+            kernel/ipc/pipe.cpp \
             kernel/loader/elf64.cpp \
             kernel/loader/elf_loader.cpp \
             kernel/process/stack_builder.cpp \
@@ -15,4 +20,10 @@ SRCS_CXX += kernel/main.cpp \
             kernel/process/resource.cpp \
             kernel/process/scheduler.cpp \
             kernel/process/wait_queue.cpp \
+            kernel/drivers/irq/gicv2.cpp \
+            kernel/drivers/virtio/virtio_ring.cpp \
+            kernel/drivers/virtio/virtio_mmio.cpp \
+            kernel/drivers/virtio/virtio_blk.cpp \
+            kernel/drivers/virtio/virtio_blk.cpp \
+            kernel/hal/targets/qemu_virt/platform_block.cpp \
             kernel/mm/heap.cpp

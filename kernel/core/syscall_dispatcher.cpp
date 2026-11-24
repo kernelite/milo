@@ -1,11 +1,10 @@
-#include "boot/fdt.hpp"
-#include "fs/cpio.hpp"
-#include "fs/pipe.hpp"
-#include "hal/console.hpp"
+#include "fs/devfs/devfs.hpp"
+#include "fs/vfs.hpp"
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
 #include "hal/targets/qemu_virt/timer.hpp"
 #include "hal/trap.hpp"
+#include "ipc/pipe.hpp"
 #include "loader/elf_loader.hpp"
 #include "mm/address_space.hpp"
 #include "mm/pfa.hpp"
@@ -18,8 +17,6 @@
 #include <cstdint>
 #include <new>
 
-extern FDT::InitrdLocation g_initrd_loc;
-
 namespace {
 
 // Linux AArch64 Syscall Numbers
@@ -28,8 +25,17 @@ constexpr uint64_t SYS_DUP = 23U;
 constexpr uint64_t SYS_DUP3 = 24U;
 constexpr uint64_t SYS_FCNTL = 25U;
 constexpr uint64_t SYS_IOCTL = 29U;
+constexpr uint64_t SYS_MKDIRAT = 34U;
+constexpr uint64_t SYS_UNLINKAT = 35U;
+constexpr uint64_t SYS_RENAMEAT = 38U;
+constexpr uint64_t SYS_TRUNCATE = 45U;
+constexpr uint64_t SYS_FTRUNCATE = 46U;
 constexpr uint64_t SYS_FACCESSAT = 48U;
 constexpr uint64_t SYS_CHDIR = 49U;
+constexpr uint64_t SYS_FCHMOD = 52U;
+constexpr uint64_t SYS_FCHMODAT = 53U;
+constexpr uint64_t SYS_FCHOWNAT = 54U;
+constexpr uint64_t SYS_FCHOWN = 55U;
 constexpr uint64_t SYS_OPENAT = 56U;
 constexpr uint64_t SYS_CLOSE = 57U;
 constexpr uint64_t SYS_PIPE2 = 59U;
@@ -43,6 +49,9 @@ constexpr uint64_t SYS_PPOLL = 73U;
 constexpr uint64_t SYS_READLINKAT = 78U;
 constexpr uint64_t SYS_NEWFSTATAT = 79U;
 constexpr uint64_t SYS_FSTAT = 80U;
+constexpr uint64_t SYS_FSYNC = 82U;
+constexpr uint64_t SYS_FDATASYNC = 83U;
+constexpr uint64_t SYS_UTIMENSAT = 88U;
 constexpr uint64_t SYS_EXIT = 93U;
 constexpr uint64_t SYS_EXIT_GROUP = 94U;
 constexpr uint64_t SYS_SET_TID_ADDRESS = 96U;
@@ -76,6 +85,7 @@ constexpr uint64_t SYS_MMAP = 222U;
 constexpr uint64_t SYS_MPROTECT = 226U;
 constexpr uint64_t SYS_WAIT4 = 260U;
 constexpr uint64_t SYS_PRLIMIT64 = 261U;
+constexpr uint64_t SYS_RENAMEAT2 = 276U;
 constexpr uint64_t SYS_GETRANDOM = 278U;
 constexpr uint64_t SYS_FACCESSAT2 = 439U;
 
@@ -94,11 +104,9 @@ constexpr int64_t ERR_EAGAIN = -11;
 constexpr int64_t ERR_ENOMEM = -12;
 constexpr int64_t ERR_EACCES = -13;
 constexpr int64_t ERR_EFAULT = -14;
+constexpr int64_t ERR_EEXIST = -17;
 constexpr int64_t ERR_ENOTDIR = -20;
-constexpr int64_t ERR_EISDIR = -21;
 constexpr int64_t ERR_EINVAL = -22;
-constexpr int64_t ERR_ENOTTY = -25;
-constexpr int64_t ERR_ESPIPE = -29;
 constexpr int64_t ERR_EROFS = -30;
 constexpr int64_t ERR_ERANGE = -34;
 constexpr int64_t ERR_ENOSYS = -38;
@@ -107,6 +115,7 @@ constexpr int64_t ERR_ENOSYS = -38;
 constexpr int32_t AT_FDCWD = -100;
 constexpr uint64_t AT_SYMLINK_NOFOLLOW = 0x100ULL;
 constexpr uint64_t AT_EACCESS = 0x200ULL;
+constexpr uint64_t AT_REMOVEDIR = 0x200ULL;
 constexpr uint64_t AT_EMPTY_PATH = 0x1000ULL;
 
 constexpr uint64_t O_ACCMODE = 0x3ULL;
@@ -114,10 +123,16 @@ constexpr uint64_t O_RDONLY = 0x0ULL;
 constexpr uint64_t O_WRONLY = 0x1ULL;
 constexpr uint64_t O_RDWR = 0x2ULL;
 constexpr uint64_t O_CREAT = 0x40ULL;
+constexpr uint64_t O_EXCL = 0x80ULL;
 constexpr uint64_t O_TRUNC = 0x200ULL;
+constexpr uint64_t O_APPEND = 0x400ULL;
 constexpr uint64_t O_DIRECTORY = 0x4000ULL; // AArch64 O_DIRECTORY = 040000
 constexpr uint64_t O_NONBLOCK = 0x800ULL;
 constexpr uint64_t O_CLOEXEC = 0x80000ULL;
+
+constexpr uint64_t RENAME_NOREPLACE = 1ULL;
+constexpr int64_t UTIME_NOW = 0x3FFFFFFFLL;
+constexpr int64_t UTIME_OMIT = 0x3FFFFFFELL;
 
 constexpr uint64_t F_DUPFD = 0ULL;
 constexpr uint64_t F_GETFD = 1ULL;
@@ -127,8 +142,6 @@ constexpr uint64_t F_SETFL = 4ULL;
 constexpr uint64_t F_DUPFD_CLOEXEC = 1030ULL;
 constexpr uint64_t FD_CLOEXEC_BIT = 1ULL;
 
-constexpr uint64_t SEEK_SET = 0ULL;
-constexpr uint64_t SEEK_CUR = 1ULL;
 constexpr uint64_t SEEK_END = 2ULL;
 
 constexpr uint8_t DT_DIR = 4U;
@@ -171,46 +184,8 @@ constexpr uint64_t MAP_ANONYMOUS = 0x20U;
 
 constexpr uintptr_t MMAP_ARENA_FLOOR = 0x0000000020000000ULL;
 
-// Terminal ioctl Request Codes
-constexpr uint64_t IOCTL_TCGETS = 0x5401U;
-constexpr uint64_t IOCTL_TCSETS = 0x5402U;
-constexpr uint64_t IOCTL_TCSETSW = 0x5403U;
-constexpr uint64_t IOCTL_TCSETSF = 0x5404U;
-constexpr uint64_t IOCTL_TIOCGPGRP = 0x540FU;
-constexpr uint64_t IOCTL_TIOCSPGRP = 0x5410U;
-constexpr uint64_t IOCTL_TIOCGWINSZ = 0x5413U;
-
-// termios Flag Bits
-constexpr uint32_t TERMIOS_INLCR = 0x0040U;
-constexpr uint32_t TERMIOS_IGNCR = 0x0080U;
-constexpr uint32_t TERMIOS_ICRNL = 0x0100U;
-constexpr uint32_t TERMIOS_OPOST = 0x0001U;
-constexpr uint32_t TERMIOS_ONLCR = 0x0004U;
-constexpr uint32_t TERMIOS_CS8 = 0x0030U;
-constexpr uint32_t TERMIOS_CREAD = 0x0080U;
-constexpr uint32_t TERMIOS_CLOCAL = 0x0800U;
-constexpr uint32_t TERMIOS_ISIG = 0x0001U;
-constexpr uint32_t TERMIOS_ICANON = 0x0002U;
-constexpr uint32_t TERMIOS_ECHO = 0x0008U;
-constexpr uint32_t TERMIOS_ECHOE = 0x0010U;
-constexpr uint32_t TERMIOS_ECHOK = 0x0020U;
-
-// termios c_cc Indices (Linux asm-generic)
-constexpr size_t CC_VINTR = 0U;
-constexpr size_t CC_VQUIT = 1U;
-constexpr size_t CC_VERASE = 2U;
-constexpr size_t CC_VKILL = 3U;
-constexpr size_t CC_VEOF = 4U;
-constexpr size_t CC_VTIME = 5U;
-constexpr size_t CC_VMIN = 6U;
-
-constexpr size_t TERMIOS_NCCS = 19U;
-constexpr uint16_t DEFAULT_TTY_ROWS = 24U;
-constexpr uint16_t DEFAULT_TTY_COLS = 80U;
-
 constexpr size_t READ_CHUNK_SIZE = 256U;
 constexpr size_t WRITE_CHUNK_SIZE = 256U;
-constexpr size_t TTY_RX_BUF_SIZE = 256U;
 
 // Signal masks
 constexpr uint64_t SIG_BLOCK = 0ULL;
@@ -240,24 +215,6 @@ constexpr size_t MAX_FDSET_FDS = 1024U;
 constexpr size_t MAX_FDSET_WORDS = MAX_FDSET_FDS / 64U;
 
 constexpr size_t POLL_STACK_THRESHOLD = 32U;
-
-struct ktermios {
-    uint32_t c_iflag;
-    uint32_t c_oflag;
-    uint32_t c_cflag;
-    uint32_t c_lflag;
-    uint8_t c_line;
-    uint8_t c_cc[TERMIOS_NCCS];
-};
-static_assert(sizeof(ktermios) == 36U, "ktermios must match Linux asm-generic ABI (36 bytes)");
-
-struct winsize {
-    uint16_t ws_row;
-    uint16_t ws_col;
-    uint16_t ws_xpixel;
-    uint16_t ws_ypixel;
-};
-static_assert(sizeof(winsize) == 8U, "winsize must be 8 bytes");
 
 struct UserIovec {
     uint64_t iov_base;
@@ -394,90 +351,6 @@ struct LinuxSysinfo {
 };
 static_assert(sizeof(LinuxSysinfo) == 112U, "LinuxSysinfo must be 112 bytes");
 
-ktermios g_console_termios{
-    .c_iflag = TERMIOS_ICRNL,
-    .c_oflag = TERMIOS_OPOST | TERMIOS_ONLCR,
-    .c_cflag = TERMIOS_CS8 | TERMIOS_CREAD | TERMIOS_CLOCAL,
-    .c_lflag = TERMIOS_ISIG | TERMIOS_ICANON | TERMIOS_ECHO | TERMIOS_ECHOE | TERMIOS_ECHOK,
-    .c_line = 0U,
-    .c_cc = {0x03U, 0x1CU, 0x7FU, 0x15U, 0x04U, 0x00U, 0x01U, 0x00U, 0x11U, 0x13U, 0x1AU, 0x00U,
-             0x12U, 0x0FU, 0x17U, 0x16U, 0x00U, 0x00U, 0x00U},
-};
-
-uint32_t g_foreground_pgid = 1U;
-uint8_t g_tty_rx_buf[TTY_RX_BUF_SIZE]{};
-size_t g_tty_rx_head = 0U;
-size_t g_tty_rx_tail = 0U;
-size_t g_tty_rx_count = 0U;
-
-void tty_flush_rx_unlocked() noexcept {
-    g_tty_rx_head = 0U;
-    g_tty_rx_tail = 0U;
-    g_tty_rx_count = 0U;
-}
-
-void tty_pump_uart_unlocked() noexcept {
-    auto& console = HAL::get_console();
-    while (console.has_input() && g_tty_rx_count < TTY_RX_BUF_SIZE) {
-        const uint8_t chr = console.getc();
-        if ((g_console_termios.c_lflag & TERMIOS_ISIG) != 0U) {
-            if (chr == g_console_termios.c_cc[CC_VINTR]) {
-                if ((g_console_termios.c_lflag & TERMIOS_ECHO) != 0U) {
-                    console.write("^C\r\n", 4U);
-                }
-                tty_flush_rx_unlocked();
-                Kernel::Process::signal_process_group(g_foreground_pgid, Kernel::Process::SIG_INT);
-                continue;
-            }
-            if (chr == g_console_termios.c_cc[CC_VQUIT]) {
-                if ((g_console_termios.c_lflag & TERMIOS_ECHO) != 0U) {
-                    console.write("^\\\r\n", 4U);
-                }
-                tty_flush_rx_unlocked();
-                Kernel::Process::signal_process_group(g_foreground_pgid, Kernel::Process::SIG_QUIT);
-                continue;
-            }
-        }
-        g_tty_rx_buf[g_tty_rx_tail] = chr;
-        g_tty_rx_tail = (g_tty_rx_tail + 1U) % TTY_RX_BUF_SIZE;
-        g_tty_rx_count++;
-    }
-}
-
-size_t tty_rx_available() noexcept {
-    auto& cpu = HAL::get_cpu();
-    const bool irq_was_enabled = cpu.interrupts_enabled();
-    cpu.disable_interrupts();
-
-    tty_pump_uart_unlocked();
-    const size_t avail = g_tty_rx_count;
-
-    if (irq_was_enabled) {
-        cpu.enable_interrupts();
-    }
-    return avail;
-}
-
-bool tty_try_pop_byte(uint8_t& out_byte) noexcept {
-    auto& cpu = HAL::get_cpu();
-    const bool irq_was_enabled = cpu.interrupts_enabled();
-    cpu.disable_interrupts();
-
-    tty_pump_uart_unlocked();
-    bool got_byte = false;
-    if (g_tty_rx_count > 0U) {
-        out_byte = g_tty_rx_buf[g_tty_rx_head];
-        g_tty_rx_head = (g_tty_rx_head + 1U) % TTY_RX_BUF_SIZE;
-        g_tty_rx_count--;
-        got_byte = true;
-    }
-
-    if (irq_was_enabled) {
-        cpu.enable_interrupts();
-    }
-    return got_byte;
-}
-
 void wait_for_event_or_tick() noexcept {
     auto& cpu = HAL::get_cpu();
     Kernel::Scheduler::yield();
@@ -613,133 +486,33 @@ bool normalize_vfs_path(const char* base_dir, const char* input, char* out,
     return true;
 }
 
-bool resolve_initrd_path(const char* canon_path, CpioEntry& out_entry) noexcept {
-    if (canon_path == nullptr || canon_path[0] != '/') {
-        return false;
+kernel::fs::File* get_proc_file(Kernel::Process::Process* proc, uint64_t raw_fd) noexcept {
+    if (proc == nullptr || proc->fd_table == nullptr || raw_fd >= proc->fd_capacity) {
+        return nullptr;
     }
-
-    if (canon_path[1] == '\0') {
-        out_entry = CpioEntry{
-            .name = ".",
-            .name_len = 1U,
-            .data = nullptr,
-            .size = 0U,
-            .mode = CPIO_MODE_DIR | 0755U,
-            .is_directory = true,
-            .is_regular_file = false,
-        };
-        return true;
-    }
-
-    if (!g_initrd_loc.valid || g_initrd_loc.start_paddr == 0U || g_initrd_loc.size == 0U) {
-        return false;
-    }
-
-    const auto* const initrd_kva =
-        reinterpret_cast<const void*>(Kernel::MM::phys_to_virt(g_initrd_loc.start_paddr));
-    const CpioArchive archive(initrd_kva, g_initrd_loc.size);
-    if (!archive.is_valid()) {
-        return false;
-    }
-
-    if (archive.lookup(canon_path, out_entry) == CpioStatus::Success) {
-        return true;
-    }
-
-    const char* const target_rel = canon_path + 1;
-    const size_t target_len = cstr_len(target_rel);
-    bool has_children = false;
-
-    archive.for_each([&](const CpioEntry& entry) -> bool {
-        const char* norm = cpio_normalize_path(entry.name);
-        size_t idx = 0U;
-        while (idx < target_len && norm[idx] == target_rel[idx]) {
-            idx++;
-        }
-        if (idx == target_len && norm[idx] == '/') {
-            has_children = true;
-            return false;
-        }
-        return true;
-    });
-
-    if (has_children) {
-        out_entry = CpioEntry{
-            .name = canon_path,
-            .name_len = cstr_len(canon_path),
-            .data = nullptr,
-            .size = 0U,
-            .mode = CPIO_MODE_DIR | 0755U,
-            .is_directory = true,
-            .is_regular_file = false,
-        };
-        return true;
-    }
-
-    return false;
+    auto& desc = proc->fd_table[static_cast<size_t>(raw_fd)];
+    return desc.is_open() ? desc.file : nullptr;
 }
 
-uint64_t compute_ino(const char* path) noexcept {
-    uint64_t hash = 1469598103934665603ULL;
-    for (size_t i = 0U; path != nullptr && path[i] != '\0'; ++i) {
-        hash ^= static_cast<uint8_t>(path[i]);
-        hash *= 1099511628211ULL;
-    }
-    return (hash == 0ULL) ? 1ULL : hash;
-}
-
-void fill_stat_from_fd(const Kernel::Process::FileDescriptor& desc, LinuxStat& stat_out) noexcept {
+void fill_stat_from_inode(const kernel::fs::Inode& inode, LinuxStat& stat_out) noexcept {
     stat_out = LinuxStat{};
     stat_out.st_dev = 1ULL;
-    stat_out.st_nlink = 1U;
+    stat_out.st_ino = (inode.ino != 0U) ? inode.ino : 1ULL;
+    stat_out.st_mode = inode.mode;
+    stat_out.st_nlink = (inode.nlink != 0U) ? inode.nlink : 1U;
+    stat_out.st_uid = inode.uid;
+    stat_out.st_gid = inode.gid;
+    stat_out.st_rdev = inode.rdev;
+    stat_out.st_size = static_cast<int64_t>(inode.size);
     stat_out.st_blksize = 4096;
-
-    if (desc.type == Kernel::Process::FdType::ConsoleTty) {
-        stat_out.st_ino = 2ULL;
-        stat_out.st_mode = 0020666U; // S_IFCHR | 0666
-        stat_out.st_rdev = 0x0501ULL;
-    } else if (desc.type == Kernel::Process::FdType::DevNull) {
-        stat_out.st_ino = 4ULL;
-        stat_out.st_mode = 0020666U; // S_IFCHR | 0666
-        stat_out.st_rdev = 0x0103ULL;
-    } else if (desc.type == Kernel::Process::FdType::PipeRead ||
-               desc.type == Kernel::Process::FdType::PipeWrite) {
-        stat_out.st_ino = 3ULL;
-        stat_out.st_mode = 0010600U; // S_IFIFO | 0600
-    } else if (desc.type == Kernel::Process::FdType::InitrdFile) {
-        stat_out.st_ino = compute_ino(desc.path);
-        stat_out.st_mode = desc.cpio_entry.mode;
-        stat_out.st_size = static_cast<int64_t>(desc.cpio_entry.size);
-        stat_out.st_blocks = static_cast<int64_t>((desc.cpio_entry.size + 511U) / 512U);
-    }
+    stat_out.st_blocks = static_cast<int64_t>((inode.size + 511U) / 512U);
+    stat_out.st_atime_sec = static_cast<int64_t>(inode.atime_ns / 1000000000ULL);
+    stat_out.st_atime_nsec = static_cast<int64_t>(inode.atime_ns % 1000000000ULL);
+    stat_out.st_mtime_sec = static_cast<int64_t>(inode.mtime_ns / 1000000000ULL);
+    stat_out.st_mtime_nsec = static_cast<int64_t>(inode.mtime_ns % 1000000000ULL);
+    stat_out.st_ctime_sec = static_cast<int64_t>(inode.ctime_ns / 1000000000ULL);
+    stat_out.st_ctime_nsec = static_cast<int64_t>(inode.ctime_ns % 1000000000ULL);
 }
-
-void fill_stat_from_cpio(const char* canon_path, const CpioEntry& entry,
-                         LinuxStat& stat_out) noexcept {
-    stat_out = LinuxStat{};
-    stat_out.st_dev = 1ULL;
-    stat_out.st_ino = compute_ino(canon_path);
-    stat_out.st_mode = entry.mode;
-    stat_out.st_nlink = entry.is_directory ? 2U : 1U;
-    stat_out.st_size = static_cast<int64_t>(entry.size);
-    stat_out.st_blksize = 4096;
-    stat_out.st_blocks = static_cast<int64_t>((entry.size + 511U) / 512U);
-}
-
-/* Remove this if everything works without it:
-int allocate_fd_slot(Kernel::Process::Process& proc, size_t min_fd = 0U) noexcept {
-    size_t max_fds = Kernel::Process::MAX_FDS_PER_PROCESS;
-    if (proc.rlim_nofile_cur < max_fds) {
-        max_fds = static_cast<size_t>(proc.rlim_nofile_cur);
-    }
-    for (size_t idx = min_fd; idx < max_fds; ++idx) {
-        if (!proc.fd_table[idx].in_use) {
-            return static_cast<int>(idx);
-        }
-    }
-    return -1;
-}
-*/
 
 void unmap_and_free_range(Kernel::MM::AddressSpace& adrsp, uintptr_t start_vaddr,
                           uintptr_t end_vaddr, size_t page_size) noexcept {
@@ -883,28 +656,57 @@ int64_t stage_user_string_array(uintptr_t root_paddr, uintptr_t user_array, cons
     return ERR_E2BIG;
 }
 
-int64_t resolve_dirfd_base(Kernel::Process::Process& proc, int32_t dirfd,
-                           const char*& out_base) noexcept {
+int64_t resolve_dirfd_dentry(Kernel::Process::Process& proc, int32_t dirfd,
+                             kernel::fs::Dentry*& out_base) noexcept {
     if (dirfd == AT_FDCWD) {
-        out_base = proc.cwd;
-        return 0;
+        return kernel::fs::vfs_namei(kernel::fs::StringView(proc.cwd), nullptr, &out_base);
     }
-    if (dirfd < 0 || proc.fd_table == nullptr || static_cast<size_t>(dirfd) >= proc.fd_capacity) {
+    kernel::fs::File* dir_file = get_proc_file(&proc, static_cast<uint64_t>(dirfd));
+    if (dir_file == nullptr) {
         return ERR_EBADF;
     }
-    const auto& desc = proc.fd_table[static_cast<size_t>(dirfd)];
-    if (!desc.in_use) {
-        return ERR_EBADF;
-    }
-    if (desc.type != Kernel::Process::FdType::InitrdFile || !desc.cpio_entry.is_directory) {
+    if (dir_file->inode == nullptr || !dir_file->inode->is_dir() || dir_file->dentry == nullptr) {
         return ERR_ENOTDIR;
     }
-    out_base = desc.path;
+    kernel::fs::dentry_get(dir_file->dentry);
+    out_base = dir_file->dentry;
     return 0;
 }
 
+void build_dentry_path(const kernel::fs::Dentry* target, char* out, size_t cap) noexcept {
+    if (out == nullptr || cap < 2U) {
+        return;
+    }
+    if (target == nullptr || target->is_root() || target->parent == nullptr) {
+        out[0] = '/';
+        out[1] = '\0';
+        return;
+    }
+    const kernel::fs::Dentry* chain[32]{};
+    size_t depth = 0U;
+    for (const kernel::fs::Dentry* cur = target;
+         cur != nullptr && cur->parent != nullptr && depth < 32U; cur = cur->parent) {
+        chain[depth++] = cur;
+    }
+    size_t pos = 0U;
+    for (size_t idx = depth; idx > 0U; --idx) {
+        const auto name = chain[idx - 1U]->name_view();
+        if (pos + 1U + name.size() >= cap) {
+            break;
+        }
+        out[pos++] = '/';
+        for (size_t cidx = 0U; cidx < name.size(); ++cidx) {
+            out[pos++] = name[cidx];
+        }
+    }
+    if (pos == 0U) {
+        out[pos++] = '/';
+    }
+    out[pos] = '\0';
+}
+
 // ==========================================================================
-// Initrd VFS, Directory, Pipe & Descriptor Syscalls
+// VFS, Directory, Pipe & Descriptor Syscalls
 // ==========================================================================
 
 int64_t sys_getcwd(uintptr_t user_buf, uint64_t size) noexcept {
@@ -940,25 +742,31 @@ int64_t sys_chdir(uintptr_t user_path) noexcept {
         return copy_res;
     }
 
-    char canon_path[Kernel::Process::MAX_PATH_LEN]{};
-    if (!normalize_vfs_path(proc->cwd, raw_path, canon_path, sizeof(canon_path))) {
-        return ERR_ENOENT;
+    kernel::fs::Dentry* cwd_dentry = nullptr;
+    if (raw_path[0] != '/') {
+        (void)kernel::fs::vfs_namei(kernel::fs::StringView(proc->cwd), nullptr, &cwd_dentry);
     }
 
-    CpioEntry entry{};
-    if (!resolve_initrd_path(canon_path, entry)) {
-        return ERR_ENOENT;
+    kernel::fs::Dentry* target = nullptr;
+    const int32_t vfs_res =
+        kernel::fs::vfs_namei(kernel::fs::StringView(raw_path, len), cwd_dentry, &target);
+    if (cwd_dentry != nullptr) {
+        kernel::fs::dentry_put(cwd_dentry);
     }
-    if (!entry.is_directory) {
+    if (vfs_res != kernel::fs::kOk) {
+        return vfs_res;
+    }
+    if (target->inode == nullptr || !target->inode->is_dir()) {
+        kernel::fs::dentry_put(target);
         return ERR_ENOTDIR;
     }
 
-    cstr_copy(proc->cwd, canon_path, sizeof(proc->cwd));
+    build_dentry_path(target, proc->cwd, sizeof(proc->cwd));
+    kernel::fs::dentry_put(target);
     return 0;
 }
 
 int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint64_t mode) noexcept {
-    (void)mode;
     auto* const proc = Kernel::Process::current_process();
     if (proc == nullptr) {
         return ERR_EINVAL;
@@ -972,95 +780,558 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
         return copy_res;
     }
 
-    const char* base_dir = "/";
+    kernel::fs::Dentry* base_dentry = nullptr;
     if (raw_path[0] != '/') {
-        const int64_t dir_res = resolve_dirfd_base(*proc, dirfd, base_dir);
+        const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
         if (dir_res < 0) {
             return dir_res;
         }
     }
 
-    char canon_path[Kernel::Process::MAX_PATH_LEN]{};
-    if (!normalize_vfs_path(base_dir, raw_path, canon_path, sizeof(canon_path))) {
-        return ERR_ENOENT;
-    }
-
     const uint64_t accmode = flags & O_ACCMODE;
-    uint32_t rw_flags = 0U;
+    uint32_t vfs_flags = 0U;
     if (accmode == O_RDONLY) {
-        rw_flags = Kernel::Process::FD_FLAG_READ;
+        vfs_flags = kernel::fs::kOpenReadOnly;
     } else if (accmode == O_WRONLY) {
-        rw_flags = Kernel::Process::FD_FLAG_WRITE;
+        vfs_flags = kernel::fs::kOpenWriteOnly;
     } else if (accmode == O_RDWR) {
-        rw_flags = Kernel::Process::FD_FLAG_READ | Kernel::Process::FD_FLAG_WRITE;
+        vfs_flags = kernel::fs::kOpenReadWrite;
     } else {
+        if (base_dentry != nullptr) {
+            kernel::fs::dentry_put(base_dentry);
+        }
         return ERR_EINVAL;
     }
 
-    uint32_t extra_flags = 0U;
-    if ((flags & O_CLOEXEC) != 0ULL) {
-        extra_flags |= Kernel::Process::FD_FLAG_CLOEXEC;
+    if ((flags & O_CREAT) != 0ULL) {
+        vfs_flags |= kernel::fs::kOpenCreate;
+    }
+    if ((flags & O_EXCL) != 0ULL) {
+        vfs_flags |= kernel::fs::kOpenExcl;
+    }
+    if ((flags & O_TRUNC) != 0ULL) {
+        vfs_flags |= kernel::fs::kOpenTrunc;
+    }
+    if ((flags & O_APPEND) != 0ULL) {
+        vfs_flags |= kernel::fs::kOpenAppend;
+    }
+    if ((flags & O_DIRECTORY) != 0ULL) {
+        vfs_flags |= kernel::fs::kOpenDirectory;
     }
     if ((flags & O_NONBLOCK) != 0ULL) {
-        extra_flags |= Kernel::Process::FD_FLAG_NONBLOCK;
-    }
-
-    if (cstr_eq(canon_path, "/dev/console") || cstr_eq(canon_path, "/dev/tty")) {
-        const int slot = Kernel::Process::allocate_fd(*proc);
-        if (slot < 0) {
-            return slot;
-        }
-        proc->fd_table[slot] = Kernel::Process::FileDescriptor{
-            .type = Kernel::Process::FdType::ConsoleTty,
-            .flags = rw_flags | extra_flags,
-            .offset = 0U,
-            .in_use = true,
-        };
-        return slot;
-    }
-
-    if (cstr_eq(canon_path, "/dev/null")) {
-        const int slot = Kernel::Process::allocate_fd(*proc);
-        if (slot < 0) {
-            return slot;
-        }
-        proc->fd_table[slot] = Kernel::Process::FileDescriptor{
-            .type = Kernel::Process::FdType::DevNull,
-            .flags = rw_flags | extra_flags,
-            .offset = 0U,
-            .in_use = true,
-        };
-        return slot;
-    }
-
-    if ((flags & (O_CREAT | O_TRUNC)) != 0ULL || accmode != O_RDONLY) {
-        return ERR_EROFS;
-    }
-
-    CpioEntry entry{};
-    if (!resolve_initrd_path(canon_path, entry)) {
-        return ERR_ENOENT;
-    }
-
-    if ((flags & O_DIRECTORY) != 0ULL && !entry.is_directory) {
-        return ERR_ENOTDIR;
+        vfs_flags |= kernel::fs::kOpenNonBlock;
     }
 
     const int slot = Kernel::Process::allocate_fd(*proc);
     if (slot < 0) {
+        if (base_dentry != nullptr) {
+            kernel::fs::dentry_put(base_dentry);
+        }
         return slot;
     }
 
-    auto& desc = proc->fd_table[slot];
-    desc = Kernel::Process::FileDescriptor{
-        .type = Kernel::Process::FdType::InitrdFile,
-        .flags = Kernel::Process::FD_FLAG_READ | extra_flags,
-        .offset = 0U,
-        .in_use = true,
-        .cpio_entry = entry,
+    const uint32_t effective_mode = static_cast<uint32_t>(mode) & ~proc->umask;
+    kernel::fs::File* file = nullptr;
+    const int32_t open_rc = kernel::fs::vfs_open_at(
+        base_dentry, kernel::fs::StringView(raw_path, path_len), vfs_flags, effective_mode, &file);
+    if (base_dentry != nullptr) {
+        kernel::fs::dentry_put(base_dentry);
+    }
+    if (open_rc != kernel::fs::kOk) {
+        return open_rc;
+    }
+
+    const uint32_t fd_flags = ((flags & O_CLOEXEC) != 0ULL) ? Kernel::Process::FD_FLAG_CLOEXEC : 0U;
+    proc->fd_table[slot] = Kernel::Process::FileDescriptor{
+        .file = file,
+        .fd_flags = fd_flags,
     };
-    cstr_copy(desc.path, canon_path, sizeof(desc.path));
     return slot;
+}
+
+uint64_t monotonic_now_ns() noexcept {
+    const uint64_t freq = HAL::QemuVirt::GenericTimer::frequency_hz();
+    const uint64_t ticks = HAL::QemuVirt::GenericTimer::counter_ticks();
+    if (freq == 0ULL) {
+        return 0ULL;
+    }
+    const uint64_t secs = ticks / freq;
+    const uint64_t rem = ticks % freq;
+    return (secs * 1000000000ULL) + ((rem * 1000000000ULL) / freq);
+}
+
+int64_t sys_mkdirat(int32_t dirfd, uintptr_t user_pathname, uint64_t mode) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+
+    char raw_path[Kernel::Process::MAX_PATH_LEN]{};
+    size_t path_len = 0U;
+    const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
+                                               raw_path, sizeof(raw_path), path_len);
+    if (copy_res < 0) {
+        return copy_res;
+    }
+
+    kernel::fs::Dentry* base_dentry = nullptr;
+    if (raw_path[0] != '/') {
+        const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
+        if (dir_res < 0) {
+            return dir_res;
+        }
+    }
+
+    const uint32_t effective_mode = static_cast<uint32_t>(mode) & ~proc->umask;
+    const int32_t vfs_res = kernel::fs::vfs_mkdir_at(
+        base_dentry, kernel::fs::StringView(raw_path, path_len), effective_mode);
+    if (base_dentry != nullptr) {
+        kernel::fs::dentry_put(base_dentry);
+    }
+    return vfs_res;
+}
+
+int64_t sys_unlinkat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+    if ((flags & ~AT_REMOVEDIR) != 0ULL) {
+        return ERR_EINVAL;
+    }
+
+    char raw_path[Kernel::Process::MAX_PATH_LEN]{};
+    size_t path_len = 0U;
+    const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
+                                               raw_path, sizeof(raw_path), path_len);
+    if (copy_res < 0) {
+        return copy_res;
+    }
+
+    kernel::fs::Dentry* base_dentry = nullptr;
+    if (raw_path[0] != '/') {
+        const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
+        if (dir_res < 0) {
+            return dir_res;
+        }
+    }
+
+    const kernel::fs::StringView path_view(raw_path, path_len);
+    const int32_t vfs_res = ((flags & AT_REMOVEDIR) != 0ULL)
+                                ? kernel::fs::vfs_rmdir_at(base_dentry, path_view)
+                                : kernel::fs::vfs_unlink_at(base_dentry, path_view);
+    if (base_dentry != nullptr) {
+        kernel::fs::dentry_put(base_dentry);
+    }
+    return vfs_res;
+}
+
+int64_t sys_renameat2(int32_t olddirfd, uintptr_t user_oldpath, int32_t newdirfd,
+                      uintptr_t user_newpath, uint64_t flags) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+    if ((flags & ~RENAME_NOREPLACE) != 0ULL) {
+        return ERR_EINVAL;
+    }
+
+    char old_path[Kernel::Process::MAX_PATH_LEN]{};
+    size_t old_len = 0U;
+    const int64_t old_copy = copy_user_cstring(proc->address_space.root_paddr(), user_oldpath,
+                                               old_path, sizeof(old_path), old_len);
+    if (old_copy < 0) {
+        return old_copy;
+    }
+
+    char new_path[Kernel::Process::MAX_PATH_LEN]{};
+    size_t new_len = 0U;
+    const int64_t new_copy = copy_user_cstring(proc->address_space.root_paddr(), user_newpath,
+                                               new_path, sizeof(new_path), new_len);
+    if (new_copy < 0) {
+        return new_copy;
+    }
+
+    kernel::fs::Dentry* old_base = nullptr;
+    if (old_path[0] != '/') {
+        const int64_t dir_res = resolve_dirfd_dentry(*proc, olddirfd, old_base);
+        if (dir_res < 0) {
+            return dir_res;
+        }
+    }
+
+    kernel::fs::Dentry* new_base = nullptr;
+    if (new_path[0] != '/') {
+        const int64_t dir_res = resolve_dirfd_dentry(*proc, newdirfd, new_base);
+        if (dir_res < 0) {
+            if (old_base != nullptr) {
+                kernel::fs::dentry_put(old_base);
+            }
+            return dir_res;
+        }
+    }
+
+    if ((flags & RENAME_NOREPLACE) != 0ULL) {
+        kernel::fs::Dentry* existing = nullptr;
+        if (kernel::fs::vfs_namei(kernel::fs::StringView(new_path, new_len), new_base, &existing,
+                                  false) == kernel::fs::kOk) {
+            kernel::fs::dentry_put(existing);
+            if (new_base != nullptr) {
+                kernel::fs::dentry_put(new_base);
+            }
+            if (old_base != nullptr) {
+                kernel::fs::dentry_put(old_base);
+            }
+            return ERR_EEXIST;
+        }
+    }
+
+    const int32_t vfs_res =
+        kernel::fs::vfs_rename_at(old_base, kernel::fs::StringView(old_path, old_len), new_base,
+                                  kernel::fs::StringView(new_path, new_len));
+    if (new_base != nullptr) {
+        kernel::fs::dentry_put(new_base);
+    }
+    if (old_base != nullptr) {
+        kernel::fs::dentry_put(old_base);
+    }
+    return vfs_res;
+}
+
+int64_t sys_renameat(int32_t olddirfd, uintptr_t user_oldpath, int32_t newdirfd,
+                     uintptr_t user_newpath) noexcept {
+    return sys_renameat2(olddirfd, user_oldpath, newdirfd, user_newpath, 0ULL);
+}
+
+int64_t sys_ftruncate(uint64_t raw_fd, int64_t length) noexcept {
+    if (length < 0) {
+        return ERR_EINVAL;
+    }
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr || proc->fd_table == nullptr || raw_fd >= proc->fd_capacity) {
+        return ERR_EBADF;
+    }
+    const auto& desc = proc->fd_table[static_cast<size_t>(raw_fd)];
+    if (!desc.is_open() || !desc.is_writable() || desc.file->inode == nullptr) {
+        return ERR_EBADF;
+    }
+    kernel::fs::Inode* inode = desc.file->inode;
+    if (inode->sb != nullptr && inode->sb->is_read_only()) {
+        return ERR_EROFS;
+    }
+    if (inode->i_ops == nullptr || inode->i_ops->truncate == nullptr) {
+        return ERR_EINVAL;
+    }
+    return inode->i_ops->truncate(inode, static_cast<uint64_t>(length));
+}
+
+int64_t sys_truncate(uintptr_t user_pathname, int64_t length) noexcept {
+    if (length < 0) {
+        return ERR_EINVAL;
+    }
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+
+    char raw_path[Kernel::Process::MAX_PATH_LEN]{};
+    size_t path_len = 0U;
+    const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
+                                               raw_path, sizeof(raw_path), path_len);
+    if (copy_res < 0) {
+        return copy_res;
+    }
+
+    kernel::fs::Dentry* base_dentry = nullptr;
+    if (raw_path[0] != '/') {
+        const int64_t dir_res = resolve_dirfd_dentry(*proc, AT_FDCWD, base_dentry);
+        if (dir_res < 0) {
+            return dir_res;
+        }
+    }
+
+    kernel::fs::Dentry* target = nullptr;
+    const int32_t vfs_res = kernel::fs::vfs_namei(kernel::fs::StringView(raw_path, path_len),
+                                                  base_dentry, &target, true);
+    if (base_dentry != nullptr) {
+        kernel::fs::dentry_put(base_dentry);
+    }
+    if (vfs_res != kernel::fs::kOk || target == nullptr || target->inode == nullptr) {
+        if (target != nullptr) {
+            kernel::fs::dentry_put(target);
+        }
+        return (vfs_res != kernel::fs::kOk) ? vfs_res : ERR_ENOENT;
+    }
+
+    kernel::fs::Inode* inode = target->inode;
+    int64_t res = 0;
+    if (inode->sb != nullptr && inode->sb->is_read_only()) {
+        res = ERR_EROFS;
+    } else if (inode->i_ops == nullptr || inode->i_ops->truncate == nullptr) {
+        res = ERR_EINVAL;
+    } else {
+        res = inode->i_ops->truncate(inode, static_cast<uint64_t>(length));
+    }
+    kernel::fs::dentry_put(target);
+    return res;
+}
+
+int64_t sys_utimensat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_times,
+                      uint64_t flags) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+    if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) != 0ULL) {
+        return ERR_EINVAL;
+    }
+
+    LinuxTimespec times[2]{
+        {.tv_sec = 0, .tv_nsec = UTIME_NOW},
+        {.tv_sec = 0, .tv_nsec = UTIME_NOW},
+    };
+    if (user_times != 0U) {
+        if (Kernel::MM::copy_from_user(proc->address_space, times, user_times, sizeof(times)) < 0) {
+            return ERR_EFAULT;
+        }
+        for (const auto& time_val : times) {
+            if (time_val.tv_nsec != UTIME_NOW && time_val.tv_nsec != UTIME_OMIT &&
+                (time_val.tv_nsec < 0 || time_val.tv_nsec >= 1000000000LL)) {
+                return ERR_EINVAL;
+            }
+        }
+    }
+
+    kernel::fs::Inode* inode = nullptr;
+    kernel::fs::Dentry* target = nullptr;
+
+    if (user_pathname == 0U) {
+        kernel::fs::File* file = get_proc_file(proc, static_cast<uint64_t>(dirfd));
+        if (file == nullptr || file->inode == nullptr) {
+            return ERR_EBADF;
+        }
+        inode = file->inode;
+    } else {
+        char raw_path[Kernel::Process::MAX_PATH_LEN]{};
+        size_t path_len = 0U;
+        const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
+                                                   raw_path, sizeof(raw_path), path_len);
+        if (copy_res < 0) {
+            return copy_res;
+        }
+
+        if (path_len == 0U && (flags & AT_EMPTY_PATH) != 0ULL) {
+            kernel::fs::File* file = get_proc_file(proc, static_cast<uint64_t>(dirfd));
+            if (file == nullptr || file->inode == nullptr) {
+                return ERR_EBADF;
+            }
+            inode = file->inode;
+        } else {
+            kernel::fs::Dentry* base_dentry = nullptr;
+            if (raw_path[0] != '/') {
+                const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
+                if (dir_res < 0) {
+                    return dir_res;
+                }
+            }
+            const bool follow = (flags & AT_SYMLINK_NOFOLLOW) == 0ULL;
+            const int32_t vfs_res = kernel::fs::vfs_namei(
+                kernel::fs::StringView(raw_path, path_len), base_dentry, &target, follow);
+            if (base_dentry != nullptr) {
+                kernel::fs::dentry_put(base_dentry);
+            }
+            if (vfs_res != kernel::fs::kOk || target == nullptr || target->inode == nullptr) {
+                if (target != nullptr) {
+                    kernel::fs::dentry_put(target);
+                }
+                return (vfs_res != kernel::fs::kOk) ? vfs_res : ERR_ENOENT;
+            }
+            inode = target->inode;
+        }
+    }
+
+    int64_t res = 0;
+    if (inode->sb != nullptr && inode->sb->is_read_only()) {
+        res = ERR_EROFS;
+    } else {
+        const uint64_t now_ns = monotonic_now_ns();
+        if (times[0].tv_nsec == UTIME_NOW) {
+            inode->atime_ns = now_ns;
+        } else if (times[0].tv_nsec != UTIME_OMIT) {
+            inode->atime_ns = (static_cast<uint64_t>(times[0].tv_sec) * 1000000000ULL) +
+                              static_cast<uint64_t>(times[0].tv_nsec);
+        }
+        if (times[1].tv_nsec == UTIME_NOW) {
+            inode->mtime_ns = now_ns;
+        } else if (times[1].tv_nsec != UTIME_OMIT) {
+            inode->mtime_ns = (static_cast<uint64_t>(times[1].tv_sec) * 1000000000ULL) +
+                              static_cast<uint64_t>(times[1].tv_nsec);
+        }
+        inode->ctime_ns = now_ns;
+    }
+
+    if (target != nullptr) {
+        kernel::fs::dentry_put(target);
+    }
+    return res;
+}
+
+int64_t sys_fsync(uint64_t raw_fd, int32_t datasync) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    kernel::fs::File* file = get_proc_file(proc, raw_fd);
+    if (file == nullptr) {
+        return ERR_EBADF;
+    }
+    if (file->f_ops != nullptr && file->f_ops->fsync != nullptr) {
+        return file->f_ops->fsync(file, datasync);
+    }
+    return 0;
+}
+
+int64_t sys_fchmod(uint64_t raw_fd, uint64_t mode) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    kernel::fs::File* file = get_proc_file(proc, raw_fd);
+    if (file == nullptr || file->inode == nullptr) {
+        return ERR_EBADF;
+    }
+    if (file->inode->sb != nullptr && file->inode->sb->is_read_only()) {
+        return ERR_EROFS;
+    }
+    file->inode->mode =
+        (file->inode->mode & kernel::fs::kModeTypeMask) | (static_cast<uint32_t>(mode) & 07777U);
+    file->inode->ctime_ns = monotonic_now_ns();
+    return 0;
+}
+
+int64_t sys_fchmodat(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
+                     uint64_t flags) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+    if ((flags & ~AT_SYMLINK_NOFOLLOW) != 0ULL) {
+        return ERR_EINVAL;
+    }
+
+    char raw_path[Kernel::Process::MAX_PATH_LEN]{};
+    size_t path_len = 0U;
+    const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
+                                               raw_path, sizeof(raw_path), path_len);
+    if (copy_res < 0) {
+        return copy_res;
+    }
+
+    kernel::fs::Dentry* base_dentry = nullptr;
+    if (raw_path[0] != '/') {
+        const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
+        if (dir_res < 0) {
+            return dir_res;
+        }
+    }
+
+    const bool follow = (flags & AT_SYMLINK_NOFOLLOW) == 0ULL;
+    kernel::fs::Dentry* target = nullptr;
+    const int32_t vfs_res = kernel::fs::vfs_namei(kernel::fs::StringView(raw_path, path_len),
+                                                  base_dentry, &target, follow);
+    if (base_dentry != nullptr) {
+        kernel::fs::dentry_put(base_dentry);
+    }
+    if (vfs_res != kernel::fs::kOk || target == nullptr || target->inode == nullptr) {
+        if (target != nullptr) {
+            kernel::fs::dentry_put(target);
+        }
+        return (vfs_res != kernel::fs::kOk) ? vfs_res : ERR_ENOENT;
+    }
+
+    int64_t res = 0;
+    if (target->inode->sb != nullptr && target->inode->sb->is_read_only()) {
+        res = ERR_EROFS;
+    } else {
+        target->inode->mode = (target->inode->mode & kernel::fs::kModeTypeMask) |
+                              (static_cast<uint32_t>(mode) & 07777U);
+        target->inode->ctime_ns = monotonic_now_ns();
+    }
+    kernel::fs::dentry_put(target);
+    return res;
+}
+
+int64_t sys_fchown(uint64_t raw_fd, uint32_t owner, uint32_t group) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    kernel::fs::File* file = get_proc_file(proc, raw_fd);
+    if (file == nullptr || file->inode == nullptr) {
+        return ERR_EBADF;
+    }
+    if (file->inode->sb != nullptr && file->inode->sb->is_read_only()) {
+        return ERR_EROFS;
+    }
+    if (owner != static_cast<uint32_t>(-1)) {
+        file->inode->uid = owner;
+    }
+    if (group != static_cast<uint32_t>(-1)) {
+        file->inode->gid = group;
+    }
+    file->inode->ctime_ns = monotonic_now_ns();
+    return 0;
+}
+
+int64_t sys_fchownat(int32_t dirfd, uintptr_t user_pathname, uint32_t owner, uint32_t group,
+                     uint64_t flags) noexcept {
+    auto* const proc = Kernel::Process::current_process();
+    if (proc == nullptr) {
+        return ERR_EINVAL;
+    }
+    if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) != 0ULL) {
+        return ERR_EINVAL;
+    }
+
+    char raw_path[Kernel::Process::MAX_PATH_LEN]{};
+    size_t path_len = 0U;
+    const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
+                                               raw_path, sizeof(raw_path), path_len);
+    if (copy_res < 0) {
+        return copy_res;
+    }
+
+    if (path_len == 0U && (flags & AT_EMPTY_PATH) != 0ULL) {
+        return sys_fchown(static_cast<uint64_t>(dirfd), owner, group);
+    }
+
+    kernel::fs::Dentry* base_dentry = nullptr;
+    if (raw_path[0] != '/') {
+        const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
+        if (dir_res < 0) {
+            return dir_res;
+        }
+    }
+
+    const bool follow = (flags & AT_SYMLINK_NOFOLLOW) == 0ULL;
+    kernel::fs::Dentry* target = nullptr;
+    const int32_t vfs_res = kernel::fs::vfs_namei(kernel::fs::StringView(raw_path, path_len),
+                                                  base_dentry, &target, follow);
+    if (base_dentry != nullptr) {
+        kernel::fs::dentry_put(base_dentry);
+    }
+    if (vfs_res != kernel::fs::kOk || target == nullptr || target->inode == nullptr) {
+        if (target != nullptr) {
+            kernel::fs::dentry_put(target);
+        }
+        return (vfs_res != kernel::fs::kOk) ? vfs_res : ERR_ENOENT;
+    }
+
+    int64_t res = 0;
+    if (target->inode->sb != nullptr && target->inode->sb->is_read_only()) {
+        res = ERR_EROFS;
+    } else {
+        if (owner != static_cast<uint32_t>(-1)) {
+            target->inode->uid = owner;
+        }
+        if (group != static_cast<uint32_t>(-1)) {
+            target->inode->gid = group;
+        }
+        target->inode->ctime_ns = monotonic_now_ns();
+    }
+    kernel::fs::dentry_put(target);
+    return res;
 }
 
 int64_t sys_close(uint64_t raw_fd) noexcept {
@@ -1069,7 +1340,7 @@ int64_t sys_close(uint64_t raw_fd) noexcept {
         return ERR_EBADF;
     }
     const auto fd_idx = static_cast<size_t>(raw_fd);
-    if (!proc->fd_table[fd_idx].in_use) {
+    if (!proc->fd_table[fd_idx].is_open()) {
         return ERR_EBADF;
     }
     Kernel::Process::close_fd(*proc, fd_idx);
@@ -1078,54 +1349,25 @@ int64_t sys_close(uint64_t raw_fd) noexcept {
 
 int64_t sys_lseek(uint64_t raw_fd, int64_t offset, uint64_t whence) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr || proc->fd_table == nullptr || raw_fd >= proc->fd_capacity) {
+    kernel::fs::File* file = get_proc_file(proc, raw_fd);
+    if (file == nullptr) {
         return ERR_EBADF;
     }
-
-    auto& desc = proc->fd_table[static_cast<size_t>(raw_fd)];
-    if (!desc.in_use) {
-        return ERR_EBADF;
-    }
-    if (desc.type == Kernel::Process::FdType::DevNull) {
-        return 0;
-    }
-    if (desc.type == Kernel::Process::FdType::PipeRead ||
-        desc.type == Kernel::Process::FdType::PipeWrite ||
-        desc.type == Kernel::Process::FdType::ConsoleTty) {
-        return ERR_ESPIPE;
-    }
-
-    int64_t base = 0;
-    if (whence == SEEK_SET) {
-        base = 0;
-    } else if (whence == SEEK_CUR) {
-        base = static_cast<int64_t>(desc.offset);
-    } else if (whence == SEEK_END) {
-        base = static_cast<int64_t>(desc.cpio_entry.size);
-    } else {
+    if (whence > SEEK_END) {
         return ERR_EINVAL;
     }
-
-    const int64_t new_pos = base + offset;
-    if (new_pos < 0) {
-        return ERR_EINVAL;
-    }
-    desc.offset = static_cast<size_t>(new_pos);
-    return new_pos;
+    return kernel::fs::vfs_lseek(file, offset,
+                                 static_cast<kernel::fs::SeekWhence>(static_cast<int32_t>(whence)));
 }
 
 int64_t sys_fstat(uint64_t raw_fd, uintptr_t user_statbuf) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr || proc->fd_table == nullptr || raw_fd >= proc->fd_capacity) {
+    kernel::fs::File* file = get_proc_file(proc, raw_fd);
+    if (file == nullptr || file->inode == nullptr) {
         return ERR_EBADF;
     }
-    const auto& desc = proc->fd_table[static_cast<size_t>(raw_fd)];
-    if (!desc.in_use) {
-        return ERR_EBADF;
-    }
-
     LinuxStat stat{};
-    fill_stat_from_fd(desc, stat);
+    fill_stat_from_inode(*file->inode, stat);
     return Kernel::MM::copy_to_user(proc->address_space, user_statbuf, &stat, sizeof(stat));
 }
 
@@ -1145,61 +1387,40 @@ int64_t sys_newfstatat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_st
     }
 
     if (path_len == 0U && (flags & AT_EMPTY_PATH) != 0ULL) {
-        if (dirfd < 0 || proc->fd_table == nullptr ||
-            static_cast<size_t>(dirfd) >= proc->fd_capacity) {
-            return ERR_EBADF;
-        }
-        const auto& desc = proc->fd_table[static_cast<size_t>(dirfd)];
-        if (!desc.in_use) {
+        kernel::fs::File* file = get_proc_file(proc, static_cast<uint64_t>(dirfd));
+        if (file == nullptr || file->inode == nullptr) {
             return ERR_EBADF;
         }
         LinuxStat stat{};
-        fill_stat_from_fd(desc, stat);
+        fill_stat_from_inode(*file->inode, stat);
         return Kernel::MM::copy_to_user(proc->address_space, user_statbuf, &stat, sizeof(stat));
     }
 
-    const char* base_dir = "/";
+    kernel::fs::Dentry* base_dentry = nullptr;
     if (raw_path[0] != '/') {
-        const int64_t dir_res = resolve_dirfd_base(*proc, dirfd, base_dir);
+        const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
         if (dir_res < 0) {
             return dir_res;
         }
     }
 
-    char canon_path[Kernel::Process::MAX_PATH_LEN]{};
-    if (!normalize_vfs_path(base_dir, raw_path, canon_path, sizeof(canon_path))) {
-        return ERR_ENOENT;
+    const bool follow = (flags & AT_SYMLINK_NOFOLLOW) == 0ULL;
+    kernel::fs::Dentry* target = nullptr;
+    const int32_t vfs_res = kernel::fs::vfs_namei(kernel::fs::StringView(raw_path, path_len),
+                                                  base_dentry, &target, follow);
+    if (base_dentry != nullptr) {
+        kernel::fs::dentry_put(base_dentry);
     }
-
-    if (cstr_eq(canon_path, "/dev/console") || cstr_eq(canon_path, "/dev/tty")) {
-        LinuxStat stat{};
-        stat.st_dev = 1ULL;
-        stat.st_ino = 2ULL;
-        stat.st_mode = 0020666U;
-        stat.st_nlink = 1U;
-        stat.st_rdev = 0x0501ULL;
-        stat.st_blksize = 4096;
-        return Kernel::MM::copy_to_user(proc->address_space, user_statbuf, &stat, sizeof(stat));
-    }
-
-    if (cstr_eq(canon_path, "/dev/null")) {
-        LinuxStat stat{};
-        stat.st_dev = 1ULL;
-        stat.st_ino = 4ULL;
-        stat.st_mode = 0020666U;
-        stat.st_nlink = 1U;
-        stat.st_rdev = 0x0103ULL;
-        stat.st_blksize = 4096;
-        return Kernel::MM::copy_to_user(proc->address_space, user_statbuf, &stat, sizeof(stat));
-    }
-
-    CpioEntry entry{};
-    if (!resolve_initrd_path(canon_path, entry)) {
-        return ERR_ENOENT;
+    if (vfs_res != kernel::fs::kOk || target->inode == nullptr) {
+        if (target != nullptr) {
+            kernel::fs::dentry_put(target);
+        }
+        return (vfs_res != kernel::fs::kOk) ? vfs_res : ERR_ENOENT;
     }
 
     LinuxStat stat{};
-    fill_stat_from_cpio(canon_path, entry, stat);
+    fill_stat_from_inode(*target->inode, stat);
+    kernel::fs::dentry_put(target);
     return Kernel::MM::copy_to_user(proc->address_space, user_statbuf, &stat, sizeof(stat));
 }
 
@@ -1209,10 +1430,8 @@ int64_t sys_faccessat2(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
     if (proc == nullptr) {
         return ERR_EINVAL;
     }
-    if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_EACCESS | AT_EMPTY_PATH)) != 0ULL) {
-        return ERR_EINVAL;
-    }
-    if ((mode & ~7ULL) != 0ULL) {
+    if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_EACCESS | AT_EMPTY_PATH)) != 0ULL ||
+        (mode & ~7ULL) != 0ULL) {
         return ERR_EINVAL;
     }
 
@@ -1224,51 +1443,49 @@ int64_t sys_faccessat2(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
         return copy_res;
     }
 
+    kernel::fs::Inode* inode = nullptr;
+    kernel::fs::Dentry* target = nullptr;
+
     if (path_len == 0U && (flags & AT_EMPTY_PATH) != 0ULL) {
-        if (dirfd < 0 || proc->fd_table == nullptr ||
-            static_cast<size_t>(dirfd) >= proc->fd_capacity) {
+        kernel::fs::File* file = get_proc_file(proc, static_cast<uint64_t>(dirfd));
+        if (file == nullptr || file->inode == nullptr) {
             return ERR_EBADF;
         }
-        const auto& desc = proc->fd_table[static_cast<size_t>(dirfd)];
-        if (!desc.in_use) {
-            return ERR_EBADF;
+        inode = file->inode;
+    } else {
+        kernel::fs::Dentry* base_dentry = nullptr;
+        if (raw_path[0] != '/') {
+            const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
+            if (dir_res < 0) {
+                return dir_res;
+            }
         }
-        if (desc.type == Kernel::Process::FdType::InitrdFile && (mode & 2ULL) != 0ULL) {
-            return ERR_EROFS;
+        const bool follow = (flags & AT_SYMLINK_NOFOLLOW) == 0ULL;
+        const int32_t vfs_res = kernel::fs::vfs_namei(kernel::fs::StringView(raw_path, path_len),
+                                                      base_dentry, &target, follow);
+        if (base_dentry != nullptr) {
+            kernel::fs::dentry_put(base_dentry);
         }
-        return 0;
-    }
-
-    const char* base_dir = "/";
-    if (raw_path[0] != '/') {
-        const int64_t dir_res = resolve_dirfd_base(*proc, dirfd, base_dir);
-        if (dir_res < 0) {
-            return dir_res;
+        if (vfs_res != kernel::fs::kOk || target->inode == nullptr) {
+            if (target != nullptr) {
+                kernel::fs::dentry_put(target);
+            }
+            return (vfs_res != kernel::fs::kOk) ? vfs_res : ERR_ENOENT;
         }
+        inode = target->inode;
     }
 
-    char canon_path[Kernel::Process::MAX_PATH_LEN]{};
-    if (!normalize_vfs_path(base_dir, raw_path, canon_path, sizeof(canon_path))) {
-        return ERR_ENOENT;
+    int64_t res = 0;
+    if ((mode & 2ULL) != 0ULL && inode->sb != nullptr && inode->sb->is_read_only()) {
+        res = ERR_EROFS;
+    } else if ((mode & 1ULL) != 0ULL && !inode->is_dir() && (inode->mode & 0111U) == 0U) {
+        res = ERR_EACCES;
     }
 
-    if (cstr_eq(canon_path, "/dev/console") || cstr_eq(canon_path, "/dev/tty") ||
-        cstr_eq(canon_path, "/dev/null")) {
-        return ((mode & 1ULL) != 0ULL) ? ERR_EACCES : 0;
+    if (target != nullptr) {
+        kernel::fs::dentry_put(target);
     }
-
-    CpioEntry entry{};
-    if (!resolve_initrd_path(canon_path, entry)) {
-        return ERR_ENOENT;
-    }
-
-    if ((mode & 2ULL) != 0ULL) {
-        return ERR_EROFS;
-    }
-    if ((mode & 1ULL) != 0ULL && !entry.is_directory && (entry.mode & 0111U) == 0U) {
-        return ERR_EACCES;
-    }
-    return 0;
+    return res;
 }
 
 int64_t sys_faccessat(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
@@ -1279,10 +1496,7 @@ int64_t sys_faccessat(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
 int64_t sys_readlinkat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_buf,
                        uint64_t bufsiz) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr) {
-        return ERR_EINVAL;
-    }
-    if (bufsiz == 0U) {
+    if (proc == nullptr || bufsiz == 0U) {
         return ERR_EINVAL;
     }
 
@@ -1294,20 +1508,7 @@ int64_t sys_readlinkat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_bu
         return copy_res;
     }
 
-    const char* base_dir = "/";
-    if (raw_path[0] != '/') {
-        const int64_t dir_res = resolve_dirfd_base(*proc, dirfd, base_dir);
-        if (dir_res < 0) {
-            return dir_res;
-        }
-    }
-
-    char canon_path[Kernel::Process::MAX_PATH_LEN]{};
-    if (!normalize_vfs_path(base_dir, raw_path, canon_path, sizeof(canon_path))) {
-        return ERR_ENOENT;
-    }
-
-    if (cstr_eq(canon_path, "/proc/self/exe")) {
+    if (cstr_eq(raw_path, "/proc/self/exe")) {
         const char* exe_target = (proc->exe_path[0] != '\0') ? proc->exe_path : "/bin/bash";
         const size_t target_len = cstr_len(exe_target);
         const size_t copy_len = (bufsiz < target_len) ? static_cast<size_t>(bufsiz) : target_len;
@@ -1317,35 +1518,41 @@ int64_t sys_readlinkat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_bu
         return static_cast<int64_t>(copy_len);
     }
 
-    CpioEntry entry{};
-    if (!resolve_initrd_path(canon_path, entry)) {
-        return ERR_ENOENT;
-    }
-
-    if ((entry.mode & CPIO_MODE_FILE_TYPE_MASK) != CPIO_MODE_SYMLINK) {
-        return ERR_EINVAL;
-    }
-
-    const size_t copy_len = (bufsiz < entry.size) ? static_cast<size_t>(bufsiz) : entry.size;
-    if (copy_len > 0U && entry.data != nullptr) {
-        if (Kernel::MM::copy_to_user(proc->address_space, user_buf, entry.data, copy_len) < 0) {
-            return ERR_EFAULT;
+    kernel::fs::Dentry* base_dentry = nullptr;
+    if (raw_path[0] != '/') {
+        const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
+        if (dir_res < 0) {
+            return dir_res;
         }
+    }
+
+    char link_buf[Kernel::Process::MAX_PATH_LEN]{};
+    size_t out_len = 0U;
+    const int32_t vfs_res =
+        kernel::fs::vfs_readlink(kernel::fs::StringView(raw_path, path_len), base_dentry, link_buf,
+                                 sizeof(link_buf), &out_len);
+    if (base_dentry != nullptr) {
+        kernel::fs::dentry_put(base_dentry);
+    }
+    if (vfs_res != kernel::fs::kOk) {
+        return vfs_res;
+    }
+
+    const size_t copy_len = (bufsiz < out_len) ? static_cast<size_t>(bufsiz) : out_len;
+    if (copy_len > 0U &&
+        Kernel::MM::copy_to_user(proc->address_space, user_buf, link_buf, copy_len) < 0) {
+        return ERR_EFAULT;
     }
     return static_cast<int64_t>(copy_len);
 }
 
 int64_t sys_getdents64(uint64_t raw_fd, uintptr_t user_dirp, uint64_t count) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr || proc->fd_table == nullptr || raw_fd >= proc->fd_capacity) {
+    kernel::fs::File* file = get_proc_file(proc, raw_fd);
+    if (file == nullptr || file->inode == nullptr) {
         return ERR_EBADF;
     }
-
-    auto& desc = proc->fd_table[static_cast<size_t>(raw_fd)];
-    if (!desc.in_use) {
-        return ERR_EBADF;
-    }
-    if (desc.type != Kernel::Process::FdType::InitrdFile || !desc.cpio_entry.is_directory) {
+    if (!file->inode->is_dir()) {
         return ERR_ENOTDIR;
     }
 
@@ -1354,124 +1561,71 @@ int64_t sys_getdents64(uint64_t raw_fd, uintptr_t user_dirp, uint64_t count) noe
         return ERR_EFAULT;
     }
 
-    char seen_names[64][64]{};
-    size_t seen_count = 0U;
-    size_t entry_index = 0U;
     size_t bytes_written = 0U;
-    bool buffer_full = false;
-
-    auto emit_dirent = [&](const char* name, uint8_t d_type) {
-        if (buffer_full) {
-            return;
-        }
-        for (size_t seen_idx = 0U; seen_idx < seen_count; ++seen_idx) {
-            if (cstr_eq(seen_names[seen_idx], name)) {
-                return;
-            }
-        }
-        if (seen_count < 64U) {
-            cstr_copy(seen_names[seen_count++], name, 64U);
-        }
-
-        const size_t cur_idx = entry_index++;
-        if (cur_idx < desc.offset) {
-            return;
-        }
-
-        const size_t name_len = cstr_len(name);
+    auto push_dirent = [&](uint64_t ino, uint8_t d_type, const char* name, size_t name_len,
+                           uint64_t next_off) -> bool {
         const size_t raw_reclen = sizeof(LinuxDirent64Header) + name_len + 1U;
         const size_t aligned_reclen = (raw_reclen + 7U) & ~7U;
-
-        if (bytes_written + aligned_reclen > count) {
-            buffer_full = true;
-            return;
+        if (bytes_written + aligned_reclen > count || aligned_reclen > 128U) {
+            return false;
         }
-
         uint8_t record[128]{};
-        if (aligned_reclen > sizeof(record)) {
-            return;
-        }
-
         auto* const hdr = reinterpret_cast<LinuxDirent64Header*>(record);
-        hdr->d_ino = compute_ino(name);
-        hdr->d_off = static_cast<int64_t>(cur_idx + 1U);
+        hdr->d_ino = ino;
+        hdr->d_off = static_cast<int64_t>(next_off);
         hdr->d_reclen = static_cast<uint16_t>(aligned_reclen);
         hdr->d_type = d_type;
-        for (size_t k = 0U; k < name_len; ++k) {
-            record[sizeof(LinuxDirent64Header) + k] = static_cast<uint8_t>(name[k]);
+        for (size_t idx = 0U; idx < name_len; ++idx) {
+            record[sizeof(LinuxDirent64Header) + idx] = static_cast<uint8_t>(name[idx]);
         }
-
         if (Kernel::MM::copy_to_user(root_paddr, user_dirp + bytes_written, record,
                                      aligned_reclen) < 0) {
-            buffer_full = true;
-            return;
+            return false;
         }
-
         bytes_written += aligned_reclen;
-        desc.offset = cur_idx + 1U;
+        return true;
     };
 
-    emit_dirent(".", DT_DIR);
-    emit_dirent("..", DT_DIR);
+    if (file->offset == 0U) {
+        if (!push_dirent(file->inode->ino, DT_DIR, ".", 1U, 1U)) {
+            return static_cast<int64_t>(bytes_written);
+        }
+        file->offset = 1U;
+    }
 
-    if (g_initrd_loc.valid && g_initrd_loc.start_paddr != 0U && g_initrd_loc.size != 0U) {
-        const auto* const initrd_kva =
-            reinterpret_cast<const void*>(Kernel::MM::phys_to_virt(g_initrd_loc.start_paddr));
-        const CpioArchive archive(initrd_kva, g_initrd_loc.size);
+    if (file->offset == 1U) {
+        const uint64_t parent_ino = (file->dentry != nullptr && file->dentry->parent != nullptr &&
+                                     file->dentry->parent->inode != nullptr)
+                                        ? file->dentry->parent->inode->ino
+                                        : file->inode->ino;
+        if (!push_dirent(parent_ino, DT_DIR, "..", 2U, 2U)) {
+            return static_cast<int64_t>(bytes_written);
+        }
+        file->offset = 2U;
+    }
 
-        const char* const dir_rel = (desc.path[0] == '/') ? (desc.path + 1) : desc.path;
-        const size_t dir_len = cstr_len(dir_rel);
+    while (bytes_written < count) {
+        const uint64_t child_idx = file->offset - 2U;
+        file->offset = child_idx;
+        kernel::fs::DirEntryInfo info{};
+        const int32_t vfs_res = kernel::fs::vfs_readdir(file, &info);
+        file->offset = child_idx + 2U;
+        if (vfs_res != kernel::fs::kOk) {
+            break;
+        }
 
-        archive.for_each([&](const CpioEntry& entry) -> bool {
-            if (buffer_full) {
-                return false;
-            }
-            const char* norm = cpio_normalize_path(entry.name);
-            if (norm[0] == '\0' || (norm[0] == '.' && norm[1] == '\0')) {
-                return true;
-            }
+        uint8_t dtype = DT_REG;
+        if (info.type == kernel::fs::kModeDir) {
+            dtype = DT_DIR;
+        } else if (info.type == kernel::fs::kModeLnk) {
+            dtype = DT_LNK;
+        }
 
-            const char* child_start = nullptr;
-            if (dir_len == 0U) {
-                child_start = norm;
-            } else {
-                size_t seen_idx = 0U;
-                while (seen_idx < dir_len && norm[seen_idx] == dir_rel[seen_idx]) {
-                    seen_idx++;
-                }
-                if (seen_idx != dir_len || norm[seen_idx] != '/' || norm[seen_idx + 1U] == '\0') {
-                    return true;
-                }
-                child_start = norm + seen_idx + 1U;
-            }
-
-            char child_name[64]{};
-            size_t c_len = 0U;
-            bool has_subslash = false;
-            while (child_start[c_len] != '\0' && child_start[c_len] != '/') {
-                if (c_len + 1U < sizeof(child_name)) {
-                    child_name[c_len] = child_start[c_len];
-                }
-                c_len++;
-            }
-            if (c_len == 0U || c_len >= sizeof(child_name)) {
-                return true;
-            }
-            child_name[c_len] = '\0';
-            if (child_start[c_len] == '/') {
-                has_subslash = true;
-            }
-
-            uint8_t dtype = DT_REG;
-            if (has_subslash || entry.is_directory) {
-                dtype = DT_DIR;
-            } else if ((entry.mode & CPIO_MODE_FILE_TYPE_MASK) == CPIO_MODE_SYMLINK) {
-                dtype = DT_LNK;
-            }
-
-            emit_dirent(child_name, dtype);
-            return !buffer_full;
-        });
+        const size_t name_len = cstr_len(info.name);
+        if (!push_dirent(info.ino, dtype, info.name, name_len, child_idx + 3U)) {
+            break;
+        }
+        file->offset = child_idx + 3U;
     }
 
     return static_cast<int64_t>(bytes_written);
@@ -1483,7 +1637,7 @@ int64_t sys_dup(uint64_t raw_oldfd) noexcept {
         return ERR_EBADF;
     }
     const auto old_idx = static_cast<size_t>(raw_oldfd);
-    if (!proc->fd_table[old_idx].in_use) {
+    if (!proc->fd_table[old_idx].is_open()) {
         return ERR_EBADF;
     }
 
@@ -1513,7 +1667,7 @@ int64_t sys_dup3(uint64_t raw_oldfd, uint64_t raw_newfd, uint64_t flags) noexcep
 
     const auto old_idx = static_cast<size_t>(raw_oldfd);
     const auto new_idx = static_cast<size_t>(raw_newfd);
-    if (!proc->fd_table[old_idx].in_use) {
+    if (!proc->fd_table[old_idx].is_open()) {
         return ERR_EBADF;
     }
 
@@ -1523,13 +1677,13 @@ int64_t sys_dup3(uint64_t raw_oldfd, uint64_t raw_newfd, uint64_t flags) noexcep
         }
     }
 
-    if (proc->fd_table[new_idx].in_use) {
+    if (proc->fd_table[new_idx].is_open()) {
         Kernel::Process::close_fd(*proc, new_idx);
     }
 
     Kernel::Process::copy_fd_slot(proc->fd_table[new_idx], proc->fd_table[old_idx], true);
     if ((flags & O_CLOEXEC) != 0ULL) {
-        proc->fd_table[new_idx].flags |= Kernel::Process::FD_FLAG_CLOEXEC;
+        proc->fd_table[new_idx].fd_flags |= Kernel::Process::FD_FLAG_CLOEXEC;
     }
     return static_cast<int64_t>(new_idx);
 }
@@ -1540,7 +1694,7 @@ int64_t sys_fcntl(uint64_t raw_fd, uint64_t cmd, uint64_t arg) noexcept {
         return ERR_EBADF;
     }
     const auto fd_idx = static_cast<size_t>(raw_fd);
-    if (!proc->fd_table[fd_idx].in_use) {
+    if (!proc->fd_table[fd_idx].is_open()) {
         return ERR_EBADF;
     }
 
@@ -1554,24 +1708,23 @@ int64_t sys_fcntl(uint64_t raw_fd, uint64_t cmd, uint64_t arg) noexcept {
         if (new_idx < 0) {
             return new_idx;
         }
-        // Re-index proc->fd_table[fd_idx] after allocate_fd in case krealloc relocated the table
         Kernel::Process::copy_fd_slot(proc->fd_table[new_idx], proc->fd_table[fd_idx], true);
         if (cmd == F_DUPFD_CLOEXEC) {
-            proc->fd_table[new_idx].flags |= Kernel::Process::FD_FLAG_CLOEXEC;
+            proc->fd_table[new_idx].fd_flags |= Kernel::Process::FD_FLAG_CLOEXEC;
         }
         return new_idx;
     }
 
     case F_GETFD:
-        return ((proc->fd_table[fd_idx].flags & Kernel::Process::FD_FLAG_CLOEXEC) != 0U)
+        return ((proc->fd_table[fd_idx].fd_flags & Kernel::Process::FD_FLAG_CLOEXEC) != 0U)
                    ? static_cast<int64_t>(FD_CLOEXEC_BIT)
                    : 0;
 
     case F_SETFD:
         if ((arg & FD_CLOEXEC_BIT) != 0ULL) {
-            proc->fd_table[fd_idx].flags |= Kernel::Process::FD_FLAG_CLOEXEC;
+            proc->fd_table[fd_idx].fd_flags |= Kernel::Process::FD_FLAG_CLOEXEC;
         } else {
-            proc->fd_table[fd_idx].flags &= ~Kernel::Process::FD_FLAG_CLOEXEC;
+            proc->fd_table[fd_idx].fd_flags &= ~Kernel::Process::FD_FLAG_CLOEXEC;
         }
         return 0;
 
@@ -1583,17 +1736,25 @@ int64_t sys_fcntl(uint64_t raw_fd, uint64_t cmd, uint64_t arg) noexcept {
         } else if (desc.is_writable()) {
             flags = O_WRONLY;
         }
-        if ((desc.flags & Kernel::Process::FD_FLAG_NONBLOCK) != 0U) {
+        if ((desc.file->flags & kernel::fs::kOpenNonBlock) != 0U) {
             flags |= O_NONBLOCK;
+        }
+        if ((desc.file->flags & kernel::fs::kOpenAppend) != 0U) {
+            flags |= O_APPEND;
         }
         return static_cast<int64_t>(flags);
     }
 
     case F_SETFL:
         if ((arg & O_NONBLOCK) != 0ULL) {
-            proc->fd_table[fd_idx].flags |= Kernel::Process::FD_FLAG_NONBLOCK;
+            proc->fd_table[fd_idx].file->flags |= kernel::fs::kOpenNonBlock;
         } else {
-            proc->fd_table[fd_idx].flags &= ~Kernel::Process::FD_FLAG_NONBLOCK;
+            proc->fd_table[fd_idx].file->flags &= ~kernel::fs::kOpenNonBlock;
+        }
+        if ((arg & O_APPEND) != 0ULL) {
+            proc->fd_table[fd_idx].file->flags |= kernel::fs::kOpenAppend;
+        } else {
+            proc->fd_table[fd_idx].file->flags &= ~kernel::fs::kOpenAppend;
         }
         return 0;
 
@@ -1615,42 +1776,32 @@ int64_t sys_pipe2(uintptr_t user_pipefd, uint64_t flags) noexcept {
     if (read_fd < 0) {
         return read_fd;
     }
-    proc->fd_table[read_fd].in_use = true;
 
-    const int write_fd = Kernel::Process::allocate_fd(*proc, static_cast<size_t>(read_fd) + 1U);
-    if (write_fd < 0) {
-        proc->fd_table[read_fd].in_use = false;
-        return write_fd;
-    }
+    const uint32_t open_extra = ((flags & O_NONBLOCK) != 0ULL) ? kernel::fs::kOpenNonBlock : 0U;
+    const uint32_t fd_extra = ((flags & O_CLOEXEC) != 0ULL) ? Kernel::Process::FD_FLAG_CLOEXEC : 0U;
 
-    Kernel::FS::Pipe* const pipe = Kernel::FS::allocate_pipe();
-    if (pipe == nullptr) {
-        proc->fd_table[read_fd].in_use = false;
-        return ERR_ENOMEM;
-    }
-
-    uint32_t extra_flags = 0U;
-    if ((flags & O_CLOEXEC) != 0ULL) {
-        extra_flags |= Kernel::Process::FD_FLAG_CLOEXEC;
-    }
-    if ((flags & O_NONBLOCK) != 0ULL) {
-        extra_flags |= Kernel::Process::FD_FLAG_NONBLOCK;
+    kernel::fs::File* read_file = nullptr;
+    kernel::fs::File* write_file = nullptr;
+    const int32_t prc = Kernel::IPC::create_pipe_files(&read_file, &write_file, open_extra);
+    if (prc != kernel::fs::kOk) {
+        return prc;
     }
 
     proc->fd_table[read_fd] = Kernel::Process::FileDescriptor{
-        .type = Kernel::Process::FdType::PipeRead,
-        .flags = Kernel::Process::FD_FLAG_READ | extra_flags,
-        .offset = 0U,
-        .in_use = true,
-        .pipe = pipe,
+        .file = read_file,
+        .fd_flags = fd_extra,
     };
 
+    const int write_fd = Kernel::Process::allocate_fd(*proc, static_cast<size_t>(read_fd) + 1U);
+    if (write_fd < 0) {
+        Kernel::Process::close_fd(*proc, static_cast<size_t>(read_fd));
+        (void)kernel::fs::vfs_close(write_file);
+        return write_fd;
+    }
+
     proc->fd_table[write_fd] = Kernel::Process::FileDescriptor{
-        .type = Kernel::Process::FdType::PipeWrite,
-        .flags = Kernel::Process::FD_FLAG_WRITE | extra_flags,
-        .offset = 0U,
-        .in_use = true,
-        .pipe = pipe,
+        .file = write_file,
+        .fd_flags = fd_extra,
     };
 
     const int32_t pair[2] = {read_fd, write_fd};
@@ -1668,425 +1819,145 @@ int64_t sys_pipe2(uintptr_t user_pipefd, uint64_t flags) noexcept {
 // ==========================================================================
 
 int64_t sys_ioctl(uint64_t raw_fd, uint64_t request, uintptr_t arg) noexcept {
-    const auto fd_idx = static_cast<size_t>(raw_fd);
     auto* const proc = Kernel::Process::current_process();
-    uintptr_t root_paddr = 0U;
-
     if (proc != nullptr) {
-        if (proc->fd_table == nullptr || fd_idx >= proc->fd_capacity) {
+        kernel::fs::File* file = get_proc_file(proc, raw_fd);
+        if (file == nullptr) {
             return ERR_EBADF;
         }
-        const auto& desc = proc->fd_table[fd_idx];
-        if (!desc.in_use) {
-            return ERR_EBADF;
-        }
-        if (!desc.is_tty()) {
-            return ERR_ENOTTY;
-        }
-        root_paddr = proc->address_space.root_paddr();
-    } else {
-        if (fd_idx > 2U) {
-            return ERR_EBADF;
-        }
-        root_paddr = Kernel::MM::AddressSpace::current_root_paddr();
+        return kernel::fs::vfs_ioctl(file, request, static_cast<uint64_t>(arg));
     }
 
-    switch (request) {
-    case IOCTL_TCGETS:
-        return Kernel::MM::copy_to_user(root_paddr, arg, &g_console_termios,
-                                        sizeof(g_console_termios));
-
-    case IOCTL_TCSETS:
-    case IOCTL_TCSETSW:
-    case IOCTL_TCSETSF: {
-        ktermios updated{};
-        const int64_t copy_res =
-            Kernel::MM::copy_from_user(root_paddr, &updated, arg, sizeof(updated));
-        if (copy_res < 0) {
-            return copy_res;
-        }
-        auto& cpu = HAL::get_cpu();
-        const bool irq_was_enabled = cpu.interrupts_enabled();
-        cpu.disable_interrupts();
-        g_console_termios = updated;
-        if (request == IOCTL_TCSETSF) {
-            tty_flush_rx_unlocked();
-        }
-        if (irq_was_enabled) {
-            cpu.enable_interrupts();
-        }
-        return 0;
+    if (raw_fd > 2U) {
+        return ERR_EBADF;
     }
-
-    case IOCTL_TIOCGWINSZ: {
-        constexpr winsize default_ws{
-            .ws_row = DEFAULT_TTY_ROWS,
-            .ws_col = DEFAULT_TTY_COLS,
-            .ws_xpixel = 0U,
-            .ws_ypixel = 0U,
-        };
-        return Kernel::MM::copy_to_user(root_paddr, arg, &default_ws, sizeof(default_ws));
+    kernel::fs::File* console_file = nullptr;
+    const int32_t orc = kernel::fs::devfs_open_console(kernel::fs::kOpenReadWrite, &console_file);
+    if (orc != kernel::fs::kOk) {
+        return orc;
     }
-
-    case IOCTL_TIOCGPGRP: {
-        const auto pgrp = static_cast<int32_t>(g_foreground_pgid);
-        return Kernel::MM::copy_to_user(root_paddr, arg, &pgrp, sizeof(pgrp));
-    }
-
-    case IOCTL_TIOCSPGRP: {
-        int32_t new_pgrp = 0;
-        const int64_t copy_res =
-            Kernel::MM::copy_from_user(root_paddr, &new_pgrp, arg, sizeof(new_pgrp));
-        if (copy_res < 0) {
-            return copy_res;
-        }
-        if (new_pgrp <= 0) {
-            return ERR_EINVAL;
-        }
-        g_foreground_pgid = static_cast<uint32_t>(new_pgrp);
-        return 0;
-    }
-
-    default:
-        return ERR_EINVAL;
-    }
+    const int32_t res = kernel::fs::vfs_ioctl(console_file, request, static_cast<uint64_t>(arg));
+    (void)kernel::fs::vfs_close(console_file);
+    return res;
 }
 
 int64_t sys_read(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexcept {
-    const auto fd_idx = static_cast<size_t>(raw_fd);
-    auto* const proc = Kernel::Process::current_process();
-    uintptr_t root_paddr = 0U;
-    bool nonblock = false;
-
     if (raw_count > Kernel::MM::user_addr_space_limit()) {
         return ERR_EFAULT;
     }
     const auto count = static_cast<size_t>(raw_count);
+    auto* const proc = Kernel::Process::current_process();
+
+    kernel::fs::File* file = nullptr;
+    bool temp_console = false;
+    uintptr_t root_paddr = 0U;
 
     if (proc != nullptr) {
-        if (proc->fd_table == nullptr || fd_idx >= proc->fd_capacity) {
-            return ERR_EBADF;
-        }
-        auto& desc = proc->fd_table[fd_idx];
-        if (!desc.in_use || !desc.is_readable()) {
+        file = get_proc_file(proc, raw_fd);
+        if (file == nullptr) {
             return ERR_EBADF;
         }
         root_paddr = proc->address_space.root_paddr();
-        nonblock = (desc.flags & Kernel::Process::FD_FLAG_NONBLOCK) != 0U;
-
-        if (!validate_user_write_range(root_paddr, user_buf, count)) {
-            return ERR_EFAULT;
-        }
-        if (count == 0U) {
-            return 0;
-        }
-
-        if (desc.type == Kernel::Process::FdType::DevNull) {
-            return 0;
-        }
-
-        if (desc.type == Kernel::Process::FdType::InitrdFile) {
-            if (desc.cpio_entry.is_directory) {
-                return ERR_EISDIR;
-            }
-            if (desc.offset >= desc.cpio_entry.size || desc.cpio_entry.data == nullptr) {
-                return 0;
-            }
-            const size_t avail = desc.cpio_entry.size - desc.offset;
-            const size_t to_copy = (count < avail) ? count : avail;
-            const int64_t res = Kernel::MM::copy_to_user(
-                root_paddr, user_buf, desc.cpio_entry.data + desc.offset, to_copy);
-            if (res < 0) {
-                return ERR_EFAULT;
-            }
-            desc.offset += to_copy;
-            return static_cast<int64_t>(to_copy);
-        }
-
-        if (desc.type == Kernel::Process::FdType::PipeRead) {
-            return Kernel::FS::pipe_read(desc.pipe, root_paddr, user_buf, count, nonblock);
-        }
-
-        if (desc.type != Kernel::Process::FdType::ConsoleTty) {
-            return ERR_EBADF;
-        }
     } else {
-        if (fd_idx != 0U) {
+        if (raw_fd != 0U) {
             return ERR_EBADF;
         }
         root_paddr = Kernel::MM::AddressSpace::current_root_paddr();
-        if (!validate_user_write_range(root_paddr, user_buf, count)) {
-            return ERR_EFAULT;
+        if (kernel::fs::devfs_open_console(kernel::fs::kOpenReadOnly, &file) != kernel::fs::kOk) {
+            return ERR_EBADF;
         }
-        if (count == 0U) {
-            return 0;
-        }
+        temp_console = true;
     }
 
-    const bool canonical = (g_console_termios.c_lflag & TERMIOS_ICANON) != 0U;
-    const bool echo = (g_console_termios.c_lflag & TERMIOS_ECHO) != 0U;
-    const bool echoe = (g_console_termios.c_lflag & TERMIOS_ECHOE) != 0U;
-    const bool echok = (g_console_termios.c_lflag & TERMIOS_ECHOK) != 0U;
-    const bool map_cr_to_nl = (g_console_termios.c_iflag & TERMIOS_ICRNL) != 0U;
-    const bool map_nl_to_cr = (g_console_termios.c_iflag & TERMIOS_INLCR) != 0U;
-    const bool ignore_cr = (g_console_termios.c_iflag & TERMIOS_IGNCR) != 0U;
-
-    auto translate_input_char = [&](char chr, bool& skip_char) -> char {
-        skip_char = false;
-        if (chr == '\r') {
-            if (ignore_cr) {
-                skip_char = true;
-                return chr;
-            }
-            if (map_cr_to_nl) {
-                return '\n';
-            }
-        } else if (chr == '\n' && map_nl_to_cr) {
-            return '\r';
+    if (!validate_user_write_range(root_paddr, user_buf, count)) {
+        if (temp_console) {
+            (void)kernel::fs::vfs_close(file);
         }
-        return chr;
-    };
+        return ERR_EFAULT;
+    }
+    if (count == 0U) {
+        const int64_t zero_res = kernel::fs::vfs_read(file, nullptr, 0U);
+        if (temp_console) {
+            (void)kernel::fs::vfs_close(file);
+        }
+        return (zero_res < 0) ? zero_res : 0;
+    }
 
     char kbuf[READ_CHUNK_SIZE]{};
     size_t total_read = 0U;
-    size_t chunk_pos = 0U;
 
-    auto flush_chunk = [&]() -> int64_t {
-        if (chunk_pos == 0U) {
-            return 0;
+    while (total_read < count) {
+        const size_t remaining = count - total_read;
+        const size_t chunk = (remaining < READ_CHUNK_SIZE) ? remaining : READ_CHUNK_SIZE;
+        const int64_t nread = kernel::fs::vfs_read(file, kbuf, chunk);
+        if (nread < 0) {
+            if (temp_console) {
+                (void)kernel::fs::vfs_close(file);
+            }
+            return (total_read > 0U) ? static_cast<int64_t>(total_read) : nread;
         }
-        const int64_t copy_res =
-            Kernel::MM::copy_to_user(root_paddr, user_buf + total_read, kbuf, chunk_pos);
-        if (copy_res < 0) {
-            return copy_res;
-        }
-        total_read += chunk_pos;
-        chunk_pos = 0U;
-        return 0;
-    };
-
-    // Non-canonical mode (~TERMIOS_ICANON): POSIX VMIN / VTIME read semantics
-    if (!canonical) {
-        const uint8_t vmin = g_console_termios.c_cc[CC_VMIN];
-        const uint8_t vtime = g_console_termios.c_cc[CC_VTIME];
-        const size_t target_min = (vmin < count) ? vmin : count;
-        const uint64_t freq = HAL::QemuVirt::GenericTimer::frequency_hz();
-        const uint64_t timeout_ticks =
-            (vtime > 0U && freq > 0ULL) ? ((static_cast<uint64_t>(vtime) * freq) / 10ULL) : 0ULL;
-        uint64_t deadline_ticks =
-            (timeout_ticks > 0ULL) ? (HAL::QemuVirt::GenericTimer::counter_ticks() + timeout_ticks)
-                                   : 0ULL;
-
-        while ((total_read + chunk_pos) < count) {
-            uint8_t raw_byte = 0U;
-            while ((total_read + chunk_pos) < count && tty_try_pop_byte(raw_byte)) {
-                bool skip_char = false;
-                const char chr = translate_input_char(static_cast<char>(raw_byte), skip_char);
-                if (skip_char) {
-                    continue;
-                }
-                kbuf[chunk_pos++] = chr;
-                if (echo) {
-                    HAL::get_console().putc(chr);
-                }
-                if (chunk_pos == READ_CHUNK_SIZE) {
-                    const int64_t fres = flush_chunk();
-                    if (fres < 0) {
-                        return (total_read > 0U) ? static_cast<int64_t>(total_read) : fres;
-                    }
-                }
-                if (timeout_ticks > 0ULL) {
-                    deadline_ticks = HAL::QemuVirt::GenericTimer::counter_ticks() + timeout_ticks;
-                }
-            }
-
-            const size_t buffered = total_read + chunk_pos;
-            if (nonblock) {
-                if (buffered > 0U) {
-                    break;
-                }
-                if (proc != nullptr && Kernel::Process::has_unblocked_pending_signal(*proc)) {
-                    return ERR_EINTR;
-                }
-                return ERR_EAGAIN;
-            }
-
-            if (vmin == 0U && vtime == 0U) {
-                // Polling read: return immediately with whatever bytes are available
-                break;
-            }
-
-            if (vmin > 0U && buffered >= target_min) {
-                // Satisfied minimum byte threshold
-                break;
-            }
-
-            if (vmin == 0U && vtime > 0U) {
-                // Timed read: return as soon as >= 1 byte arrives or overall timer expires
-                if (buffered > 0U) {
-                    break;
-                }
-                if (HAL::QemuVirt::GenericTimer::counter_ticks() >= deadline_ticks) {
-                    break;
-                }
-            } else if (vmin > 0U && vtime > 0U && buffered > 0U) {
-                // Inter-byte timer active once at least 1 byte has been received
-                if (HAL::QemuVirt::GenericTimer::counter_ticks() >= deadline_ticks) {
-                    break;
-                }
-            }
-
-            if (proc != nullptr && Kernel::Process::has_unblocked_pending_signal(*proc)) {
-                const int64_t fres = flush_chunk();
-                if (fres < 0 && total_read == 0U) {
-                    return fres;
-                }
-                return (total_read > 0U) ? static_cast<int64_t>(total_read) : ERR_EINTR;
-            }
-
-            wait_for_event_or_tick();
-        }
-
-        const int64_t fres = flush_chunk();
-        if (fres < 0 && total_read == 0U) {
-            return fres;
-        }
-        return static_cast<int64_t>(total_read);
-    }
-
-    // Canonical mode (TERMIOS_ICANON): line-buffered input with erase/kill/EOF
-    bool line_done = false;
-    while ((total_read + chunk_pos) < count && !line_done) {
-        uint8_t raw_byte = 0U;
-        if (!tty_try_pop_byte(raw_byte)) {
-            if (proc != nullptr && Kernel::Process::has_unblocked_pending_signal(*proc)) {
-                const int64_t fres = flush_chunk();
-                if (fres < 0 && total_read == 0U) {
-                    return fres;
-                }
-                return (total_read > 0U) ? static_cast<int64_t>(total_read) : ERR_EINTR;
-            }
-            if (nonblock) {
-                return ERR_EAGAIN;
-            }
-            wait_for_event_or_tick();
-            continue;
-        }
-
-        if (raw_byte == g_console_termios.c_cc[CC_VEOF]) {
+        if (nread == 0) {
             break;
         }
-
-        if (raw_byte == g_console_termios.c_cc[CC_VKILL]) {
-            while (chunk_pos > 0U) {
-                chunk_pos--;
-                if (echo && echok) {
-                    HAL::get_console().write("\b \b", 3U);
-                }
+        if (Kernel::MM::copy_to_user(root_paddr, user_buf + total_read, kbuf,
+                                     static_cast<size_t>(nread)) < 0) {
+            if (temp_console) {
+                (void)kernel::fs::vfs_close(file);
             }
-            continue;
+            return (total_read > 0U) ? static_cast<int64_t>(total_read) : ERR_EFAULT;
         }
-
-        if (raw_byte == '\b' || raw_byte == 0x7FU ||
-            raw_byte == g_console_termios.c_cc[CC_VERASE]) {
-            if (chunk_pos > 0U) {
-                chunk_pos--;
-                if (echo) {
-                    if (echoe) {
-                        HAL::get_console().write("\b \b", 3U);
-                    } else {
-                        HAL::get_console().putc('\b');
-                    }
-                }
-            }
-            continue;
-        }
-
-        bool skip_char = false;
-        const char chr = translate_input_char(static_cast<char>(raw_byte), skip_char);
-        if (skip_char) {
-            continue;
-        }
-
-        kbuf[chunk_pos++] = chr;
-
-        if (chr == '\n') {
-            if (echo) {
-                HAL::get_console().write("\r\n", 2U);
-            }
-            line_done = true;
-        } else if (echo) {
-            const auto byte_val = static_cast<uint8_t>(chr);
-            if (byte_val >= 0x20U && byte_val <= 0x7EU) {
-                HAL::get_console().putc(chr);
-            }
-        }
-
-        if (chunk_pos == READ_CHUNK_SIZE || (total_read + chunk_pos) == count || line_done) {
-            const int64_t fres = flush_chunk();
-            if (fres < 0) {
-                return (total_read > 0U) ? static_cast<int64_t>(total_read) : fres;
-            }
+        total_read += static_cast<size_t>(nread);
+        if (static_cast<size_t>(nread) < chunk) {
+            break;
         }
     }
 
-    const int64_t fres = flush_chunk();
-    if (fres < 0 && total_read == 0U) {
-        return fres;
+    if (temp_console) {
+        (void)kernel::fs::vfs_close(file);
     }
     return static_cast<int64_t>(total_read);
 }
 
 int64_t sys_write(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexcept {
-    const auto fd_idx = static_cast<size_t>(raw_fd);
-    auto* const proc = Kernel::Process::current_process();
-    uintptr_t root_paddr = 0U;
-
     if (raw_count > Kernel::MM::user_addr_space_limit()) {
         return ERR_EFAULT;
     }
     const auto count = static_cast<size_t>(raw_count);
+    auto* const proc = Kernel::Process::current_process();
+
+    kernel::fs::File* file = nullptr;
+    bool temp_console = false;
+    uintptr_t root_paddr = 0U;
 
     if (proc != nullptr) {
-        if (proc->fd_table == nullptr || fd_idx >= proc->fd_capacity) {
-            return ERR_EBADF;
-        }
-        const auto& desc = proc->fd_table[fd_idx];
-        if (!desc.in_use || !desc.is_writable()) {
+        file = get_proc_file(proc, raw_fd);
+        if (file == nullptr) {
             return ERR_EBADF;
         }
         root_paddr = proc->address_space.root_paddr();
-
-        if (!validate_user_read_range(root_paddr, user_buf, count)) {
-            return ERR_EFAULT;
-        }
-        if (count == 0U) {
-            return 0;
-        }
-
-        if (desc.type == Kernel::Process::FdType::DevNull) {
-            return static_cast<int64_t>(count);
-        }
-
-        if (desc.type == Kernel::Process::FdType::PipeWrite) {
-            const bool nonblock = (desc.flags & Kernel::Process::FD_FLAG_NONBLOCK) != 0U;
-            return Kernel::FS::pipe_write(desc.pipe, root_paddr, user_buf, count, nonblock);
-        }
-
-        if (desc.type != Kernel::Process::FdType::ConsoleTty) {
-            return ERR_EBADF;
-        }
     } else {
-        if (fd_idx != 1U && fd_idx != 2U) {
+        if (raw_fd != 1U && raw_fd != 2U) {
             return ERR_EBADF;
         }
         root_paddr = Kernel::MM::AddressSpace::current_root_paddr();
-        if (!validate_user_read_range(root_paddr, user_buf, count)) {
-            return ERR_EFAULT;
+        if (kernel::fs::devfs_open_console(kernel::fs::kOpenWriteOnly, &file) != kernel::fs::kOk) {
+            return ERR_EBADF;
         }
-        if (count == 0U) {
-            return 0;
+        temp_console = true;
+    }
+
+    if (!validate_user_read_range(root_paddr, user_buf, count)) {
+        if (temp_console) {
+            (void)kernel::fs::vfs_close(file);
         }
+        return ERR_EFAULT;
+    }
+    if (count == 0U) {
+        const int64_t zero_res = kernel::fs::vfs_write(file, nullptr, 0U);
+        if (temp_console) {
+            (void)kernel::fs::vfs_close(file);
+        }
+        return (zero_res < 0) ? zero_res : 0;
     }
 
     char kbuf[WRITE_CHUNK_SIZE]{};
@@ -2095,17 +1966,28 @@ int64_t sys_write(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexc
     while (total_written < count) {
         const size_t remaining = count - total_written;
         const size_t chunk = (remaining < WRITE_CHUNK_SIZE) ? remaining : WRITE_CHUNK_SIZE;
-
-        const int64_t copy_res =
-            Kernel::MM::copy_from_user(root_paddr, kbuf, user_buf + total_written, chunk);
-        if (copy_res < 0) {
-            return (total_written > 0U) ? static_cast<int64_t>(total_written) : copy_res;
+        if (Kernel::MM::copy_from_user(root_paddr, kbuf, user_buf + total_written, chunk) < 0) {
+            if (temp_console) {
+                (void)kernel::fs::vfs_close(file);
+            }
+            return (total_written > 0U) ? static_cast<int64_t>(total_written) : ERR_EFAULT;
         }
-
-        HAL::get_console().write(kbuf, chunk);
-        total_written += chunk;
+        const int64_t nwritten = kernel::fs::vfs_write(file, kbuf, chunk);
+        if (nwritten < 0) {
+            if (temp_console) {
+                (void)kernel::fs::vfs_close(file);
+            }
+            return (total_written > 0U) ? static_cast<int64_t>(total_written) : nwritten;
+        }
+        total_written += static_cast<size_t>(nwritten);
+        if (static_cast<size_t>(nwritten) < chunk) {
+            break;
+        }
     }
 
+    if (temp_console) {
+        (void)kernel::fs::vfs_close(file);
+    }
     return static_cast<int64_t>(total_written);
 }
 
@@ -2119,7 +2001,7 @@ int64_t sys_writev(uint64_t raw_fd, uintptr_t user_iov, uint64_t raw_iovcnt) noe
             return ERR_EBADF;
         }
         const auto& desc = proc->fd_table[fd_idx];
-        if (!desc.in_use || !desc.is_writable()) {
+        if (!desc.is_open() || !desc.is_writable()) {
             return ERR_EBADF;
         }
         root_paddr = proc->address_space.root_paddr();
@@ -2171,61 +2053,10 @@ int16_t poll_fd_revents(const Kernel::Process::Process& proc, int32_t raw_fd,
         return POLLNVAL;
     }
     const auto& desc = proc.fd_table[static_cast<size_t>(raw_fd)];
-    if (!desc.in_use) {
+    if (!desc.is_open()) {
         return POLLNVAL;
     }
-
-    const auto event_mask = static_cast<uint16_t>(events);
-    uint32_t revents = 0U;
-    switch (desc.type) {
-    case Kernel::Process::FdType::ConsoleTty:
-        if (desc.is_readable() && tty_rx_available() > 0U) {
-            revents |= event_mask & static_cast<uint16_t>(POLLIN | POLLRDNORM);
-        }
-        if (desc.is_writable()) {
-            revents |= event_mask & static_cast<uint16_t>(POLLOUT | POLLWRNORM);
-        }
-        break;
-
-    case Kernel::Process::FdType::DevNull:
-    case Kernel::Process::FdType::InitrdFile:
-        if (desc.is_readable()) {
-            revents |= event_mask & static_cast<uint16_t>(POLLIN | POLLRDNORM);
-        }
-        if (desc.is_writable()) {
-            revents |= event_mask & static_cast<uint16_t>(POLLOUT | POLLWRNORM);
-        }
-        break;
-
-    case Kernel::Process::FdType::PipeRead:
-        if (desc.pipe == nullptr || !desc.pipe->in_use) {
-            revents |= static_cast<uint16_t>(POLLNVAL);
-        } else {
-            if (desc.pipe->count > 0U) {
-                revents |= event_mask & static_cast<uint16_t>(POLLIN | POLLRDNORM);
-            }
-            if (desc.pipe->writers == 0U) {
-                revents |= static_cast<uint16_t>(POLLHUP);
-            }
-        }
-        break;
-
-    case Kernel::Process::FdType::PipeWrite:
-        if (desc.pipe == nullptr || !desc.pipe->in_use) {
-            revents |= static_cast<uint16_t>(POLLNVAL);
-        } else if (desc.pipe->readers == 0U) {
-            revents |= static_cast<uint16_t>(POLLERR);
-        } else if (desc.pipe->count < Kernel::FS::PIPE_BUF_SIZE) {
-            revents |= event_mask & static_cast<uint16_t>(POLLOUT | POLLWRNORM);
-        }
-        break;
-
-    default:
-        revents |= static_cast<uint16_t>(POLLNVAL);
-        break;
-    }
-
-    return static_cast<int16_t>(revents);
+    return kernel::fs::vfs_poll(desc.file, events);
 }
 
 int64_t sys_ppoll(uintptr_t user_fds, uint64_t nfds, uintptr_t user_tmo, uintptr_t user_sigmask,
@@ -2392,7 +2223,7 @@ int64_t sys_pselect6(int32_t nfds, uintptr_t user_rfds, uintptr_t user_wfds, uin
                               ((efds[word] & bit) != 0ULL);
         if (want_any) {
             if (proc->fd_table == nullptr || fd >= proc->fd_capacity ||
-                !proc->fd_table[fd].in_use) {
+                !proc->fd_table[fd].is_open()) {
                 return ERR_EBADF;
             }
         }
@@ -3378,15 +3209,62 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
     }
     (void)envc;
 
-    CpioEntry entry{};
-    if (!resolve_initrd_path(canon_path, entry)) {
+    auto open_and_read_exec = [&](const char* path, uintptr_t& out_buf_paddr, size_t& out_num_pages,
+                                  size_t& out_file_size) -> int64_t {
+        out_buf_paddr = 0U;
+        out_num_pages = 0U;
+        out_file_size = 0U;
+
+        kernel::fs::File* exec_file = nullptr;
+        const int32_t orc = kernel::fs::vfs_open(kernel::fs::StringView(path),
+                                                 kernel::fs::kOpenReadOnly, 0U, &exec_file);
+        if (orc != kernel::fs::kOk) {
+            return orc;
+        }
+        if (exec_file->inode == nullptr || !exec_file->inode->is_reg() ||
+            exec_file->inode->size == 0U) {
+            (void)kernel::fs::vfs_close(exec_file);
+            return ERR_ENOEXEC;
+        }
+
+        const auto file_size = static_cast<size_t>(exec_file->inode->size);
+        const size_t num_pages = (file_size + page_size - 1U) / page_size;
+        const uintptr_t buf_paddr = alloc_frames(num_pages);
+        if (buf_paddr == 0U) {
+            (void)kernel::fs::vfs_close(exec_file);
+            return ERR_ENOMEM;
+        }
+
+        auto* const dst = reinterpret_cast<uint8_t*>(Kernel::MM::phys_to_virt(buf_paddr));
+        size_t total = 0U;
+        while (total < file_size) {
+            const int64_t nread = kernel::fs::vfs_read(exec_file, dst + total, file_size - total);
+            if (nread <= 0) {
+                free_frames(buf_paddr, num_pages);
+                (void)kernel::fs::vfs_close(exec_file);
+                return (nread < 0) ? nread : ERR_ENOEXEC;
+            }
+            total += static_cast<size_t>(nread);
+        }
+        (void)kernel::fs::vfs_close(exec_file);
+
+        out_buf_paddr = buf_paddr;
+        out_num_pages = num_pages;
+        out_file_size = file_size;
+        return 0;
+    };
+
+    uintptr_t exec_buf_paddr = 0U;
+    size_t exec_buf_pages = 0U;
+    size_t exec_file_size = 0U;
+    const int64_t read_exec_res =
+        open_and_read_exec(canon_path, exec_buf_paddr, exec_buf_pages, exec_file_size);
+    if (read_exec_res < 0) {
         free_frame(scratch_paddr);
-        return ERR_ENOENT;
+        return read_exec_res;
     }
-    if (!entry.is_regular_file || entry.data == nullptr || entry.size == 0U) {
-        free_frame(scratch_paddr);
-        return ERR_ENOEXEC;
-    }
+
+    auto* exec_bytes = reinterpret_cast<const uint8_t*>(Kernel::MM::phys_to_virt(exec_buf_paddr));
 
     // Handle '#!' shebang scripts (e.g., #!/bin/bash or #!/bin/sh)
     char shebang_interp[Kernel::Process::MAX_PATH_LEN]{};
@@ -3395,33 +3273,35 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
     char exec_binary_path[Kernel::Process::MAX_PATH_LEN]{};
     cstr_copy(exec_binary_path, canon_path, sizeof(exec_binary_path));
 
-    if (entry.size >= 2U && entry.data[0] == '#' && entry.data[1] == '!') {
+    if (exec_file_size >= 2U && exec_bytes[0] == '#' && exec_bytes[1] == '!') {
         size_t pos = 2U;
-        while (pos < entry.size && (entry.data[pos] == ' ' || entry.data[pos] == '\t')) {
+        while (pos < exec_file_size && (exec_bytes[pos] == ' ' || exec_bytes[pos] == '\t')) {
             pos++;
         }
         size_t interp_len = 0U;
-        while (pos < entry.size && entry.data[pos] != ' ' && entry.data[pos] != '\t' &&
-               entry.data[pos] != '\n' && entry.data[pos] != '\r') {
+        while (pos < exec_file_size && exec_bytes[pos] != ' ' && exec_bytes[pos] != '\t' &&
+               exec_bytes[pos] != '\n' && exec_bytes[pos] != '\r') {
             if (interp_len + 1U >= sizeof(shebang_interp)) {
+                free_frames(exec_buf_paddr, exec_buf_pages);
                 free_frame(scratch_paddr);
                 return ERR_ENOEXEC;
             }
-            shebang_interp[interp_len++] = static_cast<char>(entry.data[pos++]);
+            shebang_interp[interp_len++] = static_cast<char>(exec_bytes[pos++]);
         }
         shebang_interp[interp_len] = '\0';
         if (interp_len == 0U) {
+            free_frames(exec_buf_paddr, exec_buf_pages);
             free_frame(scratch_paddr);
             return ERR_ENOEXEC;
         }
 
-        while (pos < entry.size && (entry.data[pos] == ' ' || entry.data[pos] == '\t')) {
+        while (pos < exec_file_size && (exec_bytes[pos] == ' ' || exec_bytes[pos] == '\t')) {
             pos++;
         }
         size_t arg_len = 0U;
-        while (pos < entry.size && entry.data[pos] != '\n' && entry.data[pos] != '\r') {
+        while (pos < exec_file_size && exec_bytes[pos] != '\n' && exec_bytes[pos] != '\r') {
             if (arg_len + 1U < sizeof(shebang_arg)) {
-                shebang_arg[arg_len++] = static_cast<char>(entry.data[pos]);
+                shebang_arg[arg_len++] = static_cast<char>(exec_bytes[pos]);
             }
             pos++;
         }
@@ -3432,18 +3312,24 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
         shebang_arg[arg_len] = '\0';
         has_shebang_arg = (arg_len > 0U);
 
+        free_frames(exec_buf_paddr, exec_buf_pages);
+        exec_buf_paddr = 0U;
+
         if (!normalize_vfs_path("/", shebang_interp, exec_binary_path, sizeof(exec_binary_path))) {
             free_frame(scratch_paddr);
             return ERR_ENOENT;
         }
-        if (!resolve_initrd_path(exec_binary_path, entry) || !entry.is_regular_file ||
-            entry.data == nullptr || entry.size == 0U) {
+        const int64_t interp_res =
+            open_and_read_exec(exec_binary_path, exec_buf_paddr, exec_buf_pages, exec_file_size);
+        if (interp_res < 0) {
             free_frame(scratch_paddr);
-            return ERR_ENOENT;
+            return interp_res;
         }
+        exec_bytes = reinterpret_cast<const uint8_t*>(Kernel::MM::phys_to_virt(exec_buf_paddr));
 
         const int extra = has_shebang_arg ? 2 : 1;
         if (static_cast<size_t>(argc) + static_cast<size_t>(extra) > EXEC_MAX_ARGS) {
+            free_frames(exec_buf_paddr, exec_buf_pages);
             free_frame(scratch_paddr);
             return ERR_E2BIG;
         }
@@ -3460,7 +3346,8 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
         argc += extra;
     }
 
-    auto load_res = Kernel::Loader::load_elf(entry.data, entry.size);
+    auto load_res = Kernel::Loader::load_elf(exec_bytes, exec_file_size);
+    free_frames(exec_buf_paddr, exec_buf_pages);
     if (!load_res.is_ok()) {
         free_frame(scratch_paddr);
         return (load_res.error() == Kernel::Loader::ElfLoaderError::OutOfMemory) ? ERR_ENOMEM
@@ -3799,29 +3686,12 @@ int64_t sys_sysinfo(uintptr_t user_info) noexcept {
 
 namespace Kernel::Process {
 
-void poll_console_tty() noexcept {
-    if (!has_runnable_processes()) {
-        return;
-    }
-    auto& cpu = HAL::get_cpu();
-    const bool irq_was_enabled = cpu.interrupts_enabled();
-    cpu.disable_interrupts();
-
-    tty_pump_uart_unlocked();
-
-    if (irq_was_enabled) {
-        cpu.enable_interrupts();
-    }
-}
-
 void set_foreground_pgid(uint32_t pgid) noexcept {
-    if (pgid > 0U) {
-        g_foreground_pgid = pgid;
-    }
+    kernel::fs::console_set_foreground_pgid(pgid);
 }
 
 uint32_t get_foreground_pgid() noexcept {
-    return g_foreground_pgid;
+    return kernel::fs::console_get_foreground_pgid();
 }
 
 } // namespace Kernel::Process
@@ -3883,6 +3753,68 @@ class SyscallDispatcher : public HAL::TrapHandler {
 
         case SYS_CHDIR:
             ret_val = sys_chdir(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)));
+            break;
+        case SYS_MKDIRAT:
+            ret_val = sys_mkdirat(
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)), cpu.get_syscall_arg(ctx, 2U));
+            break;
+
+        case SYS_UNLINKAT:
+            ret_val = sys_unlinkat(
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)), cpu.get_syscall_arg(ctx, 2U));
+            break;
+
+        case SYS_RENAMEAT:
+            ret_val = sys_renameat(
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 2U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 3U)));
+            break;
+
+        case SYS_RENAMEAT2:
+            ret_val = sys_renameat2(
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 2U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 3U)), cpu.get_syscall_arg(ctx, 4U));
+            break;
+
+        case SYS_TRUNCATE:
+            ret_val = sys_truncate(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)),
+                                   static_cast<int64_t>(cpu.get_syscall_arg(ctx, 1U)));
+            break;
+
+        case SYS_FTRUNCATE:
+            ret_val = sys_ftruncate(cpu.get_syscall_arg(ctx, 0U),
+                                    static_cast<int64_t>(cpu.get_syscall_arg(ctx, 1U)));
+            break;
+
+        case SYS_FCHMOD:
+            ret_val = sys_fchmod(cpu.get_syscall_arg(ctx, 0U), cpu.get_syscall_arg(ctx, 1U));
+            break;
+
+        case SYS_FCHMODAT:
+            ret_val = sys_fchmodat(
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)), cpu.get_syscall_arg(ctx, 2U),
+                cpu.get_syscall_arg(ctx, 3U));
+            break;
+
+        case SYS_FCHOWNAT:
+            ret_val = sys_fchownat(
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
+                static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 2U)),
+                static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 3U)), cpu.get_syscall_arg(ctx, 4U));
+            break;
+
+        case SYS_FCHOWN:
+            ret_val = sys_fchown(cpu.get_syscall_arg(ctx, 0U),
+                                 static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 1U)),
+                                 static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 2U)));
             break;
 
         case SYS_OPENAT:
@@ -3965,6 +3897,21 @@ class SyscallDispatcher : public HAL::TrapHandler {
         case SYS_FSTAT:
             ret_val = sys_fstat(cpu.get_syscall_arg(ctx, 0U),
                                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)));
+            break;
+
+        case SYS_FSYNC:
+            ret_val = sys_fsync(cpu.get_syscall_arg(ctx, 0U), 0);
+            break;
+
+        case SYS_FDATASYNC:
+            ret_val = sys_fsync(cpu.get_syscall_arg(ctx, 0U), 1);
+            break;
+
+        case SYS_UTIMENSAT:
+            ret_val = sys_utimensat(
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 2U)), cpu.get_syscall_arg(ctx, 3U));
             break;
 
         case SYS_EXIT:

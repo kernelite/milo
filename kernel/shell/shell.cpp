@@ -1,11 +1,16 @@
 #include "boot/fdt.hpp"
+#include "drivers/block/block_device.hpp"
 #include "fs/cpio.hpp"
+#include "fs/devfs/devfs.hpp"
+#include "fs/vfs.hpp"
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
+#include "hal/platform.hpp"
 #include "hal/targets/qemu_virt/gicv2.hpp"
 #include "hal/targets/qemu_virt/timer.hpp"
 #include "hal/test_hooks.hpp"
+#include "ipc/pipe.hpp"
 #include "loader/elf64.hpp"
 #include "loader/elf_loader.hpp"
 #include "mm/address_space.hpp"
@@ -16,6 +21,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <new>
 
 extern "C" void cmd_test_uxn_fault();
@@ -205,6 +211,68 @@ void launch_initrd_shell(const char* bin_path, const char* argv0, const char* sh
     print_str(" exited with status ");
     print_dec64(static_cast<uint64_t>(exit_status));
     print_str("\r\n");
+}
+
+void cmd_test_blk() noexcept {
+    print_str("\r\n[TEST] Running Virtio Block Device & Async IRQ Verification...\r\n");
+
+    Kernel::Drivers::Block::BlockDevice* const blk = HAL::Platform::primary_block_device();
+    assert_test(blk != nullptr, "Primary block device discovered via HAL::Platform");
+    if (blk == nullptr) {
+        return;
+    }
+
+    const size_t sec_size = blk->sector_size();
+    assert_test(sec_size == 512U && blk->sector_count() > 0ULL,
+                "Block device geometry is valid (512-byte sectors, non-zero capacity)");
+    if (sec_size != 512U || blk->sector_count() == 0ULL) {
+        return;
+    }
+
+    alignas(16) uint8_t tx_buf[512]{};
+    alignas(16) uint8_t rx_buf[512]{};
+    for (size_t i = 0U; i < sizeof(tx_buf); ++i) {
+        tx_buf[i] = static_cast<uint8_t>((i * 7U) ^ 0x3DU);
+    }
+
+    const auto* const cur = Kernel::Process::current_process();
+    const uint64_t ticks_before = Kernel::Scheduler::timer_ticks();
+    const uint64_t sleeps_before = blk->sleep_count();
+    const uint64_t irqs_before = blk->irq_completions();
+
+    const int write_rc = blk->write_sectors(0ULL, 1U, tx_buf);
+    assert_test(write_rc == 0, "Async write_sectors(LBA 0, 1 sector) returned 0 (VIRTIO_BLK_S_OK)");
+
+    const int read_rc = blk->read_sectors(0ULL, 1U, rx_buf);
+    assert_test(read_rc == 0, "Async read_sectors(LBA 0, 1 sector) returned 0 (VIRTIO_BLK_S_OK)");
+
+    const uint64_t elapsed_ticks = Kernel::Scheduler::timer_ticks() - ticks_before;
+    const uint64_t delta_sleeps = blk->sleep_count() - sleeps_before;
+    const uint64_t delta_irqs = blk->irq_completions() - irqs_before;
+    const bool data_match = (std::memcmp(tx_buf, rx_buf, sizeof(tx_buf)) == 0);
+
+    assert_test(data_match, "DMA payload match: rx_buf == tx_buf");
+    assert_test(delta_irqs == 2ULL, "GICv2 SPI handler completed both requests");
+
+    if (cur != nullptr) {
+        assert_test(delta_sleeps >= 2ULL,
+                    "Requesting process slept on WaitQueue while I/O was in flight");
+        assert_test(blk->last_woken_pid() == cur->pid,
+                    "GICv2 IRQ handler woke the exact waiting PID");
+    } else {
+        print_str("  [INFO] Running in boot context (current_process == nullptr); "
+                  "sleeps=");
+        print_dec64(delta_sleeps);
+        print_str(", irqs=");
+        print_dec64(delta_irqs);
+        print_str("\r\n");
+    }
+
+    if (data_match && write_rc == 0 && read_rc == 0) {
+        print_str("  [PASS] Async I/O successful. Elapsed scheduler ticks during I/O: ");
+        print_dec64(elapsed_ticks);
+        print_str("\r\n");
+    }
 }
 
 void cmd_bash() noexcept {
@@ -728,6 +796,10 @@ void cmd_info() noexcept {
     print_str(mmu_st.icache_enabled ? "YES\r\n" : "NO\r\n");
     print_str("  SCTLR_EL1 Register      : ");
     print_hex64(mmu_st.raw_control_reg);
+    print_str("\r\n  PFA Free Frames         : ");
+    print_dec64(pfa_free_pages_count());
+    print_str("\r\n  PFA Allocated Frames    : ");
+    print_dec64(pfa_allocated_pages_count());
     print_str("\r\n=============================================\r\n");
 }
 
@@ -828,34 +900,25 @@ void cmd_test_dynamic_io() noexcept {
             pipes_ok = false;
             break;
         }
-        proc->fd_table[rfd].in_use = true;
+
+        kernel::fs::File* read_file = nullptr;
+        kernel::fs::File* write_file = nullptr;
+        if (Kernel::IPC::create_pipe_files(&read_file, &write_file) != kernel::fs::kOk) {
+            pipes_ok = false;
+            break;
+        }
+
+        proc->fd_table[rfd] = Kernel::Process::FileDescriptor{.file = read_file, .fd_flags = 0U};
 
         const int wfd = Kernel::Process::allocate_fd(*proc, static_cast<size_t>(rfd) + 1U);
         if (wfd < 0) {
-            proc->fd_table[rfd].in_use = false;
+            Kernel::Process::close_fd(*proc, static_cast<size_t>(rfd));
+            (void)kernel::fs::vfs_close(write_file);
             pipes_ok = false;
             break;
         }
 
-        Kernel::FS::Pipe* const pipe = Kernel::FS::allocate_pipe();
-        if (pipe == nullptr) {
-            proc->fd_table[rfd].in_use = false;
-            pipes_ok = false;
-            break;
-        }
-
-        proc->fd_table[rfd] = Kernel::Process::FileDescriptor{
-            .type = Kernel::Process::FdType::PipeRead,
-            .flags = Kernel::Process::FD_FLAG_READ,
-            .in_use = true,
-            .pipe = pipe,
-        };
-        proc->fd_table[wfd] = Kernel::Process::FileDescriptor{
-            .type = Kernel::Process::FdType::PipeWrite,
-            .flags = Kernel::Process::FD_FLAG_WRITE,
-            .in_use = true,
-            .pipe = pipe,
-        };
+        proc->fd_table[wfd] = Kernel::Process::FileDescriptor{.file = write_file, .fd_flags = 0U};
         read_fds[i] = rfd;
         write_fds[i] = wfd;
     }
@@ -1280,29 +1343,34 @@ void cmd_test_syscall() noexcept {
     // 3. Execute EL0 TTY ioctl & non-blocking sys_read verification suite
     assert_test(Kernel::Process::init_fd_table(*proc, Kernel::Process::INITIAL_FD_CAPACITY),
                 "Re-initialized dynamic fd_table for TTY ioctl verification suite");
-    proc->fd_table[0] = Kernel::Process::FileDescriptor{
-        .type = Kernel::Process::FdType::ConsoleTty,
-        .flags = Kernel::Process::FD_FLAG_READ,
-        .in_use = true,
-    };
-    proc->fd_table[1] = Kernel::Process::FileDescriptor{
-        .type = Kernel::Process::FdType::ConsoleTty,
-        .flags = Kernel::Process::FD_FLAG_WRITE,
-        .in_use = true,
-    };
-    proc->fd_table[2] = Kernel::Process::FileDescriptor{
-        .type = Kernel::Process::FdType::ConsoleTty,
-        .flags = Kernel::Process::FD_FLAG_WRITE,
-        .in_use = true,
-    };
+    kernel::fs::File* tty_in = nullptr;
+    kernel::fs::File* tty_out = nullptr;
+    kernel::fs::File* tty_err = nullptr;
+    (void)kernel::fs::devfs_open_console(kernel::fs::kOpenReadOnly, &tty_in);
+    (void)kernel::fs::devfs_open_console(kernel::fs::kOpenWriteOnly, &tty_out);
+    (void)kernel::fs::devfs_open_console(kernel::fs::kOpenWriteOnly, &tty_err);
+    proc->fd_table[0] = Kernel::Process::FileDescriptor{.file = tty_in, .fd_flags = 0U};
+    proc->fd_table[1] = Kernel::Process::FileDescriptor{.file = tty_out, .fd_flags = 0U};
+    proc->fd_table[2] = Kernel::Process::FileDescriptor{.file = tty_err, .fd_flags = 0U};
 
     constexpr uint64_t NON_TTY_FD = 3ULL;
-    proc->fd_table[NON_TTY_FD] = Kernel::Process::FileDescriptor{
-        .type = Kernel::Process::FdType::InitrdFile,
-        .flags = Kernel::Process::FD_FLAG_READ,
-        .offset = 0U,
-        .in_use = true,
-    };
+    kernel::fs::File* non_tty_file = nullptr;
+    (void)kernel::fs::vfs_open("/init.txt", kernel::fs::kOpenReadOnly, 0U, &non_tty_file);
+    if (non_tty_file == nullptr) {
+        kernel::fs::Inode* dummy_ino = kernel::fs::vfs_alloc_inode(nullptr);
+        if (dummy_ino != nullptr) {
+            dummy_ino->mode = kernel::fs::kModeReg | 0444U;
+            non_tty_file = kernel::fs::vfs_alloc_file();
+            if (non_tty_file != nullptr) {
+                non_tty_file->inode = dummy_ino;
+                non_tty_file->flags = kernel::fs::kOpenReadOnly;
+            } else {
+                kernel::fs::inode_put(dummy_ino);
+            }
+        }
+    }
+    proc->fd_table[NON_TTY_FD] =
+        Kernel::Process::FileDescriptor{.file = non_tty_file, .fd_flags = 0U};
 
     constexpr uintptr_t IOCTL_ARGS_VADDR = DATA_PAGE0_VADDR + 0x100ULL;
     const HAL::Test::TtyIoctlSuiteArgs ioctl_args{
@@ -2286,6 +2354,7 @@ void print_help() noexcept {
     print_str("  test cow           - Run EL0 Copy-on-Write isolation verification suite\r\n");
     print_str("  test demand_paging - Run EL0 1 GiB demand-zero capacity verification suite\r\n");
     print_str("  test lazy_mm       - Run full lazy memory acceptance & zero-leak suite\r\n");
+    print_str("  test blk           - Test Virtio-MMIO block device async I/O & IRQ wakeup\r\n");
     print_str("  test all           - Run entire verification test suite\r\n");
     print_str("  bash            - Run interactive GNU bash shell\r\n");
     print_str("  sh              - Run interactive POSIX shell (/bin/bash or BusyBox)\r\n");
@@ -2381,6 +2450,8 @@ void dispatch_command(const char* buf) noexcept {
         cmd_sh();
     } else if (streq(buf, "clear")) {
         print_str("\033[2J\033[H");
+    } else if (streq(buf, "test blk")) {
+        cmd_test_blk();
     } else if (streq(buf, "help")) {
         print_help();
     } else if (streq(buf, "test all")) {
@@ -2409,6 +2480,7 @@ void dispatch_command(const char* buf) noexcept {
         cmd_test_sched();
         cmd_test_heap();
         cmd_test_dynamic_io();
+        cmd_test_blk();
         run_lazy_memory_acceptance_suite();
     } else if (buf[0] != '\0') {
         print_str("Unknown command: '");

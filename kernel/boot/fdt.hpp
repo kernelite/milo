@@ -32,10 +32,26 @@ struct InitrdLocation {
     bool valid{false};
 };
 
+struct VirtioMmioDevice {
+    uintptr_t base_paddr{0U};
+    size_t size{0U};
+    uint32_t irq_intid{0U};
+    uint32_t irq_trigger{0U};
+    bool has_irq{false};
+};
+
+struct VirtioMmioList {
+    static constexpr size_t MAX_DEVICES = 32U;
+    VirtioMmioDevice devices[MAX_DEVICES]{};
+    size_t count{0U};
+};
+
 bool validate_header(uintptr_t dtb_paddr, size_t* out_totalsize = nullptr) noexcept;
 bool find_memory_regions(uintptr_t dtb_paddr, MemoryMap& out_map) noexcept;
 MemoryMap find_memory_regions(uintptr_t dtb_paddr) noexcept;
 ReserveMap find_memory_reservations(uintptr_t dtb_paddr) noexcept;
 InitrdLocation find_initrd(uintptr_t dtb_paddr) noexcept;
+bool find_virtio_mmio_devices(uintptr_t dtb_paddr, VirtioMmioList& out_list) noexcept;
+VirtioMmioList find_virtio_mmio_devices(uintptr_t dtb_paddr) noexcept;
 
 } // namespace FDT

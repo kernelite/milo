@@ -111,6 +111,8 @@ void aarch64_handle_irq_exception(HAL::CpuContext* ctx) noexcept {
         return;
     }
 
+    (void)Kernel::Drivers::IRQ::GicV2::dispatch_irq(irq);
+
     if (from_user) {
         Kernel::Process::deliver_pending_signals(*ctx);
     }
