@@ -165,9 +165,9 @@ void decode_gic_interrupt_spec(const uint8_t* irq_data, uint32_t irq_len, uint32
     }
 }
 
-void sort_virtio_devices(FDT::VirtioMmioList& list) noexcept {
+void sort_virtio_devices(Kernel::Boot::VirtioMmioList& list) noexcept {
     for (size_t idx = 1U; idx < list.count; ++idx) {
-        const FDT::VirtioMmioDevice key = list.devices[idx];
+        const Kernel::Boot::VirtioMmioDevice key = list.devices[idx];
         size_t pos = idx;
         while (pos > 0U && list.devices[pos - 1U].base_paddr > key.base_paddr) {
             list.devices[pos] = list.devices[pos - 1U];
@@ -251,8 +251,9 @@ const char* lookup_string(const uint8_t* strings_base, uint32_t strings_size,
     return nullptr;
 }
 
-void add_aligned_region(FDT::MemoryMap& map, uint64_t raw_base, uint64_t raw_size) noexcept {
-    if (raw_size == 0ULL || map.count >= FDT::MemoryMap::MAX_REGIONS) {
+void add_aligned_region(Kernel::Boot::MemoryMap& map, uint64_t raw_base,
+                        uint64_t raw_size) noexcept {
+    if (raw_size == 0ULL || map.count >= Kernel::Boot::MemoryMap::MAX_REGIONS) {
         return;
     }
 
@@ -275,7 +276,7 @@ void add_aligned_region(FDT::MemoryMap& map, uint64_t raw_base, uint64_t raw_siz
     ++map.count;
 }
 
-void decode_reg_property(FDT::MemoryMap& map, const uint8_t* reg_data, uint32_t reg_len,
+void decode_reg_property(Kernel::Boot::MemoryMap& map, const uint8_t* reg_data, uint32_t reg_len,
                          uint32_t address_cells, uint32_t size_cells) noexcept {
     if (reg_data == nullptr || (address_cells != 1U && address_cells != 2U) ||
         (size_cells != 1U && size_cells != 2U)) {
@@ -295,14 +296,14 @@ void decode_reg_property(FDT::MemoryMap& map, const uint8_t* reg_data, uint32_t 
     }
 }
 
-void sort_and_merge_regions(FDT::MemoryMap& map) noexcept {
+void sort_and_merge_regions(Kernel::Boot::MemoryMap& map) noexcept {
     if (map.count == 0U) {
         return;
     }
 
     // Sort regions in ascending order of physical base address
     for (size_t i = 1U; i < map.count; ++i) {
-        const FDT::MemoryRegion key = map.regions[i];
+        const Kernel::Boot::MemoryRegion key = map.regions[i];
         size_t j = i;
         while (j > 0U && map.regions[j - 1U].base_paddr > key.base_paddr) {
             map.regions[j] = map.regions[j - 1U];
@@ -314,8 +315,8 @@ void sort_and_merge_regions(FDT::MemoryMap& map) noexcept {
     // Merge adjacent or overlapping spans
     size_t write_idx = 0U;
     for (size_t read_idx = 1U; read_idx < map.count; ++read_idx) {
-        FDT::MemoryRegion& curr = map.regions[write_idx];
-        const FDT::MemoryRegion& next = map.regions[read_idx];
+        Kernel::Boot::MemoryRegion& curr = map.regions[write_idx];
+        const Kernel::Boot::MemoryRegion& next = map.regions[read_idx];
         const uintptr_t curr_end = curr.base_paddr + curr.size;
 
         if (next.base_paddr <= curr_end) {
@@ -331,14 +332,15 @@ void sort_and_merge_regions(FDT::MemoryMap& map) noexcept {
     map.count = write_idx + 1U;
 }
 
-void finalize_memory_map(FDT::MemoryMap& map) noexcept {
+void finalize_memory_map(Kernel::Boot::MemoryMap& map) noexcept {
     if (map.count == 0U) {
-        map.regions[0] = FDT::MemoryRegion{.base_paddr = Arch::RAM_BASE, .size = FALLBACK_RAM_SIZE};
+        map.regions[0] =
+            Kernel::Boot::MemoryRegion{.base_paddr = Arch::RAM_BASE, .size = FALLBACK_RAM_SIZE};
         map.count = 1U;
     }
 
     map.min_paddr = map.regions[0].base_paddr;
-    const FDT::MemoryRegion& last = map.regions[map.count - 1U];
+    const Kernel::Boot::MemoryRegion& last = map.regions[map.count - 1U];
     map.max_paddr = last.base_paddr + last.size;
 
     size_t total = 0U;
@@ -350,7 +352,7 @@ void finalize_memory_map(FDT::MemoryMap& map) noexcept {
 
 } // namespace
 
-namespace FDT {
+namespace Kernel::Boot {
 
 bool validate_header(uintptr_t dtb_paddr, size_t* out_totalsize) noexcept {
     FdtHeader hdr{};
@@ -800,4 +802,4 @@ VirtioMmioList find_virtio_mmio_devices(uintptr_t dtb_paddr) noexcept {
     return list;
 }
 
-} // namespace FDT
+} // namespace Kernel::Boot

@@ -57,9 +57,9 @@ struct Page {
     void* freelist{nullptr};
 };
 
-void pfa_init(const FDT::MemoryMap& mem_map, uintptr_t kernel_start, uintptr_t kernel_end,
+void pfa_init(const Kernel::Boot::MemoryMap& mem_map, uintptr_t kernel_start, uintptr_t kernel_end,
               uintptr_t dtb_paddr, size_t dtb_size, uintptr_t initrd_start, uintptr_t initrd_end,
-              const FDT::ReserveMap* reserve_map = nullptr) noexcept;
+              const Kernel::Boot::ReserveMap* reserve_map = nullptr) noexcept;
 
 void pfa_on_mmu_enabled() noexcept;
 

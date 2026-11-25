@@ -79,14 +79,14 @@ void add_reserved_span(Span* spans, size_t& count, uintptr_t start, uintptr_t en
     ++count;
 }
 
-uintptr_t find_metadata_carveout(const FDT::MemoryMap& mem_map, size_t needed_bytes,
+uintptr_t find_metadata_carveout(const Kernel::Boot::MemoryMap& mem_map, size_t needed_bytes,
                                  const Span* reserved_spans, size_t reserved_count) noexcept {
     if (needed_bytes == 0U) {
         return 0U;
     }
 
     for (size_t r_idx = 0U; r_idx < mem_map.count; ++r_idx) {
-        const FDT::MemoryRegion& region = mem_map.regions[r_idx];
+        const Kernel::Boot::MemoryRegion& region = mem_map.regions[r_idx];
         uintptr_t cand = align_up_page(region.base_paddr);
         const uintptr_t region_end = align_down_page(region.base_paddr + region.size);
 
@@ -137,9 +137,9 @@ void mark_range_reserved(uintptr_t start, uintptr_t end) noexcept {
 
 } // namespace
 
-void pfa_init(const FDT::MemoryMap& mem_map, uintptr_t kernel_start, uintptr_t kernel_end,
+void pfa_init(const Kernel::Boot::MemoryMap& mem_map, uintptr_t kernel_start, uintptr_t kernel_end,
               uintptr_t dtb_paddr, size_t dtb_size, uintptr_t initrd_start, uintptr_t initrd_end,
-              const FDT::ReserveMap* reserve_map) noexcept {
+              const Kernel::Boot::ReserveMap* reserve_map) noexcept {
     g_pages = nullptr;
     g_pages_paddr = 0U;
     g_pages_bytes = 0U;
@@ -172,7 +172,7 @@ void pfa_init(const FDT::MemoryMap& mem_map, uintptr_t kernel_start, uintptr_t k
     }
     if (reserve_map != nullptr) {
         for (size_t idx = 0U; idx < reserve_map->count; ++idx) {
-            const FDT::MemoryRegion& entry = reserve_map->entries[idx];
+            const Kernel::Boot::MemoryRegion& entry = reserve_map->entries[idx];
             if (entry.size > 0U) {
                 add_reserved_span(reserved_spans, reserved_count, entry.base_paddr,
                                   entry.base_paddr + entry.size);
@@ -213,7 +213,7 @@ void pfa_init(const FDT::MemoryMap& mem_map, uintptr_t kernel_start, uintptr_t k
 
     // 2. Mark discovered usable physical RAM regions as Free.
     for (size_t r_idx = 0U; r_idx < mem_map.count; ++r_idx) {
-        const FDT::MemoryRegion& region = mem_map.regions[r_idx];
+        const Kernel::Boot::MemoryRegion& region = mem_map.regions[r_idx];
         const uintptr_t r_start = align_up_page(region.base_paddr);
         const uintptr_t r_end = align_down_page(region.base_paddr + region.size);
         for (uintptr_t paddr = r_start; paddr < r_end; paddr += Arch::PAGE_SIZE) {
@@ -254,9 +254,9 @@ void pfa_init(const FDT::MemoryMap& mem_map, uintptr_t kernel_start, uintptr_t k
 
 void pfa_init(uintptr_t ram_start, size_t ram_size, uintptr_t kernel_start, uintptr_t kernel_end,
               uintptr_t initrd_start, uintptr_t initrd_end) noexcept {
-    FDT::MemoryMap mem_map{};
+    Kernel::Boot::MemoryMap mem_map{};
     if (ram_size > 0U) {
-        mem_map.regions[0] = FDT::MemoryRegion{.base_paddr = ram_start, .size = ram_size};
+        mem_map.regions[0] = Kernel::Boot::MemoryRegion{.base_paddr = ram_start, .size = ram_size};
         mem_map.count = 1U;
         mem_map.min_paddr = ram_start;
         mem_map.max_paddr = ram_start + ram_size;

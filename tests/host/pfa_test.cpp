@@ -13,9 +13,9 @@ constexpr uintptr_t KERNEL_END = RAM_BASE + (64UL * 1024UL); // 16 pages
 constexpr uintptr_t INITRD_START = RAM_BASE + (512UL * 1024UL);
 constexpr uintptr_t INITRD_END = RAM_BASE + (576UL * 1024UL); // 16 pages
 
-FDT::MemoryMap make_single_region_map(uintptr_t base, size_t size) noexcept {
-    FDT::MemoryMap map{};
-    map.regions[0] = FDT::MemoryRegion{.base_paddr = base, .size = size};
+Kernel::Boot::MemoryMap make_single_region_map(uintptr_t base, size_t size) noexcept {
+    Kernel::Boot::MemoryMap map{};
+    map.regions[0] = Kernel::Boot::MemoryRegion{.base_paddr = base, .size = size};
     map.count = 1U;
     map.min_paddr = base;
     map.max_paddr = base + size;
@@ -25,7 +25,7 @@ FDT::MemoryMap make_single_region_map(uintptr_t base, size_t size) noexcept {
 
 void init_standard_test_pfa() noexcept {
     HostTest::reset_host_hal();
-    const FDT::MemoryMap map = make_single_region_map(RAM_BASE, RAM_SIZE);
+    const Kernel::Boot::MemoryMap map = make_single_region_map(RAM_BASE, RAM_SIZE);
     pfa_init(map, KERNEL_START, KERNEL_END, 0U, 0U, INITRD_START, INITRD_END, nullptr);
 }
 
@@ -34,14 +34,15 @@ void init_standard_test_pfa() noexcept {
 TEST_CASE("PFA reserves kernel, initrd, metadata, and /memreserve/ spans", "[pfa][mm]") {
     HostTest::reset_host_hal();
 
-    const FDT::MemoryMap map = make_single_region_map(RAM_BASE, RAM_SIZE);
+    const Kernel::Boot::MemoryMap map = make_single_region_map(RAM_BASE, RAM_SIZE);
     constexpr uintptr_t DTB_START = RAM_BASE + (128UL * 1024UL);
     constexpr size_t DTB_SIZE = 2U * Arch::PAGE_SIZE;
     constexpr uintptr_t MEMRES_START = RAM_BASE + (256UL * 1024UL);
     constexpr size_t MEMRES_SIZE = 4U * Arch::PAGE_SIZE;
 
-    FDT::ReserveMap reserve_map{};
-    reserve_map.entries[0] = FDT::MemoryRegion{.base_paddr = MEMRES_START, .size = MEMRES_SIZE};
+    Kernel::Boot::ReserveMap reserve_map{};
+    reserve_map.entries[0] =
+        Kernel::Boot::MemoryRegion{.base_paddr = MEMRES_START, .size = MEMRES_SIZE};
     reserve_map.count = 1U;
 
     pfa_init(map, KERNEL_START, KERNEL_END, DTB_START, DTB_SIZE, INITRD_START, INITRD_END,
@@ -89,12 +90,12 @@ TEST_CASE("PFA reserves kernel, initrd, metadata, and /memreserve/ spans", "[pfa
 
     SECTION("Discontiguous /memory banks keep gaps permanently reserved") {
         HostTest::reset_host_hal();
-        FDT::MemoryMap split_map{};
-        split_map.regions[0] = FDT::MemoryRegion{
+        Kernel::Boot::MemoryMap split_map{};
+        split_map.regions[0] = Kernel::Boot::MemoryRegion{
             .base_paddr = RAM_BASE,
             .size = 256UL * 1024UL,
         };
-        split_map.regions[1] = FDT::MemoryRegion{
+        split_map.regions[1] = Kernel::Boot::MemoryRegion{
             .base_paddr = RAM_BASE + (512UL * 1024UL),
             .size = 256UL * 1024UL,
         };

@@ -26,7 +26,7 @@
 
 extern "C" void cmd_test_uxn_fault();
 // Access global initrd metadata from main.cpp
-extern FDT::InitrdLocation g_initrd_loc;
+extern Kernel::Boot::InitrdLocation g_initrd_loc;
 
 namespace {
 

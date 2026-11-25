@@ -432,7 +432,7 @@ int32_t rootfs_mount_cpio(const void* cpio_base, size_t cpio_size) noexcept {
     return vfs_mount_root(superblock);
 }
 
-int32_t rootfs_mount_from_initrd(const FDT::InitrdLocation& initrd) noexcept {
+int32_t rootfs_mount_from_initrd(const Kernel::Boot::InitrdLocation& initrd) noexcept {
     if (!initrd.valid || initrd.start_paddr == 0U || initrd.size == 0U) {
         return rootfs_mount_cpio(nullptr, 0U);
     }

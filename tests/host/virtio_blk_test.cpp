@@ -29,8 +29,8 @@ void init_blk_test_pfa() noexcept {
     HostTest::reset_host_hal();
     HAL::get_mmu().activate();
 
-    FDT::MemoryMap mem_map{};
-    mem_map.regions[0] = FDT::MemoryRegion{
+    Kernel::Boot::MemoryMap mem_map{};
+    mem_map.regions[0] = Kernel::Boot::MemoryRegion{
         .base_paddr = HostTest::SIM_RAM_BASE,
         .size = HostTest::SIM_RAM_SIZE,
     };

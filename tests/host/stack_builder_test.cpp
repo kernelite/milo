@@ -18,8 +18,8 @@ constexpr uintptr_t KERNEL_END = RAM_BASE + (64UL * 1024UL);
 
 void init_stack_test_env() noexcept {
     HostTest::reset_host_hal();
-    FDT::MemoryMap map{};
-    map.regions[0] = FDT::MemoryRegion{.base_paddr = RAM_BASE, .size = RAM_SIZE};
+    Kernel::Boot::MemoryMap map{};
+    map.regions[0] = Kernel::Boot::MemoryRegion{.base_paddr = RAM_BASE, .size = RAM_SIZE};
     map.count = 1U;
     map.min_paddr = RAM_BASE;
     map.max_paddr = RAM_BASE + RAM_SIZE;

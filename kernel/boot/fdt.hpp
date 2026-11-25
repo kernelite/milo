@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace FDT {
+namespace Kernel::Boot {
 
 struct MemoryRegion {
     uintptr_t base_paddr{0U};
@@ -54,4 +54,4 @@ InitrdLocation find_initrd(uintptr_t dtb_paddr) noexcept;
 bool find_virtio_mmio_devices(uintptr_t dtb_paddr, VirtioMmioList& out_list) noexcept;
 VirtioMmioList find_virtio_mmio_devices(uintptr_t dtb_paddr) noexcept;
 
-} // namespace FDT
+} // namespace Kernel::Boot

@@ -23,7 +23,7 @@
 #include <cstring>
 
 uintptr_t g_dtb_paddr = 0;
-FDT::InitrdLocation g_initrd_loc{};
+Kernel::Boot::InitrdLocation g_initrd_loc{};
 
 extern "C" {
 extern char _text_start[];
@@ -52,7 +52,7 @@ void print_hex64(uint64_t val) noexcept {
 }
 
 Kernel::Drivers::Virtio::VirtioMmioTransport
-    g_virtio_transports[FDT::VirtioMmioList::MAX_DEVICES]{};
+    g_virtio_transports[Kernel::Boot::VirtioMmioList::MAX_DEVICES]{};
 
 void default_virtio_spi_handler(uint32_t /*irq*/, void* context) noexcept {
     auto* const transport = static_cast<Kernel::Drivers::Virtio::VirtioMmioTransport*>(context);
@@ -65,11 +65,12 @@ void default_virtio_spi_handler(uint32_t /*irq*/, void* context) noexcept {
 }
 
 void init_virtio_mmio_devices(uintptr_t dtb_paddr) noexcept {
-    const FDT::VirtioMmioList mmio_list = FDT::find_virtio_mmio_devices(dtb_paddr);
+    const Kernel::Boot::VirtioMmioList mmio_list =
+        Kernel::Boot::find_virtio_mmio_devices(dtb_paddr);
     size_t active_count = 0U;
 
     for (size_t idx = 0U; idx < mmio_list.count; ++idx) {
-        const FDT::VirtioMmioDevice& dev = mmio_list.devices[idx];
+        const Kernel::Boot::VirtioMmioDevice& dev = mmio_list.devices[idx];
         auto& transport = g_virtio_transports[idx];
         if (!transport.init(dev.base_paddr, dev.size)) {
             continue;
@@ -152,10 +153,10 @@ extern "C" void kmain(uintptr_t dtb_paddr) {
 
     // Stage 2: DTB Discovery (Pre-MMU)
     size_t dtb_size = 0U;
-    const bool dtb_valid = FDT::validate_header(dtb_paddr, &dtb_size);
-    const FDT::MemoryMap mem_map = FDT::find_memory_regions(dtb_paddr);
-    const FDT::ReserveMap reserve_map = FDT::find_memory_reservations(dtb_paddr);
-    g_initrd_loc = FDT::find_initrd(dtb_paddr);
+    const bool dtb_valid = Kernel::Boot::validate_header(dtb_paddr, &dtb_size);
+    const Kernel::Boot::MemoryMap mem_map = Kernel::Boot::find_memory_regions(dtb_paddr);
+    const Kernel::Boot::ReserveMap reserve_map = Kernel::Boot::find_memory_reservations(dtb_paddr);
+    g_initrd_loc = Kernel::Boot::find_initrd(dtb_paddr);
 
     for (size_t i = 0U; i < mem_map.count; ++i) {
         print_str("[FDT] Memory Bank: ");

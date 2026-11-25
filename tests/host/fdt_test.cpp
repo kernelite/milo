@@ -175,8 +175,8 @@ TEST_CASE("FDT enumerates virtio,mmio nodes and converts SPIs to GIC INTIDs", "[
     builder.end_node();
     const uintptr_t dtb_paddr = builder.finalize();
 
-    FDT::VirtioMmioList devices{};
-    REQUIRE(FDT::find_virtio_mmio_devices(dtb_paddr, devices));
+    Kernel::Boot::VirtioMmioList devices{};
+    REQUIRE(Kernel::Boot::find_virtio_mmio_devices(dtb_paddr, devices));
     REQUIRE(devices.count == 2U);
 
     CHECK(devices.devices[0].base_paddr == 0x0A000000ULL);
@@ -193,7 +193,7 @@ TEST_CASE("FDT enumerates virtio,mmio nodes and converts SPIs to GIC INTIDs", "[
 }
 
 TEST_CASE("FDT virtio enumeration handles null or corrupt DTB safely", "[fdt][virtio]") {
-    FDT::VirtioMmioList devices{};
-    CHECK_FALSE(FDT::find_virtio_mmio_devices(0U, devices));
+    Kernel::Boot::VirtioMmioList devices{};
+    CHECK_FALSE(Kernel::Boot::find_virtio_mmio_devices(0U, devices));
     CHECK(devices.count == 0U);
 }

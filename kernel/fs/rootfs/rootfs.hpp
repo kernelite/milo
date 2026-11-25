@@ -18,6 +18,6 @@ void rootfs_reset() noexcept;
 [[nodiscard]] int32_t rootfs_mount_cpio(const void* cpio_base, size_t cpio_size) noexcept;
 
 // Convenience boot helper for mounting the DTB-discovered initrd at `/`.
-[[nodiscard]] int32_t rootfs_mount_from_initrd(const FDT::InitrdLocation& initrd) noexcept;
+[[nodiscard]] int32_t rootfs_mount_from_initrd(const Kernel::Boot::InitrdLocation& initrd) noexcept;
 
 } // namespace kernel::fs
