@@ -20,6 +20,8 @@
 #include "process/scheduler.hpp"
 #endif
 
+namespace Kernel::MM {
+
 namespace {
 
 constexpr size_t NUM_SLAB_CLASSES = 8U;
@@ -360,8 +362,6 @@ void refcount_stress_worker_entry(uintptr_t raw_arg) noexcept {
 }
 
 } // namespace
-
-namespace Kernel::MM {
 
 void heap_init() noexcept {
     IrqLockGuard lock;

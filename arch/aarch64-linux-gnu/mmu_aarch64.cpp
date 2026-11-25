@@ -98,7 +98,7 @@ inline void flush_dcache_range(uintptr_t addr, size_t size) noexcept {
 }
 
 uintptr_t allocate_zeroed_table() noexcept {
-    const uintptr_t phys = alloc_frame();
+    const uintptr_t phys = Kernel::MM::alloc_frame();
     if (phys == 0U) {
         return 0U;
     }
@@ -123,7 +123,7 @@ alignas(4096) uint64_t g_ttbr0_l0[512] = {0}; // TTBR0_EL1 (User / Lower VA spac
 alignas(4096) uint64_t g_ttbr1_l0[512] = {0}; // TTBR1_EL1 (Kernel / Higher VA space)
 
 uintptr_t allocate_table_page() noexcept {
-    uintptr_t phys = alloc_frame();
+    uintptr_t phys = Kernel::MM::alloc_frame();
 
     // Fallback static pool for early boot prior to frame allocator initialization
     if (phys == 0U) {
@@ -511,7 +511,7 @@ bool AddressSpaceBackend::resolve_cow_page(uintptr_t root_paddr, uintptr_t vaddr
     }
 
     const uintptr_t fault_paddr = raw_pte & TABLE_ADDR_MASK;
-    Page* const page = page_from_paddr(fault_paddr);
+    Kernel::MM::Page* const page = Kernel::MM::page_from_paddr(fault_paddr);
     if (page == nullptr) {
         return false;
     }
@@ -529,7 +529,7 @@ bool AddressSpaceBackend::resolve_cow_page(uintptr_t root_paddr, uintptr_t vaddr
 
     const uintptr_t page_offset = vaddr & (Arch::PAGE_SIZE - 1U);
     if (__atomic_load_n(&page->ref_count, __ATOMIC_ACQUIRE) > 1U) {
-        const uintptr_t new_paddr = alloc_frame();
+        const uintptr_t new_paddr = Kernel::MM::alloc_frame();
         if (new_paddr == 0U) {
             return false;
         }
@@ -541,10 +541,10 @@ bool AddressSpaceBackend::resolve_cow_page(uintptr_t root_paddr, uintptr_t vaddr
         flush_dcache_range(reinterpret_cast<uintptr_t>(dst_kva), Arch::PAGE_SIZE);
 
         if (!remap_user_page(root_paddr, vaddr, new_paddr, user_rw_flags)) {
-            free_frame(new_paddr);
+            Kernel::MM::free_frame(new_paddr);
             return false;
         }
-        page_put(fault_paddr);
+        Kernel::MM::page_put(fault_paddr);
         out_paddr = new_paddr | page_offset;
     } else {
         if (!remap_user_page(root_paddr, vaddr, fault_paddr, user_rw_flags)) {
@@ -586,7 +586,7 @@ bool AddressSpaceBackend::resolve_demand_zero_page(uintptr_t root_paddr, uintptr
         return false;
     }
 
-    const uintptr_t new_paddr = alloc_frame();
+    const uintptr_t new_paddr = Kernel::MM::alloc_frame();
     if (new_paddr == 0U) {
         return false;
     }
@@ -596,7 +596,7 @@ bool AddressSpaceBackend::resolve_demand_zero_page(uintptr_t root_paddr, uintptr
     flush_dcache_range(reinterpret_cast<uintptr_t>(dst_kva), Arch::PAGE_SIZE);
 
     if (!map_user_page(root_paddr, vaddr, new_paddr, intended_flags)) {
-        free_frame(new_paddr);
+        Kernel::MM::free_frame(new_paddr);
         return false;
     }
 
@@ -618,7 +618,7 @@ uintptr_t AddressSpaceBackend::create_root() noexcept {
 
         const uintptr_t l1_phys = allocate_zeroed_table();
         if (l1_phys == 0U) {
-            free_frame(root_phys);
+            Kernel::MM::free_frame(root_phys);
             return 0U;
         }
 
@@ -848,24 +848,24 @@ void AddressSpaceBackend::destroy_root(uintptr_t root_paddr) noexcept {
                     for (size_t i3 = 0U; i3 < PAGE_ENTRY_COUNT; ++i3) {
                         if ((lvl3[i3] & 1U) != 0U) {
                             const uintptr_t page_paddr = lvl3[i3] & TABLE_ADDR_MASK;
-                            if (pfa_is_page_allocated(page_paddr)) {
-                                free_frame(page_paddr);
+                            if (Kernel::MM::pfa_is_page_allocated(page_paddr)) {
+                                Kernel::MM::free_frame(page_paddr);
                             }
                             lvl3[i3] = 0ULL;
                         }
                     }
-                    free_frame(l3_paddr);
+                    Kernel::MM::free_frame(l3_paddr);
                     lvl2[i2] = 0ULL;
                 }
             }
-            free_frame(l2_paddr);
+            Kernel::MM::free_frame(l2_paddr);
             lvl1[i1] = 0ULL;
         }
-        free_frame(l1_paddr);
+        Kernel::MM::free_frame(l1_paddr);
         lvl0[0] = 0ULL;
     }
 
-    free_frame(root_paddr);
+    Kernel::MM::free_frame(root_paddr);
 }
 
 bool AddressSpaceBackend::clone_user_space(uintptr_t src_root, uintptr_t dst_root) noexcept {
@@ -959,7 +959,7 @@ bool AddressSpaceBackend::clone_user_space(uintptr_t src_root, uintptr_t dst_roo
                 dst_l3[i3] = src_desc;
 
                 // Increment the physical frame's reference count
-                page_get(src_page_paddr);
+                Kernel::MM::page_get(src_page_paddr);
             }
 
             flush_dcache_range(reinterpret_cast<uintptr_t>(dst_l3), Arch::PAGE_SIZE);

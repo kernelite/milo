@@ -178,14 +178,15 @@ extern "C" void kmain(uintptr_t dtb_paddr) {
     // Stage 4: Dynamic PFA Initialization (Pre-MMU)
     const uintptr_t kernel_start = reinterpret_cast<uintptr_t>(_text_start);
     const uintptr_t kernel_end = reinterpret_cast<uintptr_t>(__bss_end);
-    pfa_init(mem_map, kernel_start, kernel_end, dtb_valid ? dtb_paddr : 0U,
-             dtb_valid ? dtb_size : 0U, g_initrd_loc.valid ? g_initrd_loc.start_paddr : 0U,
-             g_initrd_loc.valid ? g_initrd_loc.end_paddr : 0U, &reserve_map);
+    Kernel::MM::pfa_init(mem_map, kernel_start, kernel_end, dtb_valid ? dtb_paddr : 0U,
+                         dtb_valid ? dtb_size : 0U,
+                         g_initrd_loc.valid ? g_initrd_loc.start_paddr : 0U,
+                         g_initrd_loc.valid ? g_initrd_loc.end_paddr : 0U, &reserve_map);
 
     // Stage 5: Full-RAM MMU Activation & PFA Higher-Half Pointer Rebasing
     print_str("[KERNEL] Activating MMU and Translation Tables...\r\n");
     HAL::get_mmu().activate();
-    pfa_on_mmu_enabled();
+    Kernel::MM::pfa_on_mmu_enabled();
     print_str("[KERNEL] MMU Activated successfully.\r\n");
 
     // Stage 6: Kernel Slab & Compound Heap Allocator Initialization

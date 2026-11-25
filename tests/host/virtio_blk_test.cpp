@@ -39,8 +39,8 @@ void init_blk_test_pfa() noexcept {
     mem_map.max_paddr = HostTest::SIM_RAM_BASE + HostTest::SIM_RAM_SIZE;
     mem_map.total_usable_bytes = HostTest::SIM_RAM_SIZE;
 
-    pfa_init(mem_map, HostTest::SIM_RAM_BASE, HostTest::SIM_RAM_BASE + Arch::PAGE_SIZE, 0U, 0U, 0U,
-             0U, nullptr);
+    Kernel::MM::pfa_init(mem_map, HostTest::SIM_RAM_BASE, HostTest::SIM_RAM_BASE + Arch::PAGE_SIZE,
+                         0U, 0U, 0U, 0U, nullptr);
 }
 
 struct RecordedRequest {
@@ -57,7 +57,7 @@ class SimulatedVirtioBlkBackend {
     explicit SimulatedVirtioBlkBackend(uint64_t capacity_sectors, uint16_t max_queue_size = 64U)
         : m_storage(static_cast<size_t>(capacity_sectors) * 512U, 0U),
           m_capacity_sectors(capacity_sectors) {
-        m_mmio_paddr = alloc_frame();
+        m_mmio_paddr = Kernel::MM::alloc_frame();
         REQUIRE(m_mmio_paddr != 0U);
         m_mmio_regs = reinterpret_cast<volatile uint8_t*>(Kernel::MM::phys_to_virt(m_mmio_paddr));
         std::memset(const_cast<uint8_t*>(m_mmio_regs), 0, Arch::PAGE_SIZE);
@@ -73,7 +73,7 @@ class SimulatedVirtioBlkBackend {
 
     ~SimulatedVirtioBlkBackend() noexcept {
         if (m_mmio_paddr != 0U) {
-            free_frame(m_mmio_paddr);
+            Kernel::MM::free_frame(m_mmio_paddr);
         }
     }
 

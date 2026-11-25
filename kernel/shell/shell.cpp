@@ -282,7 +282,7 @@ void cmd_bash() noexcept {
 void cmd_test_vmm() noexcept {
     print_str("\r\n[TEST] Running AddressSpace Lifecycle & Mapping Test...\r\n");
 
-    const size_t pages_before = pfa_allocated_pages_count();
+    const size_t pages_before = Kernel::MM::pfa_allocated_pages_count();
 
     {
         auto as_res = Kernel::MM::AddressSpace::create();
@@ -291,7 +291,7 @@ void cmd_test_vmm() noexcept {
 
         // Map non-aligned user addresses
         const uintptr_t test_vaddr = 0x0000000000400000ULL;
-        const uintptr_t test_paddr = alloc_frame();
+        const uintptr_t test_paddr = Kernel::MM::alloc_frame();
         assert_test(test_paddr != 0U, "Allocated user physical test frame");
 
         const bool map_ok = adrsp.map_user_page(test_vaddr, test_paddr,
@@ -306,11 +306,11 @@ void cmd_test_vmm() noexcept {
         assert_test(!bad_map,
                     "Rejected higher-half virtual address in user space translation table");
 
-        free_frame(test_paddr);
+        Kernel::MM::free_frame(test_paddr);
         adrsp.destroy();
     }
 
-    const size_t pages_after = pfa_allocated_pages_count();
+    const size_t pages_after = Kernel::MM::pfa_allocated_pages_count();
     assert_test(pages_before == pages_after,
                 "AddressSpace destruction freed all intermediate L1/L2/L3 & L0 tables");
 }
@@ -362,19 +362,19 @@ void cmd_test_loader_pipeline() noexcept {
         test_elf_buf[0x240 + i] = static_cast<uint8_t>(0xAAU);
     }
 
-    const size_t pages_initial = pfa_allocated_pages_count();
+    const size_t pages_initial = Kernel::MM::pfa_allocated_pages_count();
 
     auto load_res = Kernel::Loader::load_elf(test_elf_buf, sizeof(test_elf_buf));
     assert_test(load_res.is_ok(), "Segment Loader loaded valid multi-segment ELF");
     assert_test(load_res->entry_point == 0x00400180ULL, "Extracted accurate execution entry point");
 
     load_res->address_space.destroy();
-    assert_test(pfa_allocated_pages_count() == pages_initial,
+    assert_test(Kernel::MM::pfa_allocated_pages_count() == pages_initial,
                 "Clean teardown returned all allocated frames to PFA");
 
     // OOM Rollback Test
     print_str("  Simulating OOM condition on Segment 1 memsz...\r\n");
-    const size_t pages_before_oom = pfa_allocated_pages_count();
+    const size_t pages_before_oom = Kernel::MM::pfa_allocated_pages_count();
 
     phdrs[1].p_memsz = 0x20000000ULL; // 512 MB request exceeds platform RAM
     auto oom_res = Kernel::Loader::load_elf(test_elf_buf, sizeof(test_elf_buf));
@@ -382,7 +382,7 @@ void cmd_test_loader_pipeline() noexcept {
     assert_test(oom_res.is_err() && oom_res.error() == Kernel::Loader::ElfLoaderError::OutOfMemory,
                 "Loader detected OutOfMemory and aborted instantiation safely");
 
-    const size_t pages_after_oom = pfa_allocated_pages_count();
+    const size_t pages_after_oom = Kernel::MM::pfa_allocated_pages_count();
     assert_test(pages_before_oom == pages_after_oom,
                 "OOM Rollback Verification: Zero physical frames leaked");
 
@@ -430,7 +430,7 @@ void cmd_test_user_isolation() noexcept {
     }
 
     // Allocate isolated user stack
-    const uintptr_t user_stack_frame = alloc_frame();
+    const uintptr_t user_stack_frame = Kernel::MM::alloc_frame();
     load_res->address_space.map_user_page(0x0000000000800000ULL, user_stack_frame,
                                           HAL::PageFlags::User | HAL::PageFlags::Read |
                                               HAL::PageFlags::Write);
@@ -451,7 +451,7 @@ void cmd_test_user_isolation() noexcept {
     // Restore kernel translation table
     Kernel::MM::AddressSpace::activate_root(orig_root);
 
-    free_frame(user_stack_frame);
+    Kernel::MM::free_frame(user_stack_frame);
     load_res->address_space.destroy();
 }
 
@@ -797,9 +797,9 @@ void cmd_info() noexcept {
     print_str("  SCTLR_EL1 Register      : ");
     print_hex64(mmu_st.raw_control_reg);
     print_str("\r\n  PFA Free Frames         : ");
-    print_dec64(pfa_free_pages_count());
+    print_dec64(Kernel::MM::pfa_free_pages_count());
     print_str("\r\n  PFA Allocated Frames    : ");
-    print_dec64(pfa_allocated_pages_count());
+    print_dec64(Kernel::MM::pfa_allocated_pages_count());
     print_str("\r\n=============================================\r\n");
 }
 
@@ -872,7 +872,7 @@ void cmd_test_svc_trap() {
 void cmd_test_dynamic_io() noexcept {
     print_str("\r\n[TEST] Running Dynamic I/O Scalability & Zero-Leak Suite...\r\n");
 
-    const size_t pages_before = pfa_free_pages_count();
+    const size_t pages_before = Kernel::MM::pfa_free_pages_count();
     const size_t procs_before = Kernel::Process::active_process_count();
 
     auto* const proc = Kernel::Process::allocate_process(0U);
@@ -940,7 +940,7 @@ void cmd_test_dynamic_io() noexcept {
 
     assert_test(Kernel::Process::active_process_count() == procs_before,
                 "Process table count returned to baseline");
-    assert_test(pfa_free_pages_count() == pages_before,
+    assert_test(Kernel::MM::pfa_free_pages_count() == pages_before,
                 "Zero physical frame leaks after tearing down 100 pipes and dynamic fd_table");
 }
 
@@ -961,7 +961,7 @@ void cmd_test_pfa() {
         bool all_pages_reserved = true;
         for (uintptr_t addr = g_initrd_loc.start_paddr; addr < g_initrd_loc.end_paddr;
              addr += page_size) {
-            if (!pfa_is_page_allocated(addr)) {
+            if (!Kernel::MM::pfa_is_page_allocated(addr)) {
                 all_pages_reserved = false;
                 break;
             }
@@ -975,7 +975,7 @@ void cmd_test_pfa() {
     size_t allocated_count = 0;
 
     for (size_t i = 0; i < 32; ++i) {
-        test_pages[i] = alloc_frame();
+        test_pages[i] = Kernel::MM::alloc_frame();
         if (test_pages[i] == 0) {
             break;
         }
@@ -992,53 +992,58 @@ void cmd_test_pfa() {
     assert_test(no_collision, "Newly allocated frames do not overlap with reserved Initrd region");
 
     for (size_t i = 0; i < allocated_count; ++i) {
-        free_frame(test_pages[i]);
+        Kernel::MM::free_frame(test_pages[i]);
     }
 
-    uintptr_t page1 = alloc_frame();
+    uintptr_t page1 = Kernel::MM::alloc_frame();
     assert_test(page1 != 0, "Allocated single page frame");
     assert_test((page1 % page_size) == 0, "Allocated frame is page-aligned");
 
-    free_frame(page1);
-    uintptr_t page_recycled = alloc_frame();
+    Kernel::MM::free_frame(page1);
+    uintptr_t page_recycled = Kernel::MM::alloc_frame();
     assert_test(page_recycled == page1, "Freed frame was recycled cleanly");
-    free_frame(page_recycled);
+    Kernel::MM::free_frame(page_recycled);
 
     // Reference counting & CoW sharing verification
-    const size_t free_before_ref = pfa_free_pages_count();
-    const uintptr_t shared_frame = alloc_frame();
-    assert_test(shared_frame != 0U && page_ref_count(shared_frame) == 1U,
+    const size_t free_before_ref = Kernel::MM::pfa_free_pages_count();
+    const uintptr_t shared_frame = Kernel::MM::alloc_frame();
+    assert_test(shared_frame != 0U && Kernel::MM::page_ref_count(shared_frame) == 1U,
                 "Newly allocated frame starts with ref_count == 1");
 
-    page_get(shared_frame);
-    page_get(shared_frame);
-    assert_test(page_ref_count(shared_frame) == 3U,
-                "page_get() atomically incremented ref_count to 3");
+    Kernel::MM::page_get(shared_frame);
+    Kernel::MM::page_get(shared_frame);
+    assert_test(Kernel::MM::page_ref_count(shared_frame) == 3U,
+                "Kernel::MM::page_get() atomically incremented ref_count to 3");
 
-    page_put(shared_frame);
-    assert_test(page_ref_count(shared_frame) == 2U && pfa_is_page_allocated(shared_frame),
-                "First page_put() decremented ref_count to 2 without freeing frame");
+    Kernel::MM::page_put(shared_frame);
+    assert_test(Kernel::MM::page_ref_count(shared_frame) == 2U &&
+                    Kernel::MM::pfa_is_page_allocated(shared_frame),
+                "First Kernel::MM::page_put() decremented ref_count to 2 without freeing frame");
 
-    page_put(shared_frame);
-    assert_test(page_ref_count(shared_frame) == 1U && pfa_is_page_allocated(shared_frame),
-                "Second page_put() decremented ref_count to 1 without freeing frame");
+    Kernel::MM::page_put(shared_frame);
+    assert_test(Kernel::MM::page_ref_count(shared_frame) == 1U &&
+                    Kernel::MM::pfa_is_page_allocated(shared_frame),
+                "Second Kernel::MM::page_put() decremented ref_count to 1 without freeing frame");
 
-    page_put(shared_frame);
-    assert_test(page_ref_count(shared_frame) == 0U && !pfa_is_page_allocated(shared_frame) &&
-                    pfa_free_pages_count() == free_before_ref,
-                "Final page_put() transitioned ref_count to 0 and returned frame to free pool");
+    Kernel::MM::page_put(shared_frame);
+    assert_test(
+        Kernel::MM::page_ref_count(shared_frame) == 0U &&
+            !Kernel::MM::pfa_is_page_allocated(shared_frame) &&
+            Kernel::MM::pfa_free_pages_count() == free_before_ref,
+        "Final Kernel::MM::page_put() transitioned ref_count to 0 and returned frame to free pool");
 
-    page_put(shared_frame);
-    assert_test(page_ref_count(shared_frame) == 0U && pfa_free_pages_count() == free_before_ref,
-                "Duplicate page_put() on free frame is a safe no-op without underflow");
+    Kernel::MM::page_put(shared_frame);
+    assert_test(Kernel::MM::page_ref_count(shared_frame) == 0U &&
+                    Kernel::MM::pfa_free_pages_count() == free_before_ref,
+                "Duplicate Kernel::MM::page_put() on free frame is a safe no-op without underflow");
 
     if (g_initrd_loc.valid && g_initrd_loc.start_paddr != 0U) {
-        const uint32_t reserved_refs = page_ref_count(g_initrd_loc.start_paddr);
-        page_get(g_initrd_loc.start_paddr);
-        page_put(g_initrd_loc.start_paddr);
-        assert_test(page_ref_count(g_initrd_loc.start_paddr) == reserved_refs &&
-                        pfa_is_page_allocated(g_initrd_loc.start_paddr),
-                    "Reserved frames ignore page_get() and page_put()");
+        const uint32_t reserved_refs = Kernel::MM::page_ref_count(g_initrd_loc.start_paddr);
+        Kernel::MM::page_get(g_initrd_loc.start_paddr);
+        Kernel::MM::page_put(g_initrd_loc.start_paddr);
+        assert_test(Kernel::MM::page_ref_count(g_initrd_loc.start_paddr) == reserved_refs &&
+                        Kernel::MM::pfa_is_page_allocated(g_initrd_loc.start_paddr),
+                    "Reserved frames ignore Kernel::MM::page_get() and Kernel::MM::page_put()");
     }
 }
 
@@ -1140,7 +1145,7 @@ void cmd_test_user_echo() noexcept {
     auto address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
 
     // Map executable page for EL0 argc/argv echo binary
-    const uintptr_t code_frame = alloc_frame();
+    const uintptr_t code_frame = Kernel::MM::alloc_frame();
     const uintptr_t entry_vaddr = 0x0000000000400000ULL;
 
     address_space.map_user_page(entry_vaddr, code_frame,
@@ -1195,7 +1200,7 @@ void cmd_test_uxn_fault() noexcept {
     }
     auto address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
 
-    const uintptr_t code_frame = alloc_frame();
+    const uintptr_t code_frame = Kernel::MM::alloc_frame();
     const uintptr_t entry_vaddr = 0x0000000000400000ULL;
 
     address_space.map_user_page(entry_vaddr, code_frame,
@@ -1235,7 +1240,7 @@ void cmd_test_uxn_fault() noexcept {
 void cmd_test_syscall() noexcept {
     print_str("\r\n[TEST] Running PCB, User-Pointer Validation & Syscall ABI Suite...\r\n");
 
-    const size_t pages_before = pfa_allocated_pages_count();
+    const size_t pages_before = Kernel::MM::pfa_allocated_pages_count();
     const size_t procs_before = Kernel::Process::active_process_count();
 
     auto* const proc = Kernel::Process::allocate_process(0U);
@@ -1262,9 +1267,9 @@ void cmd_test_syscall() noexcept {
     constexpr uintptr_t DATA_PAGE1_VADDR = 0x0000000000501000ULL;
     constexpr uintptr_t RO_PAGE_VADDR = 0x0000000000510000ULL;
 
-    const uintptr_t data_paddr0 = alloc_frame();
-    const uintptr_t data_paddr1 = alloc_frame();
-    const uintptr_t ro_paddr = alloc_frame();
+    const uintptr_t data_paddr0 = Kernel::MM::alloc_frame();
+    const uintptr_t data_paddr1 = Kernel::MM::alloc_frame();
+    const uintptr_t ro_paddr = Kernel::MM::alloc_frame();
 
     const HAL::PageFlags user_rw =
         HAL::PageFlags::User | HAL::PageFlags::Read | HAL::PageFlags::Write;
@@ -1306,7 +1311,7 @@ void cmd_test_syscall() noexcept {
 
     // 2. Build EL0 payload via HAL::Test testing SYS_WRITE, -EFAULT, -EBADF, -ENOSYS, and SYS_EXIT
     constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
-    const uintptr_t code_paddr = alloc_frame();
+    const uintptr_t code_paddr = Kernel::MM::alloc_frame();
     proc->address_space.map_user_page(CODE_VADDR, code_paddr,
                                       HAL::PageFlags::User | HAL::PageFlags::Read |
                                           HAL::PageFlags::Execute);
@@ -1400,7 +1405,7 @@ void cmd_test_syscall() noexcept {
 
     assert_test(Kernel::Process::active_process_count() == procs_before,
                 "PCB slot released cleanly back to static process table");
-    assert_test(pfa_allocated_pages_count() == pages_before,
+    assert_test(Kernel::MM::pfa_allocated_pages_count() == pages_before,
                 "All process page tables, stack, and data frames freed cleanly");
 }
 
@@ -1423,8 +1428,8 @@ void cmd_test_tty_echo() noexcept {
 
     constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
     constexpr uintptr_t DATA_VADDR = 0x0000000000500000ULL;
-    const uintptr_t code_paddr = alloc_frame();
-    const uintptr_t data_paddr = alloc_frame();
+    const uintptr_t code_paddr = Kernel::MM::alloc_frame();
+    const uintptr_t data_paddr = Kernel::MM::alloc_frame();
 
     proc->address_space.map_user_page(CODE_VADDR, code_paddr,
                                       HAL::PageFlags::User | HAL::PageFlags::Read |
@@ -1486,7 +1491,7 @@ void cmd_test_user_mm() noexcept {
     print_str("\r\n[TEST] Running User Heap (sys_brk) & Anonymous Virtual Memory "
               "(sys_mmap/sys_munmap) Suite...\r\n");
 
-    const size_t pages_before = pfa_allocated_pages_count();
+    const size_t pages_before = Kernel::MM::pfa_allocated_pages_count();
     const size_t procs_before = Kernel::Process::active_process_count();
 
     // Synthesize a 2-segment ELF (Code RX at 0x400100, Data RW + BSS at 0x401540..0x4016C0)
@@ -1586,7 +1591,7 @@ void cmd_test_user_mm() noexcept {
 
     assert_test(Kernel::Process::active_process_count() == procs_before,
                 "PCB slot released cleanly back to static process table");
-    assert_test(pfa_allocated_pages_count() == pages_before,
+    assert_test(Kernel::MM::pfa_allocated_pages_count() == pages_before,
                 "All ELF, heap, mmap, stack, and page-table frames freed cleanly");
 }
 
@@ -1594,7 +1599,7 @@ void cmd_test_proc_exit() noexcept {
     print_str(
         "\r\n[TEST] Running Process PID & Exit Lifecycle Suite (getpid/_exit/exit_group)...\r\n");
 
-    const size_t pages_before = pfa_allocated_pages_count();
+    const size_t pages_before = Kernel::MM::pfa_allocated_pages_count();
     const size_t procs_before = Kernel::Process::active_process_count();
     const uintptr_t kernel_root = Kernel::MM::AddressSpace::current_root_paddr();
 
@@ -1615,7 +1620,7 @@ void cmd_test_proc_exit() noexcept {
     proc1->address_space = static_cast<Kernel::MM::AddressSpace&&>(as1_res.value());
 
     constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
-    const uintptr_t code1_paddr = alloc_frame();
+    const uintptr_t code1_paddr = Kernel::MM::alloc_frame();
     proc1->address_space.map_user_page(CODE_VADDR, code1_paddr,
                                        HAL::PageFlags::User | HAL::PageFlags::Read |
                                            HAL::PageFlags::Execute);
@@ -1649,7 +1654,7 @@ void cmd_test_proc_exit() noexcept {
 
     Kernel::Process::release_process(*proc1);
     assert_test(Kernel::Process::find_process_by_pid(pid1) == nullptr &&
-                    pfa_allocated_pages_count() == pages_before,
+                    Kernel::MM::pfa_allocated_pages_count() == pages_before,
                 "Reaping PCB 1 freed all physical frames back to baseline");
 
     // 2) Test monotonic PID + SYS_EXIT_GROUP (#94) with ELF-backed AddressSpace
@@ -1726,14 +1731,14 @@ void cmd_test_proc_exit() noexcept {
 
     Kernel::Process::release_process(*proc2);
     assert_test(Kernel::Process::active_process_count() == procs_before &&
-                    pfa_allocated_pages_count() == pages_before,
+                    Kernel::MM::pfa_allocated_pages_count() == pages_before,
                 "Reaping PCB 2 reclaimed all ELF, stack, and page-table frames");
 }
 
 void cmd_test_fork_exec() noexcept {
     print_str("\r\n[TEST] Running EL0 Process Fork (clone), Execve & Wait4 Suite...\r\n");
 
-    const size_t pages_before = pfa_allocated_pages_count();
+    const size_t pages_before = Kernel::MM::pfa_allocated_pages_count();
     const size_t procs_before = Kernel::Process::active_process_count();
 
     auto* const parent = Kernel::Process::allocate_process(0U);
@@ -1752,8 +1757,8 @@ void cmd_test_fork_exec() noexcept {
 
     constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
     constexpr uintptr_t DATA_VADDR = 0x0000000000500000ULL;
-    const uintptr_t code_paddr = alloc_frame();
-    const uintptr_t data_paddr = alloc_frame();
+    const uintptr_t code_paddr = Kernel::MM::alloc_frame();
+    const uintptr_t data_paddr = Kernel::MM::alloc_frame();
 
     parent->address_space.map_user_page(CODE_VADDR, code_paddr,
                                         HAL::PageFlags::User | HAL::PageFlags::Read |
@@ -1824,7 +1829,7 @@ void cmd_test_fork_exec() noexcept {
 
     assert_test(Kernel::Process::active_process_count() == procs_before,
                 "All parent and child PCB slots released back to baseline");
-    assert_test(pfa_allocated_pages_count() == pages_before,
+    assert_test(Kernel::MM::pfa_allocated_pages_count() == pages_before,
                 "All cloned, execve, stack, and page-table frames freed cleanly");
 }
 
@@ -1836,7 +1841,7 @@ void cmd_test_musl() noexcept {
         return;
     }
 
-    const size_t pages_before = pfa_allocated_pages_count();
+    const size_t pages_before = Kernel::MM::pfa_allocated_pages_count();
     const size_t procs_before = Kernel::Process::active_process_count();
 
     CpioEntry entry{};
@@ -1894,14 +1899,14 @@ void cmd_test_musl() noexcept {
 
     assert_test(Kernel::Process::active_process_count() == procs_before,
                 "PCB count returned to baseline");
-    assert_test(pfa_allocated_pages_count() == pages_before,
+    assert_test(Kernel::MM::pfa_allocated_pages_count() == pages_before,
                 "Physical frame count returned to baseline");
 }
 
 void cmd_test_sched() noexcept {
     print_str("\r\n[TEST] Running Preemptive Timer IRQ, Timeslice & WaitQueue Suite...\r\n");
 
-    const size_t pages_before = pfa_allocated_pages_count();
+    const size_t pages_before = Kernel::MM::pfa_allocated_pages_count();
     const size_t procs_before = Kernel::Process::active_process_count();
     const uint64_t ticks_before = Kernel::Scheduler::timer_ticks();
 
@@ -1926,8 +1931,8 @@ void cmd_test_sched() noexcept {
 
     constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
     constexpr uintptr_t DATA_VADDR = 0x0000000000500000ULL;
-    const uintptr_t code_paddr = alloc_frame();
-    const uintptr_t data_paddr = alloc_frame();
+    const uintptr_t code_paddr = Kernel::MM::alloc_frame();
+    const uintptr_t data_paddr = Kernel::MM::alloc_frame();
 
     parent->address_space.map_user_page(CODE_VADDR, code_paddr,
                                         HAL::PageFlags::User | HAL::PageFlags::Read |
@@ -1979,14 +1984,14 @@ void cmd_test_sched() noexcept {
 
     assert_test(Kernel::Process::active_process_count() == procs_before,
                 "All PCB slots released back to baseline");
-    assert_test(pfa_allocated_pages_count() == pages_before,
+    assert_test(Kernel::MM::pfa_allocated_pages_count() == pages_before,
                 "All kernel stack, user stack, and page-table frames freed cleanly");
 }
 
 void cmd_test_heap() noexcept {
     print_str("\r\n[TEST] Running Kernel Slab & Compound Heap Allocator Suite...\r\n");
 
-    const size_t pfa_free_before = pfa_free_pages_count();
+    const size_t pfa_free_before = Kernel::MM::pfa_free_pages_count();
     const auto stats_before = Kernel::MM::heap_get_stats();
 
     struct HeapObject {
@@ -2113,7 +2118,7 @@ void cmd_test_heap() noexcept {
 
     // 5. Verify zero leaks and full frame reclamation back to PFA
     const auto stats_after = Kernel::MM::heap_get_stats();
-    const size_t pfa_free_after = pfa_free_pages_count();
+    const size_t pfa_free_after = Kernel::MM::pfa_free_pages_count();
     assert_test(stats_after.active_slab_objects == stats_before.active_slab_objects &&
                     stats_after.compound_pages == stats_before.compound_pages &&
                     stats_after.active_bytes == stats_before.active_bytes,
@@ -2126,14 +2131,14 @@ void cmd_test_heap() noexcept {
 void cmd_test_concurrent_refcount() noexcept {
     print_str("\r\n[TEST] Running Concurrent PFA Refcount Validation (1,000,000 ops)...\r\n");
 
-    const size_t free_before = pfa_free_pages_count();
+    const size_t free_before = Kernel::MM::pfa_free_pages_count();
     const size_t procs_before = Kernel::Process::active_process_count();
 
     const bool refcount_ok = Kernel::MM::run_concurrent_refcount_test();
-    assert_test(refcount_ok,
-                "1,000,000 parallel page_get()/page_put() ops reclaimed frame without double-free");
+    assert_test(refcount_ok, "1,000,000 parallel Kernel::MM::page_get()/Kernel::MM::page_put() ops "
+                             "reclaimed frame without double-free");
 
-    const size_t free_after = pfa_free_pages_count();
+    const size_t free_after = Kernel::MM::pfa_free_pages_count();
     assert_test(Kernel::Process::active_process_count() == procs_before &&
                     free_after == free_before,
                 "PFA free page count returned strictly to pre-test baseline");
@@ -2142,7 +2147,7 @@ void cmd_test_concurrent_refcount() noexcept {
 void cmd_test_cow_isolation() noexcept {
     print_str("\r\n[TEST] Running EL0 Copy-on-Write (CoW) Isolation Suite...\r\n");
 
-    const size_t free_before = pfa_free_pages_count();
+    const size_t free_before = Kernel::MM::pfa_free_pages_count();
     const size_t procs_before = Kernel::Process::active_process_count();
 
     auto* const parent = Kernel::Process::allocate_process(0U);
@@ -2161,14 +2166,14 @@ void cmd_test_cow_isolation() noexcept {
 
     constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
     constexpr uintptr_t DATA_VADDR = 0x0000000000500000ULL;
-    const uintptr_t code_paddr = alloc_frame();
-    const uintptr_t data_paddr = alloc_frame();
+    const uintptr_t code_paddr = Kernel::MM::alloc_frame();
+    const uintptr_t data_paddr = Kernel::MM::alloc_frame();
     if (code_paddr == 0U || data_paddr == 0U) {
         if (code_paddr != 0U) {
-            free_frame(code_paddr);
+            Kernel::MM::free_frame(code_paddr);
         }
         if (data_paddr != 0U) {
-            free_frame(data_paddr);
+            Kernel::MM::free_frame(data_paddr);
         }
         Kernel::Process::release_process(*parent);
         print_str("[FAIL] Failed to allocate test frames\r\n");
@@ -2212,7 +2217,7 @@ void cmd_test_cow_isolation() noexcept {
 
     Kernel::Process::release_process(*parent);
 
-    const size_t free_after = pfa_free_pages_count();
+    const size_t free_after = Kernel::MM::pfa_free_pages_count();
     assert_test(Kernel::Process::active_process_count() == procs_before &&
                     free_after == free_before,
                 "All CoW shared/copied frames and page tables reclaimed to baseline");
@@ -2221,7 +2226,7 @@ void cmd_test_cow_isolation() noexcept {
 void cmd_test_demand_paging() noexcept {
     print_str("\r\n[TEST] Running EL0 Demand-Zero 1 GiB Capacity Suite...\r\n");
 
-    const size_t free_before = pfa_free_pages_count();
+    const size_t free_before = Kernel::MM::pfa_free_pages_count();
     const size_t procs_before = Kernel::Process::active_process_count();
 
     auto* const proc = Kernel::Process::allocate_process(0U);
@@ -2239,7 +2244,7 @@ void cmd_test_demand_paging() noexcept {
     proc->address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
 
     constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
-    const uintptr_t code_paddr = alloc_frame();
+    const uintptr_t code_paddr = Kernel::MM::alloc_frame();
     if (code_paddr == 0U) {
         Kernel::Process::release_process(*proc);
         print_str("[FAIL] Failed to allocate code frame\r\n");
@@ -2277,7 +2282,7 @@ void cmd_test_demand_paging() noexcept {
 
     Kernel::Process::release_process(*proc);
 
-    const size_t free_after = pfa_free_pages_count();
+    const size_t free_after = Kernel::MM::pfa_free_pages_count();
     assert_test(Kernel::Process::active_process_count() == procs_before &&
                     free_after == free_before,
                 "All demand-zero page tables and touched frames reclaimed to baseline");
@@ -2292,15 +2297,15 @@ void run_lazy_memory_acceptance_suite() noexcept {
         Kernel::Process::release_process(*warmup);
     }
 
-    const size_t suite_baseline_free = pfa_free_pages_count();
+    const size_t suite_baseline_free = Kernel::MM::pfa_free_pages_count();
 
     cmd_test_concurrent_refcount();
     cmd_test_cow_isolation();
     cmd_test_demand_paging();
 
-    const size_t suite_final_free = pfa_free_pages_count();
+    const size_t suite_final_free = Kernel::MM::pfa_free_pages_count();
     assert_test(suite_final_free == suite_baseline_free,
-                "ZERO MEMORY LEAKS: pfa_free_pages_count() matches pre-test baseline");
+                "ZERO MEMORY LEAKS: Kernel::MM::pfa_free_pages_count() matches pre-test baseline");
 }
 
 void cmd_sh() noexcept {
@@ -2353,8 +2358,8 @@ void print_help() noexcept {
     print_str("  test user_mm    - Test user heap (sys_brk) & anonymous sys_mmap/sys_munmap\r\n");
     print_str("  test proc       - Test process spae and exit functions\r\n");
     print_str("  test musl          - Test MUSL\r\n");
-    print_str(
-        "  test refcount      - Run 1,000,000 parallel page_get()/page_put() stress test\r\n");
+    print_str("  test refcount      - Run 1,000,000 parallel "
+              "Kernel::MM::page_get()/Kernel::MM::page_put() stress test\r\n");
     print_str("  test cow           - Run EL0 Copy-on-Write isolation verification suite\r\n");
     print_str("  test demand_paging - Run EL0 1 GiB demand-zero capacity verification suite\r\n");
     print_str("  test lazy_mm       - Run full lazy memory acceptance & zero-leak suite\r\n");

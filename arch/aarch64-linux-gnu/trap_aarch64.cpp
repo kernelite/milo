@@ -163,7 +163,7 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
                         (!is_write || HAL::has_flag(intended_flags, HAL::PageFlags::Write));
 
                     if (perm_ok) {
-                        const uintptr_t new_paddr = alloc_frame();
+                        const uintptr_t new_paddr = Kernel::MM::alloc_frame();
                         if (new_paddr != 0U) {
                             auto* const dst_kva =
                                 reinterpret_cast<void*>(Kernel::MM::phys_to_virt(new_paddr));
@@ -178,7 +178,7 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
                                 }
                                 return; // Resume user execution; faulting instruction retries
                             }
-                            free_frame(new_paddr);
+                            Kernel::MM::free_frame(new_paddr);
                         }
                     }
                 }
@@ -192,7 +192,7 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
                 if (HAL::AddressSpaceBackend::query_pte_flags(current_root, far, raw_pte) &&
                     (raw_pte & DESC_COW) != 0ULL) {
                     const uintptr_t fault_paddr = raw_pte & TABLE_ADDR_MASK;
-                    Page* const page = page_from_paddr(fault_paddr);
+                    Kernel::MM::Page* const page = Kernel::MM::page_from_paddr(fault_paddr);
 
                     if (page != nullptr) {
                         HAL::PageFlags user_rw_flags =
@@ -208,7 +208,7 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
 
                         bool cow_resolved = false;
                         if (__atomic_load_n(&page->ref_count, __ATOMIC_ACQUIRE) > 1U) {
-                            const uintptr_t new_paddr = alloc_frame();
+                            const uintptr_t new_paddr = Kernel::MM::alloc_frame();
                             if (new_paddr != 0U) {
                                 auto* const dst_kva =
                                     reinterpret_cast<void*>(Kernel::MM::phys_to_virt(new_paddr));
@@ -220,10 +220,10 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
 
                                 if (HAL::AddressSpaceBackend::remap_user_page(
                                         current_root, far, new_paddr, user_rw_flags)) {
-                                    page_put(fault_paddr);
+                                    Kernel::MM::page_put(fault_paddr);
                                     cow_resolved = true;
                                 } else {
-                                    free_frame(new_paddr);
+                                    Kernel::MM::free_frame(new_paddr);
                                 }
                             }
                         } else {

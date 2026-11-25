@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 
+namespace Kernel::MM {
+
 enum class PageFlags : uint8_t {
     Free = 0U,
     Allocated = 1U << 0U,
@@ -78,3 +80,4 @@ void page_put(uintptr_t paddr) noexcept;
 [[nodiscard]] bool pfa_is_page_allocated(uintptr_t paddr) noexcept;
 [[nodiscard]] size_t pfa_allocated_pages_count() noexcept;
 [[nodiscard]] size_t pfa_free_pages_count() noexcept;
+} // namespace Kernel::MM

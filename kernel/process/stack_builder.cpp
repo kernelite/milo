@@ -88,7 +88,7 @@ UserStackBuilder::create_and_map(MM::AddressSpace& address_space, uintptr_t virt
     }
 
     const size_t num_pages = stack_size / page_size;
-    const uintptr_t phys_base = alloc_frames(num_pages);
+    const uintptr_t phys_base = Kernel::MM::alloc_frames(num_pages);
     if (phys_base == 0U) {
         return StackBuilderError::AllocationFailed;
     }
@@ -108,7 +108,7 @@ UserStackBuilder::create_and_map(MM::AddressSpace& address_space, uintptr_t virt
         const uintptr_t page_paddr = phys_base + (i * page_size);
 
         if (!address_space.map_user_page(page_vaddr, page_paddr, flags)) {
-            free_frames(phys_base, num_pages);
+            Kernel::MM::free_frames(phys_base, num_pages);
             return StackBuilderError::MappingFailed;
         }
     }

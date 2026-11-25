@@ -523,7 +523,7 @@ void unmap_and_free_range(Kernel::MM::AddressSpace& adrsp, uintptr_t start_vaddr
         HAL::PageFlags out_flags = HAL::PageFlags::None;
         if (adrsp.query_user_page(page_vaddr, out_paddr, out_flags)) {
             adrsp.unmap_user_page(page_vaddr);
-            free_frame(out_paddr & ~page_mask);
+            Kernel::MM::free_frame(out_paddr & ~page_mask);
         } else {
             uint64_t raw_pte = 0ULL;
             if (adrsp.query_pte_flags(page_vaddr, raw_pte) && (raw_pte & PTE_DEMAND_ZERO) != 0ULL) {
@@ -3178,7 +3178,7 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
     }
 
     const size_t page_size = HAL::get_platform_info().page_size;
-    const uintptr_t scratch_paddr = alloc_frame();
+    const uintptr_t scratch_paddr = Kernel::MM::alloc_frame();
     if (scratch_paddr == 0U) {
         return ERR_ENOMEM;
     }
@@ -3196,13 +3196,13 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
     const int64_t path_res =
         copy_user_cstring(caller_root, user_pathname, raw_path_buf, EXEC_MAX_PATH_LEN, path_len);
     if (path_res < 0) {
-        free_frame(scratch_paddr);
+        Kernel::MM::free_frame(scratch_paddr);
         return path_res;
     }
 
     char canon_path[Kernel::Process::MAX_PATH_LEN]{};
     if (!normalize_vfs_path(proc->cwd, raw_path_buf, canon_path, sizeof(canon_path))) {
-        free_frame(scratch_paddr);
+        Kernel::MM::free_frame(scratch_paddr);
         return ERR_ENOENT;
     }
 
@@ -3212,7 +3212,7 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
         stage_user_string_array(caller_root, user_argv, argv_kptrs, EXEC_MAX_ARGS, string_pool,
                                 string_pool_cap, pool_offset, argc);
     if (argv_res < 0) {
-        free_frame(scratch_paddr);
+        Kernel::MM::free_frame(scratch_paddr);
         return argv_res;
     }
 
@@ -3221,7 +3221,7 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
         stage_user_string_array(caller_root, user_envp, envp_kptrs, EXEC_MAX_ENVS, string_pool,
                                 string_pool_cap, pool_offset, envc);
     if (envp_res < 0) {
-        free_frame(scratch_paddr);
+        Kernel::MM::free_frame(scratch_paddr);
         return envp_res;
     }
     (void)envc;
@@ -3246,7 +3246,7 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
 
         const auto file_size = static_cast<size_t>(exec_file->inode->size);
         const size_t num_pages = (file_size + page_size - 1U) / page_size;
-        const uintptr_t buf_paddr = alloc_frames(num_pages);
+        const uintptr_t buf_paddr = Kernel::MM::alloc_frames(num_pages);
         if (buf_paddr == 0U) {
             (void)kernel::fs::vfs_close(exec_file);
             return ERR_ENOMEM;
@@ -3257,7 +3257,7 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
         while (total < file_size) {
             const int64_t nread = kernel::fs::vfs_read(exec_file, dst + total, file_size - total);
             if (nread <= 0) {
-                free_frames(buf_paddr, num_pages);
+                Kernel::MM::free_frames(buf_paddr, num_pages);
                 (void)kernel::fs::vfs_close(exec_file);
                 return (nread < 0) ? nread : ERR_ENOEXEC;
             }
@@ -3277,7 +3277,7 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
     const int64_t read_exec_res =
         open_and_read_exec(canon_path, exec_buf_paddr, exec_buf_pages, exec_file_size);
     if (read_exec_res < 0) {
-        free_frame(scratch_paddr);
+        Kernel::MM::free_frame(scratch_paddr);
         return read_exec_res;
     }
 
@@ -3300,16 +3300,16 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
         while (pos < exec_file_size && exec_bytes[pos] != ' ' && exec_bytes[pos] != '\t' &&
                exec_bytes[pos] != '\n' && exec_bytes[pos] != '\r') {
             if (interp_len + 1U >= sizeof(shebang_interp)) {
-                free_frames(exec_buf_paddr, exec_buf_pages);
-                free_frame(scratch_paddr);
+                Kernel::MM::free_frames(exec_buf_paddr, exec_buf_pages);
+                Kernel::MM::free_frame(scratch_paddr);
                 return ERR_ENOEXEC;
             }
             shebang_interp[interp_len++] = static_cast<char>(exec_bytes[pos++]);
         }
         shebang_interp[interp_len] = '\0';
         if (interp_len == 0U) {
-            free_frames(exec_buf_paddr, exec_buf_pages);
-            free_frame(scratch_paddr);
+            Kernel::MM::free_frames(exec_buf_paddr, exec_buf_pages);
+            Kernel::MM::free_frame(scratch_paddr);
             return ERR_ENOEXEC;
         }
 
@@ -3330,25 +3330,25 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
         shebang_arg[arg_len] = '\0';
         has_shebang_arg = (arg_len > 0U);
 
-        free_frames(exec_buf_paddr, exec_buf_pages);
+        Kernel::MM::free_frames(exec_buf_paddr, exec_buf_pages);
         exec_buf_paddr = 0U;
 
         if (!normalize_vfs_path("/", shebang_interp, exec_binary_path, sizeof(exec_binary_path))) {
-            free_frame(scratch_paddr);
+            Kernel::MM::free_frame(scratch_paddr);
             return ERR_ENOENT;
         }
         const int64_t interp_res =
             open_and_read_exec(exec_binary_path, exec_buf_paddr, exec_buf_pages, exec_file_size);
         if (interp_res < 0) {
-            free_frame(scratch_paddr);
+            Kernel::MM::free_frame(scratch_paddr);
             return interp_res;
         }
         exec_bytes = reinterpret_cast<const uint8_t*>(Kernel::MM::phys_to_virt(exec_buf_paddr));
 
         const int extra = has_shebang_arg ? 2 : 1;
         if (static_cast<size_t>(argc) + static_cast<size_t>(extra) > EXEC_MAX_ARGS) {
-            free_frames(exec_buf_paddr, exec_buf_pages);
-            free_frame(scratch_paddr);
+            Kernel::MM::free_frames(exec_buf_paddr, exec_buf_pages);
+            Kernel::MM::free_frame(scratch_paddr);
             return ERR_E2BIG;
         }
         for (int idx = argc; idx >= 1; --idx) {
@@ -3365,9 +3365,9 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
     }
 
     auto load_res = Kernel::Loader::load_elf(exec_bytes, exec_file_size);
-    free_frames(exec_buf_paddr, exec_buf_pages);
+    Kernel::MM::free_frames(exec_buf_paddr, exec_buf_pages);
     if (!load_res.is_ok()) {
-        free_frame(scratch_paddr);
+        Kernel::MM::free_frame(scratch_paddr);
         return (load_res.error() == Kernel::Loader::ElfLoaderError::OutOfMemory) ? ERR_ENOMEM
                                                                                  : ERR_ENOEXEC;
     }
@@ -3376,7 +3376,7 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
     auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(loaded.address_space);
     if (!stack_res.is_ok()) {
         loaded.address_space.destroy();
-        free_frame(scratch_paddr);
+        Kernel::MM::free_frame(scratch_paddr);
         return ERR_ENOMEM;
     }
 
@@ -3390,10 +3390,10 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
     if (!abi_res.is_ok()) {
         if (!loaded.address_space.is_valid() && new_stack.phys_base != 0U &&
             new_stack.num_pages > 0U) {
-            free_frames(new_stack.phys_base, new_stack.num_pages);
+            Kernel::MM::free_frames(new_stack.phys_base, new_stack.num_pages);
         }
         loaded.address_space.destroy();
-        free_frame(scratch_paddr);
+        Kernel::MM::free_frame(scratch_paddr);
         return ERR_E2BIG;
     }
 
@@ -3401,10 +3401,10 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
         !Kernel::Process::init_fd_table(*proc, Kernel::Process::INITIAL_FD_CAPACITY)) {
         if (!loaded.address_space.is_valid() && new_stack.phys_base != 0U &&
             new_stack.num_pages > 0U) {
-            free_frames(new_stack.phys_base, new_stack.num_pages);
+            Kernel::MM::free_frames(new_stack.phys_base, new_stack.num_pages);
         }
         loaded.address_space.destroy();
-        free_frame(scratch_paddr);
+        Kernel::MM::free_frame(scratch_paddr);
         return ERR_ENOMEM;
     }
 
@@ -3412,7 +3412,7 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
 
     if (!proc->address_space.is_valid() && proc->user_stack.phys_base != 0U &&
         proc->user_stack.num_pages > 0U) {
-        free_frames(proc->user_stack.phys_base, proc->user_stack.num_pages);
+        Kernel::MM::free_frames(proc->user_stack.phys_base, proc->user_stack.num_pages);
     }
     proc->address_space = static_cast<Kernel::MM::AddressSpace&&>(loaded.address_space);
     cstr_copy(proc->exe_path, exec_binary_path, sizeof(proc->exe_path));
@@ -3435,7 +3435,7 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
     Kernel::Process::init_user_cpu_context(ctx, proc->entry_point, proc->user_stack.final_sp_el0,
                                            proc->user_stack.argc, proc->user_stack.argv_vaddr);
 
-    free_frame(scratch_paddr);
+    Kernel::MM::free_frame(scratch_paddr);
     return 0;
 }
 
@@ -3693,7 +3693,7 @@ int64_t sys_sysinfo(uintptr_t user_info) noexcept {
     LinuxSysinfo info{};
     info.uptime = (freq > 0ULL) ? static_cast<int64_t>(ticks / freq) : 0;
     info.totalram = platform.ram_size;
-    info.freeram = pfa_free_pages_count() * platform.page_size;
+    info.freeram = Kernel::MM::pfa_free_pages_count() * platform.page_size;
     info.procs = static_cast<uint16_t>(Kernel::Process::active_process_count());
     info.mem_unit = 1U;
 

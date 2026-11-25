@@ -111,7 +111,7 @@ bool VirtioBlkDevice::init(uintptr_t base_paddr, uint32_t spi_irq, size_t region
         return false;
     }
 
-    m_dma_paddr = alloc_frame();
+    m_dma_paddr = Kernel::MM::alloc_frame();
     if (m_dma_paddr == 0U) {
         m_queue.destroy();
         m_transport.set_failed();
@@ -124,7 +124,7 @@ bool VirtioBlkDevice::init(uintptr_t base_paddr, uint32_t spi_irq, size_t region
     const uint32_t cap_hi = m_transport.read_config32(4U);
     m_capacity_sectors = (static_cast<uint64_t>(cap_hi) << 32U) | static_cast<uint64_t>(cap_lo);
     if (m_capacity_sectors == 0ULL) {
-        free_frame(m_dma_paddr);
+        Kernel::MM::free_frame(m_dma_paddr);
         m_dma_paddr = 0U;
         m_queue.destroy();
         m_transport.set_failed();
@@ -139,7 +139,7 @@ bool VirtioBlkDevice::init(uintptr_t base_paddr, uint32_t spi_irq, size_t region
     if (m_spi_irq >= IRQ::MIN_SPI_IRQ) {
         if (!IRQ::GicV2::register_spi_handler(m_spi_irq, &VirtioBlkDevice::irq_trampoline, this,
                                               IRQ::IrqTriggerMode::LevelHigh)) {
-            free_frame(m_dma_paddr);
+            Kernel::MM::free_frame(m_dma_paddr);
             m_dma_paddr = 0U;
             m_queue.destroy();
             m_transport.set_failed();
@@ -171,7 +171,7 @@ void VirtioBlkDevice::shutdown() noexcept {
     }
 
     if (m_dma_paddr != 0U) {
-        free_frame(m_dma_paddr);
+        Kernel::MM::free_frame(m_dma_paddr);
         m_dma_paddr = 0U;
     }
 

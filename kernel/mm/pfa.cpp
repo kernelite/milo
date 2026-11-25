@@ -7,6 +7,8 @@
 #include <cstddef>
 #include <cstdint>
 
+namespace Kernel::MM {
+
 namespace {
 
 constexpr size_t MAX_RESERVED_SPANS = 40U;
@@ -520,3 +522,4 @@ size_t pfa_allocated_pages_count() noexcept {
     const size_t free_count = __atomic_load_n(&g_free_pages, __ATOMIC_RELAXED);
     return (g_total_pages >= free_count) ? (g_total_pages - free_count) : 0U;
 }
+} // namespace Kernel::MM

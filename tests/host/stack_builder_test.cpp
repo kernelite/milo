@@ -24,7 +24,7 @@ void init_stack_test_env() noexcept {
     map.min_paddr = RAM_BASE;
     map.max_paddr = RAM_BASE + RAM_SIZE;
     map.total_usable_bytes = RAM_SIZE;
-    pfa_init(map, KERNEL_START, KERNEL_END, 0U, 0U, 0U, 0U, nullptr);
+    Kernel::MM::pfa_init(map, KERNEL_START, KERNEL_END, 0U, 0U, 0U, 0U, nullptr);
 }
 
 uint64_t read_stack_u64(const Kernel::Process::UserStack& stack, uintptr_t vaddr) noexcept {
@@ -47,7 +47,7 @@ const char* read_stack_cstr(const Kernel::Process::UserStack& stack, uintptr_t v
 
 TEST_CASE("UserStackBuilder allocates, zeroes, and maps RW+NX user pages", "[stack][process]") {
     init_stack_test_env();
-    const size_t baseline_free = pfa_free_pages_count();
+    const size_t baseline_free = Kernel::MM::pfa_free_pages_count();
 
     auto as_res = Kernel::MM::AddressSpace::create();
     REQUIRE(as_res.is_ok());
@@ -62,7 +62,7 @@ TEST_CASE("UserStackBuilder allocates, zeroes, and maps RW+NX user pages", "[sta
         CHECK(stack.size == Kernel::Process::DEFAULT_USER_STACK_SIZE);
         CHECK(stack.num_pages == 16U);
         CHECK(stack.virt_base == stack.virt_top - stack.size);
-        CHECK(pfa_free_pages_count() == baseline_free - 16U);
+        CHECK(Kernel::MM::pfa_free_pages_count() == baseline_free - 16U);
 
         for (size_t page_idx = 0U; page_idx < stack.num_pages; ++page_idx) {
             const uintptr_t vaddr = stack.virt_base + (page_idx * Arch::PAGE_SIZE);
@@ -84,9 +84,9 @@ TEST_CASE("UserStackBuilder allocates, zeroes, and maps RW+NX user pages", "[sta
             REQUIRE(kptr[idx] == 0U);
         }
 
-        free_frames(stack.phys_base, stack.num_pages);
+        Kernel::MM::free_frames(stack.phys_base, stack.num_pages);
         address_space.destroy();
-        CHECK(pfa_free_pages_count() == baseline_free);
+        CHECK(Kernel::MM::pfa_free_pages_count() == baseline_free);
     }
 
     SECTION("create_and_map rejects invalid alignment and rolls back on mapping failure") {
@@ -106,7 +106,7 @@ TEST_CASE("UserStackBuilder allocates, zeroes, and maps RW+NX user pages", "[sta
             address_space, Kernel::Process::DEFAULT_USER_STACK_TOP, 4U * Arch::PAGE_SIZE);
         REQUIRE(map_fail.is_err());
         CHECK(map_fail.error() == Kernel::Process::StackBuilderError::MappingFailed);
-        CHECK(pfa_free_pages_count() == baseline_free);
+        CHECK(Kernel::MM::pfa_free_pages_count() == baseline_free);
     }
 }
 
@@ -236,9 +236,9 @@ TEST_CASE("UserStackBuilder constructs System V AArch64 ABI stack layout", "[sta
         REQUIRE(overflow_res.is_err());
         CHECK(overflow_res.error() == Kernel::Process::StackBuilderError::BufferOverflow);
 
-        free_frames(tiny_stack.phys_base, tiny_stack.num_pages);
+        Kernel::MM::free_frames(tiny_stack.phys_base, tiny_stack.num_pages);
     }
 
-    free_frames(stack.phys_base, stack.num_pages);
+    Kernel::MM::free_frames(stack.phys_base, stack.num_pages);
     address_space.destroy();
 }

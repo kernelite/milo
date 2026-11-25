@@ -239,7 +239,7 @@ Process* allocate_process(uint32_t ppid) noexcept {
     proc->fd_table = nullptr;
     proc->fd_capacity = 0U;
 
-    const uintptr_t kstack_pa = alloc_frames(KERNEL_STACK_PAGES);
+    const uintptr_t kstack_pa = Kernel::MM::alloc_frames(KERNEL_STACK_PAGES);
     if (kstack_pa == 0U) {
         proc->~Process();
         MM::kfree(proc);
@@ -250,7 +250,7 @@ Process* allocate_process(uint32_t ppid) noexcept {
     }
 
     if (!init_fd_table(*proc, INITIAL_FD_CAPACITY)) {
-        free_frames(kstack_pa, KERNEL_STACK_PAGES);
+        Kernel::MM::free_frames(kstack_pa, KERNEL_STACK_PAGES);
         proc->~Process();
         MM::kfree(proc);
         if (irq_was_enabled) {
@@ -297,7 +297,7 @@ Process* allocate_process(uint32_t ppid) noexcept {
             (void)kernel::fs::vfs_close(stderr_file);
         }
         destroy_fd_table(*proc);
-        free_frames(kstack_pa, KERNEL_STACK_PAGES);
+        Kernel::MM::free_frames(kstack_pa, KERNEL_STACK_PAGES);
         proc->~Process();
         MM::kfree(proc);
         if (irq_was_enabled) {
@@ -360,14 +360,14 @@ void release_process(Process& proc) noexcept {
 
     if (!proc.address_space.is_valid() && proc.user_stack.phys_base != 0U &&
         proc.user_stack.num_pages > 0U) {
-        free_frames(proc.user_stack.phys_base, proc.user_stack.num_pages);
+        Kernel::MM::free_frames(proc.user_stack.phys_base, proc.user_stack.num_pages);
     }
     proc.user_stack = UserStack{};
 
     proc.address_space.destroy();
 
     if (proc.kstack_paddr != 0U) {
-        free_frames(proc.kstack_paddr, KERNEL_STACK_PAGES);
+        Kernel::MM::free_frames(proc.kstack_paddr, KERNEL_STACK_PAGES);
         proc.kstack_paddr = 0U;
         proc.kstack_top = 0U;
     }
