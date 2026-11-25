@@ -128,6 +128,7 @@ class CpioArchive {
     bool is_valid() const noexcept;
 
     // Iterates sequentially over all valid entries until TRAILER!!! or end
+    // NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward)
     template <typename Func> CpioStatus for_each(Func&& callback) const noexcept {
         if (m_base == nullptr || m_size < sizeof(CpioNewcHeader)) {
             return CpioStatus::ArchiveTooSmall;

@@ -10,6 +10,7 @@ class StringView {
   public:
     constexpr StringView() noexcept = default;
     constexpr StringView(const char* str, size_t len) noexcept : m_data(str), m_size(len) {}
+    // NOLINTNEXTLINE(hicpp-explicit-conversions)
     constexpr StringView(const char* str) noexcept
         : m_data(str), m_size(str != nullptr ? cstr_len(str) : 0U) {}
 
@@ -146,10 +147,10 @@ inline constexpr size_t kMaxDentries = 1024U;
 inline constexpr size_t kMaxFiles = 512U;
 inline constexpr size_t kMaxSymlinkDepth = 8U;
 
-enum class SeekWhence : int32_t {
-    kSet = 0,
-    kCur = 1,
-    kEnd = 2,
+enum class SeekWhence : uint8_t {
+    kSet = 0U,
+    kCur = 1U,
+    kEnd = 2U,
 };
 
 struct Superblock;

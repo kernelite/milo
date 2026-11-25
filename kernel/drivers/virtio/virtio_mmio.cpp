@@ -61,7 +61,7 @@ uint32_t VirtioMmioTransport::read_reg(size_t offset) const noexcept {
     return *reg;
 }
 
-void VirtioMmioTransport::write_reg(size_t offset, uint32_t value) noexcept {
+void VirtioMmioTransport::write_reg(size_t offset, uint32_t value) const noexcept {
     auto* const reg = reinterpret_cast<volatile uint32_t*>(m_virt_base + offset);
     *reg = value;
 }

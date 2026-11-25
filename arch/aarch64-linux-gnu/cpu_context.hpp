@@ -45,7 +45,7 @@ inline void set_vbar(uintptr_t vector_table_addr) {
     asm volatile("msr vbar_el1, %0" ::"r"(vector_table_addr));
 }
 inline uint64_t get_esr() {
-    uint64_t val;
+    uint64_t val = 0ULL;
     asm volatile("mrs %0, esr_el1" : "=r"(val));
     return val;
 }

@@ -42,13 +42,13 @@ class AArch64CpuControl : public HAL::CpuControl {
     void disable_interrupts() override { asm volatile("msr daifset, #2" ::: "memory"); }
 
     bool interrupts_enabled() const override {
-        uint64_t daif;
+        uint64_t daif = 0ULL;
         asm volatile("mrs %0, daif" : "=r"(daif));
         return (daif & (1U << 7U)) == 0U;
     }
 
     uint8_t current_el() const override {
-        uint64_t elvl;
+        uint64_t elvl = 0ULL;
         asm volatile("mrs %0, CurrentEL" : "=r"(elvl));
         return static_cast<uint8_t>((elvl >> 2U) & 0x3U);
     }

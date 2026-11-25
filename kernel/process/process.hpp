@@ -80,7 +80,13 @@ struct FileDescriptor {
 };
 
 struct Process {
+    Process() = default;
     ~Process() noexcept;
+
+    Process(const Process&) = delete;
+    Process& operator=(const Process&) = delete;
+    Process(Process&&) = delete;
+    Process& operator=(Process&&) = delete;
 
     HAL::KernelContext kctx{};
     HAL::CpuContext context{};

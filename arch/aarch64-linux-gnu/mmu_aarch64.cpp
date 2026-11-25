@@ -400,7 +400,7 @@ class AArch64MemoryControl : public HAL::MemoryControl {
     }
 
     HAL::MmuStatus status() const noexcept override {
-        uint64_t sctlr;
+        uint64_t sctlr = 0ULL;
         asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
 
         return HAL::MmuStatus{.mmu_enabled = (sctlr & (1ULL << 0U)) != 0U,
@@ -423,7 +423,7 @@ void init_mmu(uintptr_t ttbr0_base, uintptr_t ttbr1_base) {
     const uint64_t mair = (0x00ULL << 0U) | (0xFFULL << 8U);
     asm volatile("msr mair_el1, %0" ::"r"(mair));
 
-    uint64_t mmfr0;
+    uint64_t mmfr0 = 0ULL;
     asm volatile("mrs %0, id_aa64mmfr0_el1" : "=r"(mmfr0));
     const uint64_t pa_range = mmfr0 & 0xFU;
 
@@ -441,7 +441,7 @@ void init_mmu(uintptr_t ttbr0_base, uintptr_t ttbr1_base) {
                  "isb" ::
                      : "memory");
 
-    uint64_t sctlr;
+    uint64_t sctlr = 0ULL;
     asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
     sctlr |= (1ULL << 0U);
     sctlr |= (1ULL << 2U);
@@ -528,7 +528,7 @@ bool AddressSpaceBackend::resolve_cow_page(uintptr_t root_paddr, uintptr_t vaddr
     }
 
     const uintptr_t page_offset = vaddr & (Arch::PAGE_SIZE - 1U);
-    if (__atomic_load_n(&page->ref_count, __ATOMIC_ACQ_REL) > 1U) {
+    if (__atomic_load_n(&page->ref_count, __ATOMIC_ACQUIRE) > 1U) {
         const uintptr_t new_paddr = alloc_frame();
         if (new_paddr == 0U) {
             return false;

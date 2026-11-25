@@ -5,11 +5,6 @@
 #include <cstddef>
 #include <new>
 
-void operator delete(void* ptr, std::align_val_t align) noexcept;
-void operator delete[](void* ptr, std::align_val_t align) noexcept;
-void operator delete(void* ptr, std::size_t size, std::align_val_t align) noexcept;
-void operator delete[](void* ptr, std::size_t size, std::align_val_t align) noexcept;
-
 namespace {
 
 [[noreturn]] void kernel_heap_oom_panic() noexcept {
@@ -23,6 +18,7 @@ namespace {
 } // namespace
 
 namespace std {
+// NOLINTNEXTLINE(cert-dcl58-cpp)
 const nothrow_t nothrow{};
 
 // NOLINTNEXTLINE(cert-dcl58-cpp)
@@ -130,19 +126,21 @@ void* operator new[](size_t size, std::align_val_t align) {
 // Non-Throwing Global Allocation Operators (Return nullptr on OOM)
 // ==========================================================================
 
-void* operator new(size_t size, const std::nothrow_t&) noexcept {
+void* operator new(size_t size, [[maybe_unused]] const std::nothrow_t& tag) noexcept {
     return Kernel::MM::kmalloc(size, 16U);
 }
 
-void* operator new[](size_t size, const std::nothrow_t&) noexcept {
+void* operator new[](size_t size, [[maybe_unused]] const std::nothrow_t& tag) noexcept {
     return Kernel::MM::kmalloc(size, 16U);
 }
 
-void* operator new(size_t size, std::align_val_t align, const std::nothrow_t&) noexcept {
+void* operator new(size_t size, std::align_val_t align,
+                   [[maybe_unused]] const std::nothrow_t& tag) noexcept {
     return Kernel::MM::kmalloc(size, static_cast<size_t>(align));
 }
 
-void* operator new[](size_t size, std::align_val_t align, const std::nothrow_t&) noexcept {
+void* operator new[](size_t size, std::align_val_t align,
+                     [[maybe_unused]] const std::nothrow_t& tag) noexcept {
     return Kernel::MM::kmalloc(size, static_cast<size_t>(align));
 }
 
@@ -184,20 +182,20 @@ void operator delete[](void* ptr, [[maybe_unused]] size_t size,
     Kernel::MM::kfree(ptr);
 }
 
-void operator delete(void* ptr, const std::nothrow_t&) noexcept {
+void operator delete(void* ptr, [[maybe_unused]] const std::nothrow_t& tag) noexcept {
     Kernel::MM::kfree(ptr);
 }
 
-void operator delete[](void* ptr, const std::nothrow_t&) noexcept {
+void operator delete[](void* ptr, [[maybe_unused]] const std::nothrow_t& tag) noexcept {
     Kernel::MM::kfree(ptr);
 }
 
 void operator delete(void* ptr, [[maybe_unused]] std::align_val_t align,
-                     const std::nothrow_t&) noexcept {
+                     [[maybe_unused]] const std::nothrow_t& tag) noexcept {
     Kernel::MM::kfree(ptr);
 }
 
 void operator delete[](void* ptr, [[maybe_unused]] std::align_val_t align,
-                       const std::nothrow_t&) noexcept {
+                       [[maybe_unused]] const std::nothrow_t& tag) noexcept {
     Kernel::MM::kfree(ptr);
 }

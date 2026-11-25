@@ -9,7 +9,13 @@ constexpr size_t DEFAULT_SECTOR_SIZE = 512U;
 
 class BlockDevice {
   public:
+    constexpr BlockDevice() noexcept = default;
     virtual ~BlockDevice() noexcept = default;
+
+    BlockDevice(const BlockDevice&) = delete;
+    BlockDevice& operator=(const BlockDevice&) = delete;
+    BlockDevice(BlockDevice&&) = delete;
+    BlockDevice& operator=(BlockDevice&&) = delete;
 
     [[nodiscard]] virtual size_t sector_size() const noexcept = 0;
     [[nodiscard]] virtual uint64_t sector_count() const noexcept = 0;

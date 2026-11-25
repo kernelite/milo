@@ -120,13 +120,14 @@ constexpr uint16_t size_to_class_index(size_t effective_size) noexcept {
 }
 
 inline void slab_set_next(void* slot, void* next) noexcept {
-    __builtin_memcpy(slot, &next, sizeof(void*));
+    const auto next_addr = reinterpret_cast<uintptr_t>(next);
+    __builtin_memcpy(slot, &next_addr, sizeof(next_addr));
 }
 
 inline void* slab_get_next(const void* slot) noexcept {
-    void* next = nullptr;
-    __builtin_memcpy(&next, slot, sizeof(void*));
-    return next;
+    uintptr_t next_addr = 0U;
+    __builtin_memcpy(&next_addr, slot, sizeof(next_addr));
+    return reinterpret_cast<void*>(next_addr);
 }
 
 void list_push_front(Page*& head, Page* page) noexcept {

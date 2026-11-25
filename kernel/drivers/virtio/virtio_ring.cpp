@@ -238,6 +238,12 @@ bool SplitVirtqueue::submit_chain(const VirtqBuffer* buffers, size_t count,
     }
 
     VringDesc* const descs = desc_table();
+    VringAvailHeader* const hdr = avail_header();
+    uint16_t* const ring = avail_ring();
+    if (descs == nullptr || hdr == nullptr || ring == nullptr) {
+        return false;
+    }
+
     uint16_t head_idx = VRING_INVALID_DESC;
     uint16_t prev_idx = VRING_INVALID_DESC;
 
@@ -265,8 +271,6 @@ bool SplitVirtqueue::submit_chain(const VirtqBuffer* buffers, size_t count,
         prev_idx = desc_idx;
     }
 
-    VringAvailHeader* const hdr = avail_header();
-    uint16_t* const ring = avail_ring();
     const uint16_t slot = static_cast<uint16_t>(hdr->idx % m_queue_size);
     ring[slot] = head_idx;
 
@@ -286,7 +290,8 @@ bool SplitVirtqueue::has_used() const noexcept {
         return false;
     }
     virtio_rmb();
-    return m_last_used_idx != used_header()->idx;
+    const VringUsedHeader* const hdr = used_header();
+    return hdr != nullptr && m_last_used_idx != hdr->idx;
 }
 
 bool SplitVirtqueue::pop_used(uint16_t& out_head_idx, uint32_t& out_written_len,
@@ -321,14 +326,18 @@ bool SplitVirtqueue::should_notify() const noexcept {
         return false;
     }
     virtio_mb();
-    return (used_header()->flags & VRING_USED_F_NO_NOTIFY) == 0U;
+    const VringUsedHeader* const hdr = used_header();
+    return hdr != nullptr && (hdr->flags & VRING_USED_F_NO_NOTIFY) == 0U;
 }
 
-void SplitVirtqueue::suppress_interrupts(bool suppress) noexcept {
+void SplitVirtqueue::suppress_interrupts(bool suppress) const noexcept {
     if (!m_initialized) {
         return;
     }
     VringAvailHeader* const hdr = avail_header();
+    if (hdr == nullptr) {
+        return;
+    }
     if (suppress) {
         hdr->flags |= VRING_AVAIL_F_NO_INTERRUPT;
     } else {

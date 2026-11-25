@@ -20,6 +20,7 @@ INITRD             ?= $(BUSYBOX_CPIO)
 
 # Freestanding C++ flags
 CXXFLAGS := -std=c++20 -ffreestanding -fsized-deallocation -O2 -Wall -Wextra -fno-use-cxa-atexit \
+			-Werror -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Wnull-dereference \
             -fno-exceptions -fno-rtti -fno-threadsafe-statics -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -MMD -MP -g
 ASFLAGS  := -g
 LDFLAGS  := -nostdlib -T arch/$(ARCH)/linker.ld
@@ -45,11 +46,13 @@ HOST_COV_DIR   := $(BUILD_DIR)/host-coverage
 
 HOST_CXXFLAGS := -std=c++20 -O1 -g -Wall -Wextra -Werror -Wpedantic \
                  -fno-exceptions -fno-rtti -DHOST_TEST -DSNITCH_WITH_EXCEPTIONS=0 \
+				 -Wshadow -Wconversion -Wsign-conversion -Wnull-dereference \
                  -fsanitize=address,undefined -fno-omit-frame-pointer -MMD -MP
 HOST_LDFLAGS  := -fsanitize=address,undefined -L/usr/local/lib -lsnitch
 HOST_INCLUDES := -Ikernel -Iarch/$(ARCH) -Itests/host
 
 HOST_COV_CXXFLAGS := -std=c++20 -O0 -g --coverage -Wall -Wextra -Werror -Wpedantic \
+					 -Wshadow -Wconversion -Wsign-conversion -Wnull-dereference \
                      -fno-exceptions -fno-rtti -DHOST_TEST -DSNITCH_WITH_EXCEPTIONS=0 -MMD -MP
 HOST_COV_LDFLAGS  := --coverage -L/usr/local/lib -lsnitch
 

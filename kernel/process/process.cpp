@@ -782,6 +782,7 @@ uint64_t last_cpu_ticks_for_pid(uint32_t pid) noexcept {
     return 0ULL;
 }
 
+// NOLINTNEXTLINE(cppcoreguidelines-rvalue-reference-param-not-moved)
 void attach_loaded_elf(Process& proc, Loader::LoadedElf&& loaded) noexcept {
     proc.address_space = static_cast<MM::AddressSpace&&>(loaded.address_space);
     proc.entry_point = loaded.entry_point;

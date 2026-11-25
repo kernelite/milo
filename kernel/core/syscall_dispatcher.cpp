@@ -347,7 +347,6 @@ struct LinuxSysinfo {
     uint64_t totalhigh;
     uint64_t freehigh;
     uint32_t mem_unit;
-    char _f[20 - 2 * sizeof(uint64_t) - sizeof(uint32_t)];
 };
 static_assert(sizeof(LinuxSysinfo) == 112U, "LinuxSysinfo must be 112 bytes");
 
@@ -2078,6 +2077,11 @@ int64_t sys_ppoll(uintptr_t user_fds, uint64_t nfds, uintptr_t user_tmo, uintptr
 
     struct PollHeapGuard {
         LinuxPollFd* ptr{nullptr};
+        explicit PollHeapGuard(LinuxPollFd* heap_ptr) noexcept : ptr(heap_ptr) {}
+        PollHeapGuard(const PollHeapGuard&) = delete;
+        PollHeapGuard& operator=(const PollHeapGuard&) = delete;
+        PollHeapGuard(PollHeapGuard&&) = delete;
+        PollHeapGuard& operator=(PollHeapGuard&&) = delete;
         ~PollHeapGuard() noexcept { delete[] ptr; }
     };
 
@@ -2286,6 +2290,18 @@ int64_t sys_pselect6(int32_t nfds, uintptr_t user_rfds, uintptr_t user_wfds, uin
         }
     };
 
+    constexpr auto READ_REQ =
+        static_cast<int16_t>(static_cast<uint32_t>(POLLIN) | static_cast<uint32_t>(POLLRDNORM));
+    constexpr auto READ_READY =
+        static_cast<uint16_t>(static_cast<uint32_t>(POLLIN) | static_cast<uint32_t>(POLLRDNORM) |
+                              static_cast<uint32_t>(POLLHUP) | static_cast<uint32_t>(POLLERR));
+    constexpr auto WRITE_REQ =
+        static_cast<int16_t>(static_cast<uint32_t>(POLLOUT) | static_cast<uint32_t>(POLLWRNORM));
+    constexpr auto WRITE_READY =
+        static_cast<uint16_t>(static_cast<uint32_t>(POLLOUT) | static_cast<uint32_t>(POLLWRNORM) |
+                              static_cast<uint32_t>(POLLERR));
+    constexpr auto ERR_READY = static_cast<uint16_t>(POLLERR);
+
     while (true) {
         uint64_t out_rfds[MAX_FDSET_WORDS]{};
         uint64_t out_wfds[MAX_FDSET_WORDS]{};
@@ -2297,24 +2313,25 @@ int64_t sys_pselect6(int32_t nfds, uintptr_t user_rfds, uintptr_t user_wfds, uin
             const uint64_t bit = 1ULL << (fd % 64U);
 
             if ((rfds[word] & bit) != 0ULL) {
-                const int16_t rev =
-                    poll_fd_revents(*proc, static_cast<int32_t>(fd), POLLIN | POLLRDNORM);
-                if ((rev & (POLLIN | POLLRDNORM | POLLHUP | POLLERR)) != 0) {
+                const auto rev = static_cast<uint16_t>(
+                    poll_fd_revents(*proc, static_cast<int32_t>(fd), READ_REQ));
+                if ((rev & READ_READY) != 0U) {
                     out_rfds[word] |= bit;
                     ready_bits++;
                 }
             }
             if ((wfds[word] & bit) != 0ULL) {
-                const int16_t rev =
-                    poll_fd_revents(*proc, static_cast<int32_t>(fd), POLLOUT | POLLWRNORM);
-                if ((rev & (POLLOUT | POLLWRNORM | POLLERR)) != 0) {
+                const auto rev = static_cast<uint16_t>(
+                    poll_fd_revents(*proc, static_cast<int32_t>(fd), WRITE_REQ));
+                if ((rev & WRITE_READY) != 0U) {
                     out_wfds[word] |= bit;
                     ready_bits++;
                 }
             }
             if ((efds[word] & bit) != 0ULL) {
-                const int16_t rev = poll_fd_revents(*proc, static_cast<int32_t>(fd), 0);
-                if ((rev & POLLERR) != 0) {
+                const auto rev =
+                    static_cast<uint16_t>(poll_fd_revents(*proc, static_cast<int32_t>(fd), 0));
+                if ((rev & ERR_READY) != 0U) {
                     out_efds[word] |= bit;
                     ready_bits++;
                 }
@@ -3264,7 +3281,8 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
         return read_exec_res;
     }
 
-    auto* exec_bytes = reinterpret_cast<const uint8_t*>(Kernel::MM::phys_to_virt(exec_buf_paddr));
+    const auto* exec_bytes =
+        reinterpret_cast<const uint8_t*>(Kernel::MM::phys_to_virt(exec_buf_paddr));
 
     // Handle '#!' shebang scripts (e.g., #!/bin/bash or #!/bin/sh)
     char shebang_interp[Kernel::Process::MAX_PATH_LEN]{};

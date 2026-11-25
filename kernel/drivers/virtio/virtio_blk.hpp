@@ -40,7 +40,7 @@ struct VirtioBlkRequest {
     std::atomic<bool> completed{false};
     uint8_t status{VIRTIO_BLK_S_UNSET};
     uint32_t waiter_pid{0U};
-    Process::WaitQueue wait_queue{};
+    Process::WaitQueue wait_queue;
 };
 
 class VirtioBlkDevice final : public Block::BlockDevice {
@@ -50,6 +50,8 @@ class VirtioBlkDevice final : public Block::BlockDevice {
 
     VirtioBlkDevice(const VirtioBlkDevice&) = delete;
     VirtioBlkDevice& operator=(const VirtioBlkDevice&) = delete;
+    VirtioBlkDevice(VirtioBlkDevice&&) = delete;
+    VirtioBlkDevice& operator=(VirtioBlkDevice&&) = delete;
 
     [[nodiscard]] bool init(uintptr_t base_paddr, uint32_t spi_irq = 0U,
                             size_t region_size = 0x200U,
@@ -104,15 +106,15 @@ class VirtioBlkDevice final : public Block::BlockDevice {
                                    size_t sector_count) noexcept;
     [[nodiscard]] static int translate_status(uint8_t status) noexcept;
 
-    VirtioMmioTransport m_transport{};
-    SplitVirtqueue m_queue{};
+    VirtioMmioTransport m_transport;
+    SplitVirtqueue m_queue;
     uintptr_t m_dma_paddr{0U};
     uint64_t m_capacity_sectors{0ULL};
     uint32_t m_spi_irq{0U};
     bool m_irq_registered{false};
     bool m_initialized{false};
     bool m_dma_busy{false};
-    Process::WaitQueue m_dma_waiters{};
+    Process::WaitQueue m_dma_waiters;
 
     VirtioBlkRequest* m_in_flight[VIRTQ_MAX_SIZE]{};
 
