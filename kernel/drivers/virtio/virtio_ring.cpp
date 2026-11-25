@@ -88,7 +88,7 @@ bool SplitVirtqueue::init(uint16_t queue_size) noexcept {
     const size_t total_bytes = used_offset + used_bytes;
     const size_t num_pages = align_up(total_bytes, Arch::PAGE_SIZE) / Arch::PAGE_SIZE;
 
-    const uintptr_t base_paddr = alloc_frames(num_pages);
+    const uintptr_t base_paddr = Kernel::MM::alloc_frames(num_pages);
     if (base_paddr == 0U) {
         return false;
     }
@@ -120,7 +120,7 @@ bool SplitVirtqueue::init(uint16_t queue_size) noexcept {
 
 void SplitVirtqueue::destroy() noexcept {
     if (m_base_paddr != 0U && m_num_pages > 0U) {
-        free_frames(m_base_paddr, m_num_pages);
+        Kernel::MM::free_frames(m_base_paddr, m_num_pages);
     }
     m_base_paddr = 0U;
     m_num_pages = 0U;

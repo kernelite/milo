@@ -100,7 +100,8 @@ Result<LoadedElf, ElfLoaderError> load_elf(const uint8_t* elf_data, size_t elf_s
 
     auto rollback_and_abort = [&](ElfLoaderError err) -> Result<LoadedElf, ElfLoaderError> {
         for (size_t i = 0U; i < tracked_count; ++i) {
-            free_frames(tracked_allocations[i].paddr_base, tracked_allocations[i].num_pages);
+            Kernel::MM::free_frames(tracked_allocations[i].paddr_base,
+                                    tracked_allocations[i].num_pages);
         }
         address_space.destroy();
         return err;
@@ -137,7 +138,7 @@ Result<LoadedElf, ElfLoaderError> load_elf(const uint8_t* elf_data, size_t elf_s
             return false;
         }
 
-        const uintptr_t paddr_base = alloc_frames(num_pages);
+        const uintptr_t paddr_base = Kernel::MM::alloc_frames(num_pages);
         if (paddr_base == 0U) {
             pipeline_failed = true;
             failure_reason = ElfLoaderError::OutOfMemory;

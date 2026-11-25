@@ -25,15 +25,15 @@ void init_virtio_test_pfa() noexcept {
     mem_map.max_paddr = HostTest::SIM_RAM_BASE + HostTest::SIM_RAM_SIZE;
     mem_map.total_usable_bytes = HostTest::SIM_RAM_SIZE;
 
-    pfa_init(mem_map, HostTest::SIM_RAM_BASE, HostTest::SIM_RAM_BASE + Arch::PAGE_SIZE, 0U, 0U, 0U,
-             0U, nullptr);
+    Kernel::MM::pfa_init(mem_map, HostTest::SIM_RAM_BASE, HostTest::SIM_RAM_BASE + Arch::PAGE_SIZE,
+                         0U, 0U, 0U, 0U, nullptr);
 }
 
 } // namespace
 
 TEST_CASE("SplitVirtqueue descriptor allocation, chaining, and wrap-around", "[virtio][vring]") {
     init_virtio_test_pfa();
-    const size_t baseline_free = pfa_free_pages_count();
+    const size_t baseline_free = Kernel::MM::pfa_free_pages_count();
     REQUIRE(baseline_free > 16U);
 
     SECTION("allocates and frees individual descriptors and reclaims PFA frames on destroy") {
@@ -45,7 +45,7 @@ TEST_CASE("SplitVirtqueue descriptor allocation, chaining, and wrap-around", "[v
         CHECK(virtq.is_initialized());
         CHECK(virtq.queue_size() == 8U);
         CHECK(virtq.num_free() == 8U);
-        CHECK(pfa_free_pages_count() == baseline_free - 1U);
+        CHECK(Kernel::MM::pfa_free_pages_count() == baseline_free - 1U);
 
         std::array<uint16_t, 8> allocated{};
         for (size_t idx = 0U; idx < 8U; ++idx) {
@@ -67,7 +67,7 @@ TEST_CASE("SplitVirtqueue descriptor allocation, chaining, and wrap-around", "[v
 
         virtq.destroy();
         CHECK_FALSE(virtq.is_initialized());
-        CHECK(pfa_free_pages_count() == baseline_free);
+        CHECK(Kernel::MM::pfa_free_pages_count() == baseline_free);
     }
 
     SECTION("submits 3-descriptor chains and drains simulated hypervisor Used Ring completions") {
@@ -141,6 +141,6 @@ TEST_CASE("SplitVirtqueue descriptor allocation, chaining, and wrap-around", "[v
         }
 
         virtq.destroy();
-        CHECK(pfa_free_pages_count() == baseline_free);
+        CHECK(Kernel::MM::pfa_free_pages_count() == baseline_free);
     }
 }

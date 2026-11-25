@@ -48,7 +48,7 @@ void release_all_pages(TmpfsInodeData* data) noexcept {
     }
     for (uintptr_t& paddr : data->pages) {
         if (paddr != 0U) {
-            free_frame(paddr);
+            Kernel::MM::free_frame(paddr);
             paddr = 0U;
         }
     }
@@ -156,7 +156,7 @@ int64_t tmpfs_write(File* file, const void* buf, size_t count, uint64_t* offset)
         }
 
         if (data->pages[page_idx] == 0U) {
-            const uintptr_t frame = alloc_frame();
+            const uintptr_t frame = Kernel::MM::alloc_frame();
             if (frame == 0U) {
                 if (total_written > 0U) {
                     break;
@@ -236,7 +236,7 @@ int32_t tmpfs_truncate(Inode* inode, uint64_t new_size) noexcept {
         const auto keep_pages = static_cast<size_t>((new_size + page_size - 1U) / page_size);
         for (size_t page_idx = keep_pages; page_idx < kTmpfsMaxPagesPerFile; ++page_idx) {
             if (data->pages[page_idx] != 0U) {
-                free_frame(data->pages[page_idx]);
+                Kernel::MM::free_frame(data->pages[page_idx]);
                 data->pages[page_idx] = 0U;
             }
         }
