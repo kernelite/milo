@@ -58,7 +58,7 @@ struct Page {
 };
 
 void pfa_init(const FDT::MemoryMap& mem_map, uintptr_t kernel_start, uintptr_t kernel_end,
-              uintptr_t dtb_start, size_t dtb_size, uintptr_t initrd_start, uintptr_t initrd_end,
+              uintptr_t dtb_paddr, size_t dtb_size, uintptr_t initrd_start, uintptr_t initrd_end,
               const FDT::ReserveMap* reserve_map = nullptr) noexcept;
 
 void pfa_on_mmu_enabled() noexcept;
@@ -74,8 +74,6 @@ void page_put(uintptr_t paddr) noexcept;
 
 [[nodiscard]] Page* page_from_paddr(uintptr_t paddr) noexcept;
 [[nodiscard]] uintptr_t page_to_paddr(const Page* page) noexcept;
-void page_get(uintptr_t paddr) noexcept;
-void page_put(uintptr_t paddr) noexcept;
 
 [[nodiscard]] bool pfa_is_page_allocated(uintptr_t paddr) noexcept;
 [[nodiscard]] size_t pfa_allocated_pages_count() noexcept;

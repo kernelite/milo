@@ -5,6 +5,14 @@
 namespace HAL {
 class Console {
   public:
+    constexpr Console() = default;
+    virtual ~Console() = default;
+
+    Console(const Console&) = delete;
+    Console& operator=(const Console&) = delete;
+    Console(Console&&) = delete;
+    Console& operator=(Console&&) = delete;
+
     virtual void init() = 0;
     virtual void putc(char chr) = 0;
     virtual uint8_t getc() = 0;

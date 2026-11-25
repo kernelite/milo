@@ -74,9 +74,9 @@ inline constexpr Elf64_Word PT_TLS = 7;
 inline constexpr Elf64_Word PT_GNU_STACK = 0x6474E551;
 
 // Segment permission flags (p_flags)
-inline constexpr Elf64_Word PF_X = 1U << 0; // Execute
-inline constexpr Elf64_Word PF_W = 1U << 1; // Write
-inline constexpr Elf64_Word PF_R = 1U << 2; // Read
+inline constexpr Elf64_Word PF_X = 1U << 0U; // Execute
+inline constexpr Elf64_Word PF_W = 1U << 1U; // Write
+inline constexpr Elf64_Word PF_R = 1U << 2U; // Read
 
 inline constexpr uint64_t AT_NULL = 0;
 inline constexpr uint64_t AT_IGNORE = 1;
@@ -157,9 +157,12 @@ const char* elf_status_str(ElfStatus status) noexcept;
 // Freestanding, zero-allocation Result type
 template <typename T, typename E> class Result {
   public:
-    constexpr Result(const T& val) noexcept : m_val(val), m_err{}, m_is_ok(true) {}
-    constexpr Result(T&& val) noexcept : m_val(static_cast<T&&>(val)), m_err{}, m_is_ok(true) {}
-    constexpr Result(E error) noexcept : m_val{}, m_err(error), m_is_ok(false) {}
+    // NOLINTNEXTLINE(hicpp-explicit-conversions)
+    constexpr Result(const T& val) noexcept : m_val(val), m_is_ok(true) {}
+    // NOLINTNEXTLINE(hicpp-explicit-conversions,cppcoreguidelines-rvalue-reference-param-not-moved)
+    constexpr Result(T&& val) noexcept : m_val(static_cast<T&&>(val)), m_is_ok(true) {}
+    // NOLINTNEXTLINE(hicpp-explicit-conversions)
+    constexpr Result(E error) noexcept : m_err(error) {}
 
     constexpr bool is_ok() const noexcept { return m_is_ok; }
     constexpr bool is_err() const noexcept { return !m_is_ok; }
@@ -177,6 +180,7 @@ template <typename T, typename E> class Result {
     constexpr E error() const noexcept { return m_err; }
 
     constexpr static Result ok(const T& val) noexcept { return Result(val); }
+    // NOLINTNEXTLINE(cppcoreguidelines-rvalue-reference-param-not-moved)
     constexpr static Result ok(T&& val) noexcept { return Result(static_cast<T&&>(val)); }
     constexpr static Result err(E error) noexcept { return Result(error); }
 
@@ -259,6 +263,7 @@ class Elf64View {
     }
 
     // Zero-allocation iteration over PT_LOAD segments
+    // NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward)
     template <typename Func> void for_each_load_segment(Func&& callback) const {
         if (m_ehdr == nullptr || m_phdrs == nullptr) {
             return;
@@ -291,6 +296,7 @@ class Elf64View {
     }
 
     // Zero-allocation iteration over all program segments
+    // NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward)
     template <typename Func> void for_each_segment(Func&& callback) const {
         if (m_ehdr == nullptr || m_phdrs == nullptr) {
             return;

@@ -58,6 +58,7 @@ void copy_name(char* dst, size_t dst_cap, StringView src) noexcept {
     if (parent_mnt == nullptr) {
         return false;
     }
+    // NOLINTNEXTLINE(readability-use-anyofallof)
     for (const auto& mnt : g_vfs.mounts) {
         if (mnt.active && mnt.parent_mount == parent_mnt) {
             return true;
@@ -969,12 +970,13 @@ int16_t vfs_poll(File* file, int16_t events) noexcept {
         return file->f_ops->poll(file, events);
     }
     const uint32_t acc = file->flags & kOpenAccessMask;
+    const auto event_mask = static_cast<uint16_t>(events);
     uint16_t revents = 0U;
     if (acc == kOpenReadOnly || acc == kOpenReadWrite) {
-        revents |= static_cast<uint16_t>(events & kPollInMask);
+        revents |= static_cast<uint16_t>(event_mask & static_cast<uint16_t>(kPollInMask));
     }
     if (acc == kOpenWriteOnly || acc == kOpenReadWrite) {
-        revents |= static_cast<uint16_t>(events & kPollOutMask);
+        revents |= static_cast<uint16_t>(event_mask & static_cast<uint16_t>(kPollOutMask));
     }
     return static_cast<int16_t>(revents);
 }

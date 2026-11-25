@@ -34,6 +34,11 @@ class CpuControl {
     constexpr CpuControl() = default;
     virtual ~CpuControl() = default;
 
+    CpuControl(const CpuControl&) = delete;
+    CpuControl& operator=(const CpuControl&) = delete;
+    CpuControl(CpuControl&&) = delete;
+    CpuControl& operator=(CpuControl&&) = delete;
+
     virtual void enable_interrupts() = 0;
     virtual void disable_interrupts() = 0;
     virtual bool interrupts_enabled() const = 0;

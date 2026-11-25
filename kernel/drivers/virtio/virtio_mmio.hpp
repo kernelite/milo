@@ -69,7 +69,7 @@ class VirtioMmioTransport final {
 
   private:
     [[nodiscard]] uint32_t read_reg(size_t offset) const noexcept;
-    void write_reg(size_t offset, uint32_t value) noexcept;
+    void write_reg(size_t offset, uint32_t value) const noexcept;
 
     uintptr_t m_base_paddr{0U};
     uintptr_t m_virt_base{0U};

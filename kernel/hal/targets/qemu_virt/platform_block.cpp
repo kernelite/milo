@@ -21,8 +21,8 @@ Kernel::Drivers::Block::BlockDevice* g_primary_block_dev = nullptr;
 
 namespace HAL::Platform {
 
-void init_block_devices(uintptr_t fdt_paddr) noexcept {
-    (void)fdt_paddr;
+void init_block_devices(uintptr_t dtb_paddr) noexcept {
+    (void)dtb_paddr;
 
     if (g_primary_block_dev != nullptr) {
         return;

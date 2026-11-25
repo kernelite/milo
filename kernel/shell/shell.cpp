@@ -1997,13 +1997,17 @@ void cmd_test_heap() noexcept {
         HeapObject(uint64_t m, uint32_t idx, uint32_t* counter) noexcept
             : magic(m), id(idx), dtor_counter(counter) {}
 
+        HeapObject(const HeapObject&) = delete;
+        HeapObject& operator=(const HeapObject&) = delete;
+        HeapObject(HeapObject&&) = delete;
+        HeapObject& operator=(HeapObject&&) = delete;
+
         ~HeapObject() noexcept {
             if (dtor_counter != nullptr) {
                 (*dtor_counter)++;
             }
         }
     };
-
     struct alignas(64) OverAlignedObject {
         uint64_t payload[8];
     };

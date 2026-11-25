@@ -284,10 +284,16 @@ int16_t pipe_vfs_poll(kernel::fs::File* file, int16_t events) noexcept {
     }
 
     const uint32_t acc = file->flags & kernel::fs::kOpenAccessMask;
+    const auto event_mask = static_cast<uint16_t>(events);
+    constexpr auto kInMask =
+        static_cast<uint16_t>(static_cast<uint16_t>(kPollIn) | static_cast<uint16_t>(kPollRdNorm));
+    constexpr auto kOutMask =
+        static_cast<uint16_t>(static_cast<uint16_t>(kPollOut) | static_cast<uint16_t>(kPollWrNorm));
+
     uint16_t revents = 0U;
     if (acc == kernel::fs::kOpenReadOnly) {
         if (pipe->count > 0U) {
-            revents |= static_cast<uint16_t>(events & (kPollIn | kPollRdNorm));
+            revents |= static_cast<uint16_t>(event_mask & kInMask);
         }
         if (pipe->writers == 0U) {
             revents |= static_cast<uint16_t>(kPollHup);
@@ -296,7 +302,7 @@ int16_t pipe_vfs_poll(kernel::fs::File* file, int16_t events) noexcept {
         if (pipe->readers == 0U) {
             revents |= static_cast<uint16_t>(kPollErr);
         } else if (pipe->count < PIPE_BUF_SIZE) {
-            revents |= static_cast<uint16_t>(events & (kPollOut | kPollWrNorm));
+            revents |= static_cast<uint16_t>(event_mask & kOutMask);
         }
     }
     return static_cast<int16_t>(revents);

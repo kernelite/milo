@@ -7,6 +7,12 @@ class UARTConsole : public HAL::Console {
   public:
     // Mark constructor as constexpr / default to allow static initialization
     constexpr UARTConsole() = default;
+    ~UARTConsole() override = default;
+
+    UARTConsole(const UARTConsole&) = delete;
+    UARTConsole& operator=(const UARTConsole&) = delete;
+    UARTConsole(UARTConsole&&) = delete;
+    UARTConsole& operator=(UARTConsole&&) = delete;
 
     void init() override {}
 
@@ -15,7 +21,7 @@ class UARTConsole : public HAL::Console {
         volatile uint32_t* const FlagReg = reinterpret_cast<volatile uint32_t*>(UART0_BASE + 0x18);
 
         // Explicit comparison with != 0U satisfies readability-implicit-bool-conversion
-        while ((*FlagReg & (1U << 5)) != 0U) {
+        while ((*FlagReg & (1U << 5U)) != 0U) {
         }
         *DataReg = static_cast<uint32_t>(chr);
     }
@@ -25,7 +31,7 @@ class UARTConsole : public HAL::Console {
         volatile uint32_t* const FlagReg = reinterpret_cast<volatile uint32_t*>(UART0_BASE + 0x18);
 
         // Wait until Receive FIFO is not empty (bit 4)
-        while ((*FlagReg & (1U << 4)) != 0U) {
+        while ((*FlagReg & (1U << 4U)) != 0U) {
         }
         return static_cast<uint8_t>(*DataReg & 0xFFU);
     }

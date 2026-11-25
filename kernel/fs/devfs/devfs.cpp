@@ -436,12 +436,18 @@ int16_t console_poll(File* file, int16_t events) noexcept {
     const bool readable = (acc == kOpenReadOnly || acc == kOpenReadWrite);
     const bool writable = (acc == kOpenWriteOnly || acc == kOpenReadWrite);
 
+    const auto event_mask = static_cast<uint16_t>(events);
+    constexpr auto kInMask =
+        static_cast<uint16_t>(static_cast<uint16_t>(kPollIn) | static_cast<uint16_t>(kPollRdNorm));
+    constexpr auto kOutMask =
+        static_cast<uint16_t>(static_cast<uint16_t>(kPollOut) | static_cast<uint16_t>(kPollWrNorm));
+
     uint16_t revents = 0U;
     if (readable && tty_rx_available() > 0U) {
-        revents |= static_cast<uint16_t>(events & (kPollIn | kPollRdNorm));
+        revents |= static_cast<uint16_t>(event_mask & kInMask);
     }
     if (writable) {
-        revents |= static_cast<uint16_t>(events & (kPollOut | kPollWrNorm));
+        revents |= static_cast<uint16_t>(event_mask & kOutMask);
     }
     return static_cast<int16_t>(revents);
 }

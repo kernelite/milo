@@ -6,13 +6,13 @@
 namespace HAL {
 
 enum class PageFlags : uint8_t {
-    None = 0,
-    Read = 1 << 0,
-    Write = 1 << 1,
-    Execute = 1 << 2,
-    User = 1 << 3,
-    Device = 1 << 4,
-    Cacheable = 1 << 5
+    None = 0U,
+    Read = 1U << 0U,
+    Write = 1U << 1U,
+    Execute = 1U << 2U,
+    User = 1U << 3U,
+    Device = 1U << 4U,
+    Cacheable = 1U << 5U
 };
 
 constexpr PageFlags operator|(PageFlags lhs, PageFlags rhs) noexcept {
@@ -59,6 +59,11 @@ class MemoryControl {
   public:
     constexpr MemoryControl() = default;
     virtual ~MemoryControl() = default;
+
+    MemoryControl(const MemoryControl&) = delete;
+    MemoryControl& operator=(const MemoryControl&) = delete;
+    MemoryControl(MemoryControl&&) = delete;
+    MemoryControl& operator=(MemoryControl&&) = delete;
 
     virtual bool map(uintptr_t virt_addr, uintptr_t phys_addr, PageFlags flags) = 0;
     virtual bool unmap(uintptr_t virt_addr) = 0;

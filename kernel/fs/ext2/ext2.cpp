@@ -285,7 +285,7 @@ void free_ext2_fs(Ext2Fs* fs) noexcept {
         return kOk; // Already free
     }
 
-    bitmap[byte_idx] = static_cast<uint8_t>(bitmap[byte_idx] & ~mask);
+    bitmap[byte_idx] = static_cast<uint8_t>(bitmap[byte_idx] & ~static_cast<uint32_t>(mask));
     const int32_t wrc = write_block(fs, fs->bgdt[grp].bg_block_bitmap, bitmap);
     if (wrc != kOk) {
         return wrc;
@@ -381,7 +381,7 @@ void free_ext2_fs(Ext2Fs* fs) noexcept {
         return kOk;
     }
 
-    bitmap[byte_idx] = static_cast<uint8_t>(bitmap[byte_idx] & ~mask);
+    bitmap[byte_idx] = static_cast<uint8_t>(bitmap[byte_idx] & ~static_cast<uint32_t>(mask));
     const int32_t wrc = write_block(fs, fs->bgdt[grp].bg_inode_bitmap, bitmap);
     if (wrc != kOk) {
         return wrc;
@@ -1734,7 +1734,7 @@ int32_t ext2_create_sb(Kernel::Drivers::Block::BlockDevice* dev, Superblock** ou
     }
 
     fs->block_size = 1024U << fs->sb.s_log_block_size;
-    fs->ptrs_per_block = fs->block_size / sizeof(uint32_t);
+    fs->ptrs_per_block = static_cast<uint32_t>(fs->block_size / sizeof(uint32_t));
     fs->inode_size =
         (fs->sb.s_rev_level >= 1U && fs->sb.s_inode_size >= 128U) ? fs->sb.s_inode_size : 128U;
     fs->group_count =

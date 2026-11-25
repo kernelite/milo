@@ -50,6 +50,8 @@ class ScopedIrqDisable final {
 
     ScopedIrqDisable(const ScopedIrqDisable&) = delete;
     ScopedIrqDisable& operator=(const ScopedIrqDisable&) = delete;
+    ScopedIrqDisable(ScopedIrqDisable&&) = delete;
+    ScopedIrqDisable& operator=(ScopedIrqDisable&&) = delete;
 
   private:
 #if defined(__aarch64__) && !defined(HOST_TEST)

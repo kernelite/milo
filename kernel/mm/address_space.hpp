@@ -35,7 +35,7 @@ const char* address_space_error_str(AddressSpaceError error) noexcept;
 
 class AddressSpace {
   public:
-    constexpr AddressSpace() noexcept : m_root_paddr(0U) {}
+    constexpr AddressSpace() noexcept = default;
     explicit constexpr AddressSpace(uintptr_t root_paddr) noexcept : m_root_paddr(root_paddr) {}
 
     ~AddressSpace() noexcept { destroy(); }

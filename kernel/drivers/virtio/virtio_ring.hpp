@@ -98,7 +98,7 @@ class SplitVirtqueue final {
                                 bool auto_free = true) noexcept;
 
     [[nodiscard]] bool should_notify() const noexcept;
-    void suppress_interrupts(bool suppress) noexcept;
+    void suppress_interrupts(bool suppress) const noexcept;
 
     [[nodiscard]] bool is_initialized() const noexcept { return m_initialized; }
     [[nodiscard]] uint16_t queue_size() const noexcept { return m_queue_size; }

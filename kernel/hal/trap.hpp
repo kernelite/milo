@@ -16,6 +16,11 @@ class TrapHandler {
     constexpr TrapHandler() = default;
     virtual ~TrapHandler() = default;
 
+    TrapHandler(const TrapHandler&) = delete;
+    TrapHandler& operator=(const TrapHandler&) = delete;
+    TrapHandler(TrapHandler&&) = delete;
+    TrapHandler& operator=(TrapHandler&&) = delete;
+
     virtual void handle_trap(TrapFrame& frame) = 0;
 };
 
