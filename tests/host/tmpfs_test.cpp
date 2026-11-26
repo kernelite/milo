@@ -65,13 +65,13 @@ TEST_CASE("tmpfs allocates and reclaims PFA pages on write, truncate, and unlink
         std::array<uint8_t, 5000> large_payload{};
         large_payload.fill(0xA5U);
         REQUIRE(vfs_write(file, large_payload.data(), large_payload.size()) == 5000);
-        REQUIRE(file->inode->size == 5100U);
+        REQUIRE(file->get_inode()->get_size() == 5100U);
         CHECK(Kernel::MM::pfa_free_pages_count() == baseline_free - 2U);
         REQUIRE(vfs_close(file) == kOk);
 
         // Re-opening with O_TRUNC frees all allocated PFA frames back to baseline.
         REQUIRE(vfs_open("/tmp/data.bin", kOpenWriteOnly | kOpenTrunc, 0644U, &file) == kOk);
-        CHECK(file->inode->size == 0U);
+        CHECK(file->get_inode()->get_size() == 0U);
         CHECK(Kernel::MM::pfa_free_pages_count() == baseline_free);
 
         // Write 3 pages (12288 bytes) and verify unlink + close reclaims all 3 frames.
@@ -94,7 +94,7 @@ TEST_CASE("tmpfs allocates and reclaims PFA pages on write, truncate, and unlink
         // Seek into page index 2 (offset 8192) and write 4 bytes; only 1 frame is allocated.
         REQUIRE(vfs_lseek(file, 8192, SeekWhence::kSet) == 8192);
         REQUIRE(vfs_write(file, "tail", 4U) == 4);
-        CHECK(file->inode->size == 8196U);
+        CHECK(file->get_inode()->get_size() == 8196U);
         CHECK(Kernel::MM::pfa_free_pages_count() == baseline_free - 1U);
 
         // Reading from sparse hole at offset 0 returns zeros without allocating frames.
@@ -111,7 +111,7 @@ TEST_CASE("tmpfs allocates and reclaims PFA pages on write, truncate, and unlink
         // Open with O_APPEND and append 4 more bytes at end (offset 8196).
         REQUIRE(vfs_open("/tmp/sparse.bin", kOpenReadWrite | kOpenAppend, 0644U, &file) == kOk);
         REQUIRE(vfs_write(file, "end!", 4U) == 4);
-        CHECK(file->inode->size == 8200U);
+        CHECK(file->get_inode()->get_size() == 8200U);
 
         char tail_buf[8]{};
         REQUIRE(vfs_lseek(file, 8192, SeekWhence::kSet) == 8192);

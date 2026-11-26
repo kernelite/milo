@@ -34,19 +34,20 @@ void rootfs_destroy_inode(Inode* inode) noexcept {
     if (inode == nullptr) {
         return;
     }
-    if (inode->fs_private != nullptr) {
-        auto* payload = static_cast<RootfsPayload*>(inode->fs_private);
+    if (inode->get_fs_private() != nullptr) {
+        auto* payload = static_cast<RootfsPayload*>(inode->get_fs_private());
         *payload = RootfsPayload{};
-        inode->fs_private = nullptr;
+        inode->set_fs_private(nullptr);
     }
     *inode = Inode{};
 }
 
 int64_t rootfs_read(File* file, void* buf, size_t count, uint64_t* offset) noexcept {
-    if (file == nullptr || file->inode == nullptr || offset == nullptr) {
+    if (file == nullptr || file->get_inode() == nullptr || offset == nullptr) {
         return kEinval;
     }
-    if (file->inode->is_dir()) {
+    Inode* const inode = file->get_inode();
+    if (inode->is_dir()) {
         return kEisdir;
     }
     if (count == 0U) {
@@ -55,7 +56,7 @@ int64_t rootfs_read(File* file, void* buf, size_t count, uint64_t* offset) noexc
     if (buf == nullptr) {
         return kEinval;
     }
-    const auto* payload = static_cast<const RootfsPayload*>(file->inode->fs_private);
+    const auto* payload = static_cast<const RootfsPayload*>(inode->get_fs_private());
     if (payload == nullptr || payload->data == nullptr || *offset >= payload->size) {
         return 0;
     }
@@ -76,7 +77,7 @@ int64_t rootfs_write(File* /*file*/, const void* /*buf*/, size_t /*count*/,
 }
 
 int64_t rootfs_lseek(File* file, int64_t offset, SeekWhence whence) noexcept {
-    if (file == nullptr || !file->active || file->inode == nullptr) {
+    if (file == nullptr || !file->is_active() || file->get_inode() == nullptr) {
         return kEbadf;
     }
     int64_t base = 0;
@@ -85,10 +86,10 @@ int64_t rootfs_lseek(File* file, int64_t offset, SeekWhence whence) noexcept {
         base = 0;
         break;
     case SeekWhence::kCur:
-        base = static_cast<int64_t>(file->offset);
+        base = static_cast<int64_t>(file->get_offset());
         break;
     case SeekWhence::kEnd:
-        base = static_cast<int64_t>(file->inode->size);
+        base = static_cast<int64_t>(file->get_inode()->get_size());
         break;
     default:
         return kEinval;
@@ -97,27 +98,31 @@ int64_t rootfs_lseek(File* file, int64_t offset, SeekWhence whence) noexcept {
     if (target < 0) {
         return kEinval;
     }
-    file->offset = static_cast<uint64_t>(target);
+    file->set_offset(static_cast<uint64_t>(target));
     return target;
 }
 
 int32_t rootfs_readdir(File* file, DirEntryInfo* out_entry) noexcept {
-    if (file == nullptr || file->dentry == nullptr || out_entry == nullptr) {
+    if (file == nullptr || file->get_dentry() == nullptr || out_entry == nullptr) {
         return kEinval;
     }
+    const uint64_t target_idx = file->get_offset();
     uint64_t idx = 0U;
-    for (Dentry* child = file->dentry->first_child; child != nullptr; child = child->next_sibling) {
-        if (!child->active || child->inode == nullptr) {
+    for (Dentry* child = file->get_dentry()->get_first_child(); child != nullptr;
+         child = child->get_next_sibling()) {
+        Inode* const child_inode = child->get_inode();
+        if (!child->is_active() || child_inode == nullptr) {
             continue;
         }
-        if (idx == file->offset) {
-            out_entry->ino = child->inode->ino;
-            out_entry->type = child->inode->mode & kModeTypeMask;
+        if (idx == target_idx) {
+            out_entry->ino = child_inode->get_ino();
+            out_entry->type = child_inode->get_mode() & kModeTypeMask;
+            const StringView child_name = child->name_view();
             for (size_t name_idx = 0U; name_idx <= kMaxNameLen; ++name_idx) {
                 out_entry->name[name_idx] =
-                    (name_idx < child->name_len) ? child->name[name_idx] : '\0';
+                    (name_idx < child_name.size()) ? child_name[name_idx] : '\0';
             }
-            ++file->offset;
+            file->set_offset(target_idx + 1U);
             return kOk;
         }
         ++idx;
@@ -132,7 +137,7 @@ int32_t rootfs_readlink(Inode* inode, char* buf, size_t buf_size, size_t* out_le
     if (!inode->is_symlink()) {
         return kEinval;
     }
-    const auto* payload = static_cast<const RootfsPayload*>(inode->fs_private);
+    const auto* payload = static_cast<const RootfsPayload*>(inode->get_fs_private());
     if (payload == nullptr || (payload->size > 0U && payload->data == nullptr)) {
         return kEio;
     }
@@ -198,26 +203,25 @@ const FileOperations kRootfsFileOps{
     .poll = nullptr,
 };
 
-[[nodiscard]] Inode* make_rootfs_inode(Superblock* superblock, uint32_t mode, const uint8_t* data,
-                                       size_t size) noexcept {
-    Inode* inode = vfs_alloc_inode(superblock);
-    if (inode == nullptr) {
+[[nodiscard]] RefPtr<Inode> make_rootfs_inode(Superblock* superblock, uint32_t mode,
+                                              const uint8_t* data, size_t size) noexcept {
+    auto inode = RefPtr<Inode>::adopt(vfs_alloc_inode(superblock));
+    if (!inode) {
         return nullptr;
     }
-    inode->ino = g_next_rootfs_ino++;
-    inode->mode = mode;
-    inode->size = size;
-    inode->nlink = ((mode & kModeTypeMask) == kModeDir) ? 2U : 1U;
-    inode->i_ops = &kRootfsInodeOps;
-    inode->f_ops = &kRootfsFileOps;
+    inode->set_ino(g_next_rootfs_ino++);
+    inode->set_mode(mode);
+    inode->set_size(size);
+    inode->set_nlink(((mode & kModeTypeMask) == kModeDir) ? 2U : 1U);
+    inode->set_i_ops(&kRootfsInodeOps);
+    inode->set_f_ops(&kRootfsFileOps);
 
     if ((mode & kModeTypeMask) != kModeDir) {
         RootfsPayload* payload = alloc_rootfs_payload(data, size);
         if (payload == nullptr) {
-            inode_put(inode);
             return nullptr;
         }
-        inode->fs_private = payload;
+        inode->set_fs_private(payload);
     }
     return inode;
 }
@@ -245,23 +249,23 @@ const FileOperations kRootfsFileOps{
             return kEnametoolong;
         }
 
-        Dentry* child = dentry_find_child(curr, comp);
+        Dentry* child = curr->find_child(comp);
         if (child == nullptr) {
-            Inode* dir_ino = make_rootfs_inode(superblock, kModeDir | 0755U, nullptr, 0U);
-            if (dir_ino == nullptr) {
+            auto dir_ino = make_rootfs_inode(superblock, kModeDir | 0755U, nullptr, 0U);
+            if (!dir_ino) {
                 return kEnomem;
             }
-            child = vfs_alloc_dentry(superblock, curr, comp);
-            if (child == nullptr) {
-                inode_put(dir_ino);
+            auto new_child = RefPtr<Dentry>::adopt(vfs_alloc_dentry(superblock, curr, comp));
+            if (!new_child) {
                 return kEnomem;
             }
-            child->inode = dir_ino;
-            dentry_attach(curr, child);
-            if (curr->inode != nullptr) {
-                ++curr->inode->nlink;
+            new_child->bind_inode(dir_ino.detach());
+            child = new_child.detach();
+            curr->attach_child(child);
+            if (Inode* const curr_inode = curr->get_inode(); curr_inode != nullptr) {
+                curr_inode->set_nlink(curr_inode->get_nlink() + 1U);
             }
-        } else if (child->inode == nullptr || !child->inode->is_dir()) {
+        } else if (child->get_inode() == nullptr || !child->get_inode()->is_dir()) {
             return kEnotdir;
         }
         curr = child;
@@ -278,8 +282,9 @@ const FileOperations kRootfsFileOps{
     const char* norm = cpio_normalize_path(entry.name);
     const StringView rel_path(norm);
     if (rel_path.empty() || rel_path == ".") {
-        if (root_dentry->inode != nullptr && entry.is_directory) {
-            root_dentry->inode->mode = kModeDir | (entry.mode & 07777U);
+        if (Inode* const root_ino = root_dentry->get_inode();
+            root_ino != nullptr && entry.is_directory) {
+            root_ino->set_mode(kModeDir | (entry.mode & 07777U));
         }
         return kOk;
     }
@@ -316,28 +321,30 @@ const FileOperations kRootfsFileOps{
         return parent_res;
     }
 
-    Dentry* existing = dentry_find_child(parent, leaf);
+    Dentry* existing = parent->find_child(leaf);
     if (existing != nullptr) {
-        if (entry.is_directory && existing->inode != nullptr && existing->inode->is_dir()) {
-            existing->inode->mode = kModeDir | (entry.mode & 07777U);
+        if (Inode* const existing_ino = existing->get_inode();
+            entry.is_directory && existing_ino != nullptr && existing_ino->is_dir()) {
+            existing_ino->set_mode(kModeDir | (entry.mode & 07777U));
         }
         return kOk;
     }
 
-    Inode* inode = make_rootfs_inode(superblock, entry.mode, entry.data, entry.size);
-    if (inode == nullptr) {
+    auto inode = make_rootfs_inode(superblock, entry.mode, entry.data, entry.size);
+    if (!inode) {
         return kEnomem;
     }
 
-    Dentry* child = vfs_alloc_dentry(superblock, parent, leaf);
-    if (child == nullptr) {
-        inode_put(inode);
+    auto child = RefPtr<Dentry>::adopt(vfs_alloc_dentry(superblock, parent, leaf));
+    if (!child) {
         return kEnomem;
     }
-    child->inode = inode;
-    dentry_attach(parent, child);
-    if (entry.is_directory && parent->inode != nullptr) {
-        ++parent->inode->nlink;
+    child->bind_inode(inode.detach());
+    parent->attach_child(child.detach());
+    if (entry.is_directory) {
+        if (Inode* const parent_ino = parent->get_inode(); parent_ino != nullptr) {
+            parent_ino->set_nlink(parent_ino->get_nlink() + 1U);
+        }
     }
     return kOk;
 }
@@ -362,42 +369,39 @@ int32_t rootfs_create_from_cpio(const void* cpio_base, size_t cpio_size,
     if (superblock == nullptr) {
         return kEnomem;
     }
-    superblock->fs_type = "rootfs";
-    superblock->block_size = 4096U;
-    superblock->flags = kSbReadOnly;
-    superblock->ops = &kRootfsSbOps;
+    superblock->set_fs_type("rootfs");
+    superblock->set_block_size(4096U);
+    superblock->set_flags(kSbReadOnly);
+    superblock->set_ops(&kRootfsSbOps);
 
-    Inode* root_inode = vfs_alloc_inode(superblock);
-    if (root_inode == nullptr) {
+    auto root_inode = RefPtr<Inode>::adopt(vfs_alloc_inode(superblock));
+    if (!root_inode) {
         vfs_free_superblock(superblock);
         return kEnomem;
     }
-    root_inode->ino = 1ULL;
-    root_inode->mode = kModeDir | 0755U;
-    root_inode->nlink = 2U;
-    root_inode->i_ops = &kRootfsInodeOps;
-    root_inode->f_ops = &kRootfsFileOps;
+    root_inode->set_ino(1ULL);
+    root_inode->set_mode(kModeDir | 0755U);
+    root_inode->set_nlink(2U);
+    root_inode->set_i_ops(&kRootfsInodeOps);
+    root_inode->set_f_ops(&kRootfsFileOps);
 
-    Dentry* root_dentry = vfs_alloc_dentry(superblock, nullptr, "/");
-    if (root_dentry == nullptr) {
-        inode_put(root_inode);
+    auto root_dentry = RefPtr<Dentry>::adopt(vfs_alloc_dentry(superblock, nullptr, "/"));
+    if (!root_dentry) {
         vfs_free_superblock(superblock);
         return kEnomem;
     }
-    root_dentry->inode = root_inode;
-    superblock->root = root_dentry;
+    root_dentry->bind_inode(root_inode.detach());
 
     if (cpio_base != nullptr && cpio_size > 0U) {
         const CpioArchive archive(cpio_base, cpio_size);
         if (!archive.is_valid()) {
-            dentry_put(root_dentry);
             vfs_free_superblock(superblock);
             return kEinval;
         }
 
         int32_t build_err = kOk;
         const CpioStatus status = archive.for_each([&](const CpioEntry& entry) -> bool {
-            const int32_t insert_res = insert_cpio_entry(superblock, root_dentry, entry);
+            const int32_t insert_res = insert_cpio_entry(superblock, root_dentry.get(), entry);
             if (insert_res != kOk) {
                 build_err = insert_res;
                 return false;
@@ -414,11 +418,12 @@ int32_t rootfs_create_from_cpio(const void* cpio_base, size_t cpio_size,
     }
 
     // Ensure standard UNIX mountpoint directories exist on rootfs.
-    (void)ensure_dir_path(superblock, root_dentry, "dev", nullptr);
-    (void)ensure_dir_path(superblock, root_dentry, "proc", nullptr);
-    (void)ensure_dir_path(superblock, root_dentry, "tmp", nullptr);
-    (void)ensure_dir_path(superblock, root_dentry, "mnt/disk", nullptr);
+    (void)ensure_dir_path(superblock, root_dentry.get(), "dev", nullptr);
+    (void)ensure_dir_path(superblock, root_dentry.get(), "proc", nullptr);
+    (void)ensure_dir_path(superblock, root_dentry.get(), "tmp", nullptr);
+    (void)ensure_dir_path(superblock, root_dentry.get(), "mnt/disk", nullptr);
 
+    superblock->set_root(root_dentry.detach());
     *out_sb = superblock;
     return kOk;
 }

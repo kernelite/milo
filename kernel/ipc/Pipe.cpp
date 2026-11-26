@@ -20,27 +20,27 @@ constexpr int16_t kPollWrNorm = 0x0100;
 
 int64_t pipe_vfs_read(Kernel::FS::File* file, void* buf, size_t count,
                       uint64_t* /*offset*/) noexcept {
-    if (file == nullptr || file->inode == nullptr) {
+    if (file == nullptr || file->get_inode() == nullptr) {
         return Kernel::FS::kEinval;
     }
-    auto* const pipe = static_cast<Pipe*>(file->inode->fs_private);
+    auto* const pipe = static_cast<Pipe*>(file->get_inode()->get_fs_private());
     if (pipe == nullptr) {
         return Kernel::FS::kEinval;
     }
-    const bool nonblock = (file->flags & Kernel::FS::kOpenNonBlock) != 0U;
+    const bool nonblock = (file->get_flags() & Kernel::FS::kOpenNonBlock) != 0U;
     return pipe->read(buf, count, nonblock);
 }
 
 int64_t pipe_vfs_write(Kernel::FS::File* file, const void* buf, size_t count,
                        uint64_t* /*offset*/) noexcept {
-    if (file == nullptr || file->inode == nullptr) {
+    if (file == nullptr || file->get_inode() == nullptr) {
         return Kernel::FS::kEinval;
     }
-    auto* const pipe = static_cast<Pipe*>(file->inode->fs_private);
+    auto* const pipe = static_cast<Pipe*>(file->get_inode()->get_fs_private());
     if (pipe == nullptr) {
         return Kernel::FS::kEinval;
     }
-    const bool nonblock = (file->flags & Kernel::FS::kOpenNonBlock) != 0U;
+    const bool nonblock = (file->get_flags() & Kernel::FS::kOpenNonBlock) != 0U;
     return pipe->write(buf, count, nonblock);
 }
 
@@ -48,11 +48,11 @@ int32_t pipe_vfs_open(Kernel::FS::Inode* inode, Kernel::FS::File* file) noexcept
     if (inode == nullptr || file == nullptr) {
         return Kernel::FS::kEinval;
     }
-    auto* const pipe = static_cast<Pipe*>(inode->fs_private);
+    auto* const pipe = static_cast<Pipe*>(inode->get_fs_private());
     if (pipe == nullptr) {
         return Kernel::FS::kEinval;
     }
-    const uint32_t acc = file->flags & Kernel::FS::kOpenAccessMask;
+    const uint32_t acc = file->get_flags() & Kernel::FS::kOpenAccessMask;
     if (acc == Kernel::FS::kOpenReadOnly || acc == Kernel::FS::kOpenReadWrite) {
         pipe->retain_reader();
     }
@@ -66,11 +66,11 @@ int32_t pipe_vfs_release(Kernel::FS::Inode* inode, Kernel::FS::File* file) noexc
     if (inode == nullptr || file == nullptr) {
         return Kernel::FS::kEinval;
     }
-    auto* const pipe = static_cast<Pipe*>(inode->fs_private);
+    auto* const pipe = static_cast<Pipe*>(inode->get_fs_private());
     if (pipe == nullptr) {
         return Kernel::FS::kEinval;
     }
-    const uint32_t acc = file->flags & Kernel::FS::kOpenAccessMask;
+    const uint32_t acc = file->get_flags() & Kernel::FS::kOpenAccessMask;
     const bool is_reader = (acc == Kernel::FS::kOpenReadOnly || acc == Kernel::FS::kOpenReadWrite);
     const bool is_writer = (acc == Kernel::FS::kOpenWriteOnly || acc == Kernel::FS::kOpenReadWrite);
     pipe->release_end(is_reader, is_writer);
@@ -83,14 +83,14 @@ int64_t pipe_vfs_lseek(Kernel::FS::File* /*file*/, int64_t /*offset*/,
 }
 
 int16_t pipe_vfs_poll(Kernel::FS::File* file, int16_t events) noexcept {
-    if (file == nullptr || file->inode == nullptr) {
+    if (file == nullptr || file->get_inode() == nullptr) {
         return kPollNval;
     }
-    const auto* const pipe = static_cast<const Pipe*>(file->inode->fs_private);
+    const auto* const pipe = static_cast<const Pipe*>(file->get_inode()->get_fs_private());
     if (pipe == nullptr) {
         return kPollNval;
     }
-    const uint32_t acc = file->flags & Kernel::FS::kOpenAccessMask;
+    const uint32_t acc = file->get_flags() & Kernel::FS::kOpenAccessMask;
     return pipe->poll(acc, events);
 }
 
@@ -308,43 +308,38 @@ int32_t Pipe::create_files(Kernel::FS::File** out_read_file, Kernel::FS::File** 
     pipe->m_readers = 1U;
     pipe->m_writers = 1U;
 
-    Kernel::FS::Inode* inode = Kernel::FS::vfs_alloc_inode(nullptr);
-    if (inode == nullptr) {
+    auto inode = Kernel::FS::RefPtr<Kernel::FS::Inode>::adopt(Kernel::FS::vfs_alloc_inode(nullptr));
+    if (!inode) {
         delete pipe;
         return Kernel::FS::kEnomem;
     }
-    inode->ino = 3ULL;
-    inode->mode = Kernel::FS::kModeFifo | 0600U;
-    inode->fs_private = pipe;
-    inode->f_ops = &kPipeFileOps;
+    inode->set_ino(3ULL);
+    inode->set_mode(Kernel::FS::kModeFifo | 0600U);
+    inode->set_fs_private(pipe);
+    inode->set_f_ops(&kPipeFileOps);
 
-    Kernel::FS::File* read_file = Kernel::FS::vfs_alloc_file();
-    if (read_file == nullptr) {
-        Kernel::FS::inode_put(inode);
+    auto read_file = Kernel::FS::RefPtr<Kernel::FS::File>::adopt(Kernel::FS::vfs_alloc_file());
+    if (!read_file) {
         delete pipe;
         return Kernel::FS::kEnfile;
     }
-    Kernel::FS::inode_get(inode);
-    read_file->inode = inode;
-    read_file->flags = Kernel::FS::kOpenReadOnly | extra_flags;
-    read_file->f_ops = &kPipeFileOps;
+    inode->retain();
+    read_file->set_inode(inode.get());
+    read_file->set_flags(Kernel::FS::kOpenReadOnly | extra_flags);
+    read_file->set_f_ops(&kPipeFileOps);
 
-    Kernel::FS::File* write_file = Kernel::FS::vfs_alloc_file();
-    if (write_file == nullptr) {
+    auto write_file = Kernel::FS::RefPtr<Kernel::FS::File>::adopt(Kernel::FS::vfs_alloc_file());
+    if (!write_file) {
         pipe->m_writers = 0U;
-        Kernel::FS::file_put(read_file);
-        Kernel::FS::inode_put(inode);
         return Kernel::FS::kEnfile;
     }
-    Kernel::FS::inode_get(inode);
-    write_file->inode = inode;
-    write_file->flags = Kernel::FS::kOpenWriteOnly | extra_flags;
-    write_file->f_ops = &kPipeFileOps;
+    inode->retain();
+    write_file->set_inode(inode.get());
+    write_file->set_flags(Kernel::FS::kOpenWriteOnly | extra_flags);
+    write_file->set_f_ops(&kPipeFileOps);
 
-    Kernel::FS::inode_put(inode);
-
-    *out_read_file = read_file;
-    *out_write_file = write_file;
+    *out_read_file = read_file.detach();
+    *out_write_file = write_file.detach();
     return Kernel::FS::kOk;
 }
 
