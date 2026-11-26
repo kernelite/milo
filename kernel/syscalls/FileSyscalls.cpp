@@ -53,18 +53,18 @@ int64_t sys_chdir(uintptr_t user_path) noexcept {
     const int32_t vfs_res =
         Kernel::FS::vfs_namei(Kernel::FS::StringView(raw_path, len), cwd_dentry, &target);
     if (cwd_dentry != nullptr) {
-        Kernel::FS::dentry_put(cwd_dentry);
+        cwd_dentry->release();
     }
     if (vfs_res != Kernel::FS::kOk) {
         return vfs_res;
     }
-    if (target->inode == nullptr || !target->inode->is_dir()) {
-        Kernel::FS::dentry_put(target);
+    if (target->get_inode() == nullptr || !target->get_inode()->is_dir()) {
+        target->release();
         return ERR_ENOTDIR;
     }
 
     build_dentry_path(target, proc->mutable_cwd(), Kernel::Process::MAX_PATH_LEN);
-    Kernel::FS::dentry_put(target);
+    target->release();
     return 0;
 }
 
@@ -100,7 +100,7 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
         vfs_flags = Kernel::FS::kOpenReadWrite;
     } else {
         if (base_dentry != nullptr) {
-            Kernel::FS::dentry_put(base_dentry);
+            base_dentry->release();
         }
         return ERR_EINVAL;
     }
@@ -127,7 +127,7 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
     const int slot = proc->fds().allocate(proc->rlim_nofile().rlim_cur);
     if (slot < 0) {
         if (base_dentry != nullptr) {
-            Kernel::FS::dentry_put(base_dentry);
+            base_dentry->release();
         }
         return slot;
     }
@@ -137,7 +137,7 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
     const int32_t open_rc = Kernel::FS::vfs_open_at(
         base_dentry, Kernel::FS::StringView(raw_path, path_len), vfs_flags, effective_mode, &file);
     if (base_dentry != nullptr) {
-        Kernel::FS::dentry_put(base_dentry);
+        base_dentry->release();
     }
     if (open_rc != Kernel::FS::kOk) {
         return open_rc;
@@ -174,7 +174,7 @@ int64_t sys_mkdirat(int32_t dirfd, uintptr_t user_pathname, uint64_t mode) noexc
     const int32_t vfs_res = Kernel::FS::vfs_mkdir_at(
         base_dentry, Kernel::FS::StringView(raw_path, path_len), effective_mode);
     if (base_dentry != nullptr) {
-        Kernel::FS::dentry_put(base_dentry);
+        base_dentry->release();
     }
     return vfs_res;
 }
@@ -209,7 +209,7 @@ int64_t sys_unlinkat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags) noe
                                 ? Kernel::FS::vfs_rmdir_at(base_dentry, path_view)
                                 : Kernel::FS::vfs_unlink_at(base_dentry, path_view);
     if (base_dentry != nullptr) {
-        Kernel::FS::dentry_put(base_dentry);
+        base_dentry->release();
     }
     return vfs_res;
 }
@@ -253,7 +253,7 @@ int64_t sys_renameat2(int32_t olddirfd, uintptr_t user_oldpath, int32_t newdirfd
         const int64_t dir_res = resolve_dirfd_dentry(*proc, newdirfd, new_base);
         if (dir_res < 0) {
             if (old_base != nullptr) {
-                Kernel::FS::dentry_put(old_base);
+                old_base->release();
             }
             return dir_res;
         }
@@ -263,12 +263,12 @@ int64_t sys_renameat2(int32_t olddirfd, uintptr_t user_oldpath, int32_t newdirfd
         Kernel::FS::Dentry* existing = nullptr;
         if (Kernel::FS::vfs_namei(Kernel::FS::StringView(new_path, new_len), new_base, &existing,
                                   false) == Kernel::FS::kOk) {
-            Kernel::FS::dentry_put(existing);
+            existing->release();
             if (new_base != nullptr) {
-                Kernel::FS::dentry_put(new_base);
+                new_base->release();
             }
             if (old_base != nullptr) {
-                Kernel::FS::dentry_put(old_base);
+                old_base->release();
             }
             return ERR_EEXIST;
         }
@@ -278,10 +278,10 @@ int64_t sys_renameat2(int32_t olddirfd, uintptr_t user_oldpath, int32_t newdirfd
         Kernel::FS::vfs_rename_at(old_base, Kernel::FS::StringView(old_path, old_len), new_base,
                                   Kernel::FS::StringView(new_path, new_len));
     if (new_base != nullptr) {
-        Kernel::FS::dentry_put(new_base);
+        new_base->release();
     }
     if (old_base != nullptr) {
-        Kernel::FS::dentry_put(old_base);
+        old_base->release();
     }
     return vfs_res;
 }
@@ -300,18 +300,18 @@ int64_t sys_ftruncate(uint64_t raw_fd, int64_t length) noexcept {
         return ERR_EBADF;
     }
     const auto* const desc = proc->fds().at(static_cast<size_t>(raw_fd));
-    if (desc == nullptr || !desc->is_open() || !desc->is_writable() ||
-        desc->file()->inode == nullptr) {
+    if (desc == nullptr || !desc->is_open() || !desc->is_writable() || desc->file() == nullptr ||
+        desc->file()->get_inode() == nullptr) {
         return ERR_EBADF;
     }
-    Kernel::FS::Inode* inode = desc->file()->inode;
-    if (inode->sb != nullptr && inode->sb->is_read_only()) {
+    Kernel::FS::Inode* const inode = desc->file()->get_inode();
+    if (inode->get_sb() != nullptr && inode->get_sb()->is_read_only()) {
         return ERR_EROFS;
     }
-    if (inode->i_ops == nullptr || inode->i_ops->truncate == nullptr) {
+    if (inode->get_i_ops() == nullptr || inode->get_i_ops()->truncate == nullptr) {
         return ERR_EINVAL;
     }
-    return inode->i_ops->truncate(inode, static_cast<uint64_t>(length));
+    return inode->get_i_ops()->truncate(inode, static_cast<uint64_t>(length));
 }
 
 int64_t sys_truncate(uintptr_t user_pathname, int64_t length) noexcept {
@@ -343,25 +343,25 @@ int64_t sys_truncate(uintptr_t user_pathname, int64_t length) noexcept {
     const int32_t vfs_res = Kernel::FS::vfs_namei(Kernel::FS::StringView(raw_path, path_len),
                                                   base_dentry, &target, true);
     if (base_dentry != nullptr) {
-        Kernel::FS::dentry_put(base_dentry);
+        base_dentry->release();
     }
-    if (vfs_res != Kernel::FS::kOk || target == nullptr || target->inode == nullptr) {
+    if (vfs_res != Kernel::FS::kOk || target == nullptr || target->get_inode() == nullptr) {
         if (target != nullptr) {
-            Kernel::FS::dentry_put(target);
+            target->release();
         }
         return (vfs_res != Kernel::FS::kOk) ? vfs_res : ERR_ENOENT;
     }
 
-    Kernel::FS::Inode* inode = target->inode;
+    Kernel::FS::Inode* inode = target->get_inode();
     int64_t res = 0;
-    if (inode->sb != nullptr && inode->sb->is_read_only()) {
+    if (inode->get_sb() != nullptr && inode->get_sb()->is_read_only()) {
         res = ERR_EROFS;
-    } else if (inode->i_ops == nullptr || inode->i_ops->truncate == nullptr) {
+    } else if (inode->get_i_ops() == nullptr || inode->get_i_ops()->truncate == nullptr) {
         res = ERR_EINVAL;
     } else {
-        res = inode->i_ops->truncate(inode, static_cast<uint64_t>(length));
+        res = inode->get_i_ops()->truncate(inode, static_cast<uint64_t>(length));
     }
-    Kernel::FS::dentry_put(target);
+    target->release();
     return res;
 }
 
@@ -398,10 +398,10 @@ int64_t sys_utimensat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_tim
 
     if (user_pathname == 0U) {
         Kernel::FS::File* file = get_proc_file(proc, static_cast<uint64_t>(dirfd));
-        if (file == nullptr || file->inode == nullptr) {
+        if (file == nullptr || file->get_inode() == nullptr) {
             return ERR_EBADF;
         }
-        inode = file->inode;
+        inode = file->get_inode();
     } else {
         char raw_path[Kernel::Process::MAX_PATH_LEN]{};
         size_t path_len = 0U;
@@ -414,10 +414,10 @@ int64_t sys_utimensat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_tim
 
         if (path_len == 0U && (flags & AT_EMPTY_PATH) != 0ULL) {
             Kernel::FS::File* file = get_proc_file(proc, static_cast<uint64_t>(dirfd));
-            if (file == nullptr || file->inode == nullptr) {
+            if (file == nullptr || file->get_inode() == nullptr) {
                 return ERR_EBADF;
             }
-            inode = file->inode;
+            inode = file->get_inode();
         } else {
             Kernel::FS::Dentry* base_dentry = nullptr;
             if (raw_path[0] != '/') {
@@ -430,38 +430,38 @@ int64_t sys_utimensat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_tim
             const int32_t vfs_res = Kernel::FS::vfs_namei(
                 Kernel::FS::StringView(raw_path, path_len), base_dentry, &target, follow);
             if (base_dentry != nullptr) {
-                Kernel::FS::dentry_put(base_dentry);
+                base_dentry->release();
             }
-            if (vfs_res != Kernel::FS::kOk || target == nullptr || target->inode == nullptr) {
+            if (vfs_res != Kernel::FS::kOk || target == nullptr || target->get_inode() == nullptr) {
                 if (target != nullptr) {
-                    Kernel::FS::dentry_put(target);
+                    target->release();
                 }
                 return (vfs_res != Kernel::FS::kOk) ? vfs_res : ERR_ENOENT;
             }
-            inode = target->inode;
+            inode = target->get_inode();
         }
     }
 
     int64_t res = 0;
-    if (inode->sb != nullptr && inode->sb->is_read_only()) {
+    if (inode->get_sb() != nullptr && inode->get_sb()->is_read_only()) {
         res = ERR_EROFS;
     } else {
         const uint64_t now_ns = monotonic_now_ns();
         if (times[0].tv_nsec == UTIME_NOW) {
-            inode->atime_ns = now_ns;
+            inode->set_atime_ns(now_ns);
         } else if (times[0].tv_nsec != UTIME_OMIT) {
-            inode->atime_ns = parsed_times[0].nanoseconds();
+            inode->set_atime_ns(parsed_times[0].nanoseconds());
         }
         if (times[1].tv_nsec == UTIME_NOW) {
-            inode->mtime_ns = now_ns;
+            inode->set_mtime_ns(now_ns);
         } else if (times[1].tv_nsec != UTIME_OMIT) {
-            inode->mtime_ns = parsed_times[1].nanoseconds();
+            inode->set_mtime_ns(parsed_times[1].nanoseconds());
         }
-        inode->ctime_ns = now_ns;
+        inode->set_ctime_ns(now_ns);
     }
 
     if (target != nullptr) {
-        Kernel::FS::dentry_put(target);
+        target->release();
     }
     return res;
 }
@@ -472,8 +472,8 @@ int64_t sys_fsync(uint64_t raw_fd, int32_t datasync) noexcept {
     if (file == nullptr) {
         return ERR_EBADF;
     }
-    if (file->f_ops != nullptr && file->f_ops->fsync != nullptr) {
-        return file->f_ops->fsync(file, datasync);
+    if (file->get_f_ops() != nullptr && file->get_f_ops()->fsync != nullptr) {
+        return file->get_f_ops()->fsync(file, datasync);
     }
     return 0;
 }
@@ -481,15 +481,15 @@ int64_t sys_fsync(uint64_t raw_fd, int32_t datasync) noexcept {
 int64_t sys_fchmod(uint64_t raw_fd, uint64_t mode) noexcept {
     auto* const proc = Kernel::Process::Process::current();
     Kernel::FS::File* file = get_proc_file(proc, raw_fd);
-    if (file == nullptr || file->inode == nullptr) {
+    if (file == nullptr || file->get_inode() == nullptr) {
         return ERR_EBADF;
     }
-    if (file->inode->sb != nullptr && file->inode->sb->is_read_only()) {
+    if (file->get_inode()->get_sb() != nullptr && file->get_inode()->get_sb()->is_read_only()) {
         return ERR_EROFS;
     }
-    file->inode->mode =
-        (file->inode->mode & Kernel::FS::kModeTypeMask) | (static_cast<uint32_t>(mode) & 07777U);
-    file->inode->ctime_ns = monotonic_now_ns();
+    file->get_inode()->set_mode((file->get_inode()->get_mode() & Kernel::FS::kModeTypeMask) |
+                                (static_cast<uint32_t>(mode) & 07777U));
+    file->get_inode()->set_ctime_ns(monotonic_now_ns());
     return 0;
 }
 
@@ -524,43 +524,44 @@ int64_t sys_fchmodat(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
     const int32_t vfs_res = Kernel::FS::vfs_namei(Kernel::FS::StringView(raw_path, path_len),
                                                   base_dentry, &target, follow);
     if (base_dentry != nullptr) {
-        Kernel::FS::dentry_put(base_dentry);
+        base_dentry->release();
     }
-    if (vfs_res != Kernel::FS::kOk || target == nullptr || target->inode == nullptr) {
+    if (vfs_res != Kernel::FS::kOk || target == nullptr || target->get_inode() == nullptr) {
         if (target != nullptr) {
-            Kernel::FS::dentry_put(target);
+            target->release();
         }
         return (vfs_res != Kernel::FS::kOk) ? vfs_res : ERR_ENOENT;
     }
 
     int64_t res = 0;
-    if (target->inode->sb != nullptr && target->inode->sb->is_read_only()) {
+    if (target->get_inode()->get_sb() != nullptr && target->get_inode()->get_sb()->is_read_only()) {
         res = ERR_EROFS;
     } else {
-        target->inode->mode = (target->inode->mode & Kernel::FS::kModeTypeMask) |
-                              (static_cast<uint32_t>(mode) & 07777U);
-        target->inode->ctime_ns = monotonic_now_ns();
+        target->get_inode()->set_mode(
+            (target->get_inode()->get_mode() & Kernel::FS::kModeTypeMask) |
+            (static_cast<uint32_t>(mode) & 07777U));
+        target->get_inode()->set_ctime_ns(monotonic_now_ns());
     }
-    Kernel::FS::dentry_put(target);
+    target->release();
     return res;
 }
 
 int64_t sys_fchown(uint64_t raw_fd, uint32_t owner, uint32_t group) noexcept {
     auto* const proc = Kernel::Process::Process::current();
     Kernel::FS::File* file = get_proc_file(proc, raw_fd);
-    if (file == nullptr || file->inode == nullptr) {
+    if (file == nullptr || file->get_inode() == nullptr) {
         return ERR_EBADF;
     }
-    if (file->inode->sb != nullptr && file->inode->sb->is_read_only()) {
+    if (file->get_inode()->get_sb() != nullptr && file->get_inode()->get_sb()->is_read_only()) {
         return ERR_EROFS;
     }
     if (owner != static_cast<uint32_t>(-1)) {
-        file->inode->uid = owner;
+        file->get_inode()->set_uid(owner);
     }
     if (group != static_cast<uint32_t>(-1)) {
-        file->inode->gid = group;
+        file->get_inode()->set_gid(group);
     }
-    file->inode->ctime_ns = monotonic_now_ns();
+    file->get_inode()->set_ctime_ns(monotonic_now_ns());
     return 0;
 }
 
@@ -599,28 +600,28 @@ int64_t sys_fchownat(int32_t dirfd, uintptr_t user_pathname, uint32_t owner, uin
     const int32_t vfs_res = Kernel::FS::vfs_namei(Kernel::FS::StringView(raw_path, path_len),
                                                   base_dentry, &target, follow);
     if (base_dentry != nullptr) {
-        Kernel::FS::dentry_put(base_dentry);
+        base_dentry->release();
     }
-    if (vfs_res != Kernel::FS::kOk || target == nullptr || target->inode == nullptr) {
+    if (vfs_res != Kernel::FS::kOk || target == nullptr || target->get_inode() == nullptr) {
         if (target != nullptr) {
-            Kernel::FS::dentry_put(target);
+            target->release();
         }
         return (vfs_res != Kernel::FS::kOk) ? vfs_res : ERR_ENOENT;
     }
 
     int64_t res = 0;
-    if (target->inode->sb != nullptr && target->inode->sb->is_read_only()) {
+    if (target->get_inode()->get_sb() != nullptr && target->get_inode()->get_sb()->is_read_only()) {
         res = ERR_EROFS;
     } else {
         if (owner != static_cast<uint32_t>(-1)) {
-            target->inode->uid = owner;
+            target->get_inode()->set_uid(owner);
         }
         if (group != static_cast<uint32_t>(-1)) {
-            target->inode->gid = group;
+            target->get_inode()->set_gid(group);
         }
-        target->inode->ctime_ns = monotonic_now_ns();
+        target->get_inode()->set_ctime_ns(monotonic_now_ns());
     }
-    Kernel::FS::dentry_put(target);
+    target->release();
     return res;
 }
 
@@ -654,10 +655,10 @@ int64_t sys_lseek(uint64_t raw_fd, int64_t offset, uint64_t whence) noexcept {
 int64_t sys_fstat(uint64_t raw_fd, uintptr_t user_statbuf) noexcept {
     auto* const proc = Kernel::Process::Process::current();
     Kernel::FS::File* file = get_proc_file(proc, raw_fd);
-    if (file == nullptr || file->inode == nullptr) {
+    if (file == nullptr || file->get_inode() == nullptr) {
         return ERR_EBADF;
     }
-    const linux_stat stat = inode_to_linux_stat(*file->inode);
+    const linux_stat stat = inode_to_linux_stat(*file->get_inode());
     return Kernel::MM::copy_to_user(proc->address_space(), user_statbuf, &stat, sizeof(stat));
 }
 
@@ -678,10 +679,10 @@ int64_t sys_newfstatat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_st
 
     if (path_len == 0U && (flags & AT_EMPTY_PATH) != 0ULL) {
         Kernel::FS::File* file = get_proc_file(proc, static_cast<uint64_t>(dirfd));
-        if (file == nullptr || file->inode == nullptr) {
+        if (file == nullptr || file->get_inode() == nullptr) {
             return ERR_EBADF;
         }
-        const linux_stat stat = inode_to_linux_stat(*file->inode);
+        const linux_stat stat = inode_to_linux_stat(*file->get_inode());
         return Kernel::MM::copy_to_user(proc->address_space(), user_statbuf, &stat, sizeof(stat));
     }
 
@@ -698,17 +699,17 @@ int64_t sys_newfstatat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_st
     const int32_t vfs_res = Kernel::FS::vfs_namei(Kernel::FS::StringView(raw_path, path_len),
                                                   base_dentry, &target, follow);
     if (base_dentry != nullptr) {
-        Kernel::FS::dentry_put(base_dentry);
+        base_dentry->release();
     }
-    if (vfs_res != Kernel::FS::kOk || target->inode == nullptr) {
+    if (vfs_res != Kernel::FS::kOk || target->get_inode() == nullptr) {
         if (target != nullptr) {
-            Kernel::FS::dentry_put(target);
+            target->release();
         }
         return (vfs_res != Kernel::FS::kOk) ? vfs_res : ERR_ENOENT;
     }
 
-    const linux_stat stat = inode_to_linux_stat(*target->inode);
-    Kernel::FS::dentry_put(target);
+    const linux_stat stat = inode_to_linux_stat(*target->get_inode());
+    target->release();
     return Kernel::MM::copy_to_user(proc->address_space(), user_statbuf, &stat, sizeof(stat));
 }
 
@@ -736,10 +737,10 @@ int64_t sys_faccessat2(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
 
     if (path_len == 0U && (flags & AT_EMPTY_PATH) != 0ULL) {
         Kernel::FS::File* file = get_proc_file(proc, static_cast<uint64_t>(dirfd));
-        if (file == nullptr || file->inode == nullptr) {
+        if (file == nullptr || file->get_inode() == nullptr) {
             return ERR_EBADF;
         }
-        inode = file->inode;
+        inode = file->get_inode();
     } else {
         Kernel::FS::Dentry* base_dentry = nullptr;
         if (raw_path[0] != '/') {
@@ -752,26 +753,26 @@ int64_t sys_faccessat2(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
         const int32_t vfs_res = Kernel::FS::vfs_namei(Kernel::FS::StringView(raw_path, path_len),
                                                       base_dentry, &target, follow);
         if (base_dentry != nullptr) {
-            Kernel::FS::dentry_put(base_dentry);
+            base_dentry->release();
         }
-        if (vfs_res != Kernel::FS::kOk || target->inode == nullptr) {
+        if (vfs_res != Kernel::FS::kOk || target->get_inode() == nullptr) {
             if (target != nullptr) {
-                Kernel::FS::dentry_put(target);
+                target->release();
             }
             return (vfs_res != Kernel::FS::kOk) ? vfs_res : ERR_ENOENT;
         }
-        inode = target->inode;
+        inode = target->get_inode();
     }
 
     int64_t res = 0;
-    if ((mode & 2ULL) != 0ULL && inode->sb != nullptr && inode->sb->is_read_only()) {
+    if ((mode & 2ULL) != 0ULL && inode->get_sb() != nullptr && inode->get_sb()->is_read_only()) {
         res = ERR_EROFS;
-    } else if ((mode & 1ULL) != 0ULL && !inode->is_dir() && (inode->mode & 0111U) == 0U) {
+    } else if ((mode & 1ULL) != 0ULL && !inode->is_dir() && (inode->get_mode() & 0111U) == 0U) {
         res = ERR_EACCES;
     }
 
     if (target != nullptr) {
-        Kernel::FS::dentry_put(target);
+        target->release();
     }
     return res;
 }
@@ -820,7 +821,7 @@ int64_t sys_readlinkat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_bu
         Kernel::FS::vfs_readlink(Kernel::FS::StringView(raw_path, path_len), base_dentry, link_buf,
                                  sizeof(link_buf), &out_len);
     if (base_dentry != nullptr) {
-        Kernel::FS::dentry_put(base_dentry);
+        base_dentry->release();
     }
     if (vfs_res != Kernel::FS::kOk) {
         return vfs_res;
@@ -837,10 +838,10 @@ int64_t sys_readlinkat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_bu
 int64_t sys_getdents64(uint64_t raw_fd, uintptr_t user_dirp, uint64_t count) noexcept {
     auto* const proc = Kernel::Process::Process::current();
     Kernel::FS::File* file = get_proc_file(proc, raw_fd);
-    if (file == nullptr || file->inode == nullptr) {
+    if (file == nullptr || file->get_inode() == nullptr) {
         return ERR_EBADF;
     }
-    if (!file->inode->is_dir()) {
+    if (!file->get_inode()->is_dir()) {
         return ERR_ENOTDIR;
     }
 
@@ -874,30 +875,31 @@ int64_t sys_getdents64(uint64_t raw_fd, uintptr_t user_dirp, uint64_t count) noe
         return true;
     };
 
-    if (file->offset == 0U) {
-        if (!push_dirent(file->inode->ino, DT_DIR, ".", 1U, 1U)) {
+    if (file->get_offset() == 0U) {
+        if (!push_dirent(file->get_inode()->get_ino(), DT_DIR, ".", 1U, 1U)) {
             return static_cast<int64_t>(bytes_written);
         }
-        file->offset = 1U;
+        file->set_offset(1U);
     }
 
-    if (file->offset == 1U) {
-        const uint64_t parent_ino = (file->dentry != nullptr && file->dentry->parent != nullptr &&
-                                     file->dentry->parent->inode != nullptr)
-                                        ? file->dentry->parent->inode->ino
-                                        : file->inode->ino;
+    if (file->get_offset() == 1U) {
+        const uint64_t parent_ino =
+            (file->get_dentry() != nullptr && file->get_dentry()->get_parent() != nullptr &&
+             file->get_dentry()->get_parent()->get_inode() != nullptr)
+                ? file->get_dentry()->get_parent()->get_inode()->get_ino()
+                : file->get_inode()->get_ino();
         if (!push_dirent(parent_ino, DT_DIR, "..", 2U, 2U)) {
             return static_cast<int64_t>(bytes_written);
         }
-        file->offset = 2U;
+        file->set_offset(2U);
     }
 
     while (bytes_written < count) {
-        const uint64_t child_idx = file->offset - 2U;
-        file->offset = child_idx;
+        const uint64_t child_idx = file->get_offset() - 2U;
+        file->set_offset(child_idx);
         Kernel::FS::DirEntryInfo info{};
         const int32_t vfs_res = Kernel::FS::vfs_readdir(file, &info);
-        file->offset = child_idx + 2U;
+        file->set_offset(child_idx + 2U);
         if (vfs_res != Kernel::FS::kOk) {
             break;
         }
@@ -913,7 +915,7 @@ int64_t sys_getdents64(uint64_t raw_fd, uintptr_t user_dirp, uint64_t count) noe
         if (!push_dirent(info.ino, dtype, info.name, name_len, child_idx + 3U)) {
             break;
         }
-        file->offset = child_idx + 3U;
+        file->set_offset(child_idx + 3U);
     }
 
     return static_cast<int64_t>(bytes_written);
@@ -1022,10 +1024,10 @@ int64_t sys_fcntl(uint64_t raw_fd, uint64_t cmd, uint64_t arg) noexcept {
         } else if (desc->is_writable()) {
             flags = O_WRONLY;
         }
-        if ((desc->file()->flags & Kernel::FS::kOpenNonBlock) != 0U) {
+        if ((desc->file()->get_flags() & Kernel::FS::kOpenNonBlock) != 0U) {
             flags |= O_NONBLOCK;
         }
-        if ((desc->file()->flags & Kernel::FS::kOpenAppend) != 0U) {
+        if ((desc->file()->get_flags() & Kernel::FS::kOpenAppend) != 0U) {
             flags |= O_APPEND;
         }
         return static_cast<int64_t>(flags);
@@ -1033,14 +1035,14 @@ int64_t sys_fcntl(uint64_t raw_fd, uint64_t cmd, uint64_t arg) noexcept {
 
     case F_SETFL:
         if ((arg & O_NONBLOCK) != 0ULL) {
-            desc->file()->flags |= Kernel::FS::kOpenNonBlock;
+            desc->file()->set_flags(desc->file()->get_flags() | Kernel::FS::kOpenNonBlock);
         } else {
-            desc->file()->flags &= ~Kernel::FS::kOpenNonBlock;
+            desc->file()->set_flags(desc->file()->get_flags() & ~Kernel::FS::kOpenNonBlock);
         }
         if ((arg & O_APPEND) != 0ULL) {
-            desc->file()->flags |= Kernel::FS::kOpenAppend;
+            desc->file()->set_flags(desc->file()->get_flags() | Kernel::FS::kOpenAppend);
         } else {
-            desc->file()->flags &= ~Kernel::FS::kOpenAppend;
+            desc->file()->set_flags(desc->file()->get_flags() & ~Kernel::FS::kOpenAppend);
         }
         return 0;
 

@@ -41,13 +41,13 @@ class FileDescriptor {
         m_fd_flags = 0U;
     }
 
-    [[nodiscard]] bool is_open() const noexcept { return m_file != nullptr && m_file->active; }
+    [[nodiscard]] bool is_open() const noexcept { return m_file != nullptr && m_file->is_active(); }
 
     [[nodiscard]] bool is_readable() const noexcept {
         if (!is_open()) {
             return false;
         }
-        const uint32_t acc = m_file->flags & Kernel::FS::kOpenAccessMask;
+        const uint32_t acc = m_file->get_flags() & Kernel::FS::kOpenAccessMask;
         return acc == Kernel::FS::kOpenReadOnly || acc == Kernel::FS::kOpenReadWrite;
     }
 
@@ -55,13 +55,13 @@ class FileDescriptor {
         if (!is_open()) {
             return false;
         }
-        const uint32_t acc = m_file->flags & Kernel::FS::kOpenAccessMask;
+        const uint32_t acc = m_file->get_flags() & Kernel::FS::kOpenAccessMask;
         return acc == Kernel::FS::kOpenWriteOnly || acc == Kernel::FS::kOpenReadWrite;
     }
 
     [[nodiscard]] bool is_tty() const noexcept {
-        return is_open() && m_file->inode != nullptr && m_file->inode->is_chr() &&
-               m_file->f_ops != nullptr && m_file->f_ops->ioctl != nullptr;
+        return is_open() && m_file->get_inode() != nullptr && m_file->get_inode()->is_chr() &&
+               m_file->get_f_ops() != nullptr && m_file->get_f_ops()->ioctl != nullptr;
     }
 
   private:

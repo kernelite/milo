@@ -39,7 +39,7 @@ void rootfs_destroy_inode(Inode* inode) noexcept {
         *payload = RootfsPayload{};
         inode->set_fs_private(nullptr);
     }
-    *inode = Inode{};
+    inode->reset();
 }
 
 int64_t rootfs_read(File* file, void* buf, size_t count, uint64_t* offset) noexcept {

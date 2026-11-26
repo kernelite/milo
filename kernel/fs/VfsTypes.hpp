@@ -246,10 +246,10 @@ enum class SeekWhence : uint8_t {
     kEnd = 2U,
 };
 
-struct Superblock;
-struct Inode;
-struct Dentry;
-struct File;
+class Superblock;
+class Inode;
+class Dentry;
+class File;
 struct FileOperations;
 
 struct DirEntryInfo {

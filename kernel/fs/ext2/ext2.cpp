@@ -1099,7 +1099,7 @@ void ext2_destroy_inode(Inode* inode) noexcept {
         }
         (void)fs->free_inode(ino, inode->is_dir());
     }
-    *inode = Inode{};
+    inode->reset();
 }
 
 int32_t ext2_lookup(Inode* dir, Dentry* target) noexcept {
