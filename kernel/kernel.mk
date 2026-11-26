@@ -13,7 +13,7 @@ SRCS_CXX += kernel/main.cpp \
             kernel/mm/AddressSpace.cpp \
             kernel/boot/fdt.cpp \
             kernel/fs/cpio.cpp \
-            kernel/fs/vfs.cpp \
+            kernel/fs/Vfs.cpp \
             kernel/fs/rootfs/rootfs.cpp \
             kernel/fs/devfs/devfs.cpp \
             kernel/fs/tmpfs/tmpfs.cpp \
