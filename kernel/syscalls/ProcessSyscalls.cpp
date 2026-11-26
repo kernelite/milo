@@ -237,13 +237,9 @@ int64_t sys_clone(HAL::CpuContext& parent_ctx, uint64_t flags, uintptr_t child_s
     child->brk_current = parent->brk_current;
     child->mmap_next_vaddr = parent->mmap_next_vaddr;
     child->user_stack = Kernel::Process::UserStack{};
-    child->blocked_signals = parent->blocked_signals;
+    child->signals.clone_from(parent->signals);
     cstr_copy(child->cwd, parent->cwd, sizeof(child->cwd));
     cstr_copy(child->exe_path, parent->exe_path, sizeof(child->exe_path));
-
-    for (size_t i = 0U; i < Kernel::Process::MAX_SIGNALS; ++i) {
-        child->sigactions[i] = parent->sigactions[i];
-    }
 
     if (!child->fds.clone_from(parent->fds)) {
         Kernel::Process::release_process(*child);
@@ -528,11 +524,7 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
     cstr_copy(proc->exe_path, exec_binary_path, sizeof(proc->exe_path));
 
     proc->fds.close_cloexec();
-    for (size_t i = 0U; i < Kernel::Process::MAX_SIGNALS; ++i) {
-        if (proc->sigactions[i].handler != Kernel::Process::KERNEL_SIG_IGN) {
-            proc->sigactions[i] = Kernel::Process::SigAction{};
-        }
-    }
+    proc->signals.reset_caught_for_exec();
 
     const auto platform = HAL::get_platform_info();
     proc->entry_point = loaded.entry_point;
