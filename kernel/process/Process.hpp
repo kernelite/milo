@@ -1,7 +1,6 @@
 #pragma once
 
 #include "hal/cpu.hpp"
-#include "ipc/pipe.hpp"
 #include "loader/elf_loader.hpp"
 #include "mm/AddressSpace.hpp"
 #include "process/FileDescriptor.hpp"

@@ -10,7 +10,7 @@
 #include "hal/targets/qemu_virt/gicv2.hpp"
 #include "hal/targets/qemu_virt/timer.hpp"
 #include "hal/test_hooks.hpp"
-#include "ipc/pipe.hpp"
+#include "ipc/Pipe.hpp"
 #include "loader/elf64.hpp"
 #include "loader/elf_loader.hpp"
 #include "mm/AddressSpace.hpp"
