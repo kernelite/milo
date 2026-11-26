@@ -1,6 +1,7 @@
 SRCS_CXX += kernel/main.cpp \
             kernel/runtime/cxx_abi.cpp \
-            kernel/core/syscall_dispatcher.cpp \
+            kernel/syscalls/SyscallDispatcher.cpp \
+            kernel/syscalls/FileSyscalls.cpp \
             kernel/syscalls/SyscallHelpers.cpp \
             kernel/syscalls/MemorySyscalls.cpp \
             kernel/syscalls/TimeSyscalls.cpp \

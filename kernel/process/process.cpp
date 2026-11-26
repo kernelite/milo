@@ -795,4 +795,12 @@ void attach_loaded_elf(Process& proc, Loader::LoadedElf&& loaded) noexcept {
     }
 }
 
+void set_foreground_pgid(uint32_t pgid) noexcept {
+    Kernel::FS::console_set_foreground_pgid(pgid);
+}
+
+uint32_t get_foreground_pgid() noexcept {
+    return Kernel::FS::console_get_foreground_pgid();
+}
+
 } // namespace Kernel::Process
