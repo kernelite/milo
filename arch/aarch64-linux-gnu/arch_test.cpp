@@ -1,6 +1,6 @@
 #include "cpu_context.hpp"
 #include "hal/test_hooks.hpp"
-#include "process/process.hpp"
+#include "process/Process.hpp"
 
 #include <cstddef>
 #include <cstdint>

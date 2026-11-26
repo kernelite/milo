@@ -1,7 +1,7 @@
 #include "process/wait_queue.hpp"
 
 #include "hal/cpu.hpp"
-#include "process/process.hpp"
+#include "process/Process.hpp"
 #include "process/scheduler.hpp"
 
 namespace Kernel::Process {

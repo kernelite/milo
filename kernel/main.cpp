@@ -14,7 +14,7 @@
 #include "hal/targets/qemu_virt/timer.hpp"
 #include "mm/heap.hpp"
 #include "mm/pfa.hpp"
-#include "process/process.hpp"
+#include "process/Process.hpp"
 #include "process/scheduler.hpp"
 #include "shell/shell.hpp"
 

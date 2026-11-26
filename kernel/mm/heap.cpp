@@ -16,7 +16,7 @@
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
 #include "hal/test_hooks.hpp"
-#include "process/process.hpp"
+#include "process/Process.hpp"
 #include "process/scheduler.hpp"
 #endif
 

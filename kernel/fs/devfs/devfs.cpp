@@ -4,7 +4,7 @@
 #include "hal/cpu.hpp"
 #include "hal/targets/qemu_virt/timer.hpp"
 #include "mm/address_space.hpp"
-#include "process/process.hpp"
+#include "process/Process.hpp"
 #include "process/scheduler.hpp"
 
 namespace Kernel::FS {
