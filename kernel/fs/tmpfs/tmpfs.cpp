@@ -2,7 +2,7 @@
 
 #include "hal/cpu.hpp"
 #include "hal/targets/qemu_virt/timer.hpp"
-#include "mm/address_space.hpp"
+#include "mm/AddressSpace.hpp"
 #include "mm/pfa.hpp"
 
 #include <cstring>

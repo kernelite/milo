@@ -70,8 +70,8 @@ HOST_ONLY_TEST_SRCS := \
 HOST_KERNEL_SRCS := \
     kernel/boot/fdt.cpp \
     kernel/drivers/irq/gicv2.cpp \
-    kernel/drivers/virtio/virtio_ring.cpp \
-    kernel/drivers/virtio/virtio_mmio.cpp \
+    kernel/drivers/virtio/SplitVirtqueue.cpp \
+    kernel/drivers/virtio/VirtioMmioTransport.cpp \
 	kernel/drivers/virtio/virtio_blk.cpp \
     kernel/fs/cpio.cpp \
 	kernel/fs/ext2/ext2.cpp \
@@ -82,7 +82,7 @@ HOST_KERNEL_SRCS := \
     kernel/ipc/pipe.cpp \
     kernel/mm/pfa.cpp \
     kernel/mm/heap.cpp \
-    kernel/mm/address_space.cpp \
+    kernel/mm/AddressSpace.cpp \
     kernel/process/process.cpp \
     kernel/process/resource.cpp \
     kernel/process/scheduler.cpp \

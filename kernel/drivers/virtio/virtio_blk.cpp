@@ -2,7 +2,7 @@
 
 #include "drivers/irq/gicv2.hpp"
 #include "memory_config.hpp"
-#include "mm/address_space.hpp"
+#include "mm/AddressSpace.hpp"
 #include "mm/pfa.hpp"
 #include "process/Process.hpp"
 

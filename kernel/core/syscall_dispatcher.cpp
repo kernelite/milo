@@ -6,7 +6,7 @@
 #include "hal/trap.hpp"
 #include "ipc/pipe.hpp"
 #include "loader/elf_loader.hpp"
-#include "mm/address_space.hpp"
+#include "mm/AddressSpace.hpp"
 #include "mm/pfa.hpp"
 #include "process/Process.hpp"
 #include "process/resource.hpp"

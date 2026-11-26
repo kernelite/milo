@@ -1,7 +1,7 @@
 #include "fs/rootfs/rootfs.hpp"
 
 #include "fs/cpio.hpp"
-#include "mm/address_space.hpp"
+#include "mm/AddressSpace.hpp"
 
 namespace Kernel::FS {
 

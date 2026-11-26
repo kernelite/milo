@@ -4,7 +4,7 @@ SRCS_CXX += kernel/main.cpp \
             arch/$(ARCH)/cpu.cpp \
             kernel/shell/shell.cpp \
             kernel/mm/pfa.cpp \
-            kernel/mm/address_space.cpp \
+            kernel/mm/AddressSpace.cpp \
             kernel/boot/fdt.cpp \
             kernel/fs/cpio.cpp \
             kernel/fs/vfs.cpp \
@@ -21,9 +21,8 @@ SRCS_CXX += kernel/main.cpp \
             kernel/process/scheduler.cpp \
             kernel/process/wait_queue.cpp \
             kernel/drivers/irq/gicv2.cpp \
-            kernel/drivers/virtio/virtio_ring.cpp \
-            kernel/drivers/virtio/virtio_mmio.cpp \
-            kernel/drivers/virtio/virtio_blk.cpp \
+            kernel/drivers/virtio/SplitVirtqueue.cpp \
+            kernel/drivers/virtio/VirtioMmioTransport.cpp \
             kernel/drivers/virtio/virtio_blk.cpp \
             kernel/hal/targets/qemu_virt/platform_block.cpp \
             kernel/mm/heap.cpp

@@ -1,7 +1,7 @@
-#include "drivers/virtio/virtio_ring.hpp"
+#include "drivers/virtio/SplitVirtqueue.hpp"
 
 #include "memory_config.hpp"
-#include "mm/address_space.hpp"
+#include "mm/AddressSpace.hpp"
 #include "mm/pfa.hpp"
 
 #include <cstring>

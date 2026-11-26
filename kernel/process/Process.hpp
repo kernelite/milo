@@ -3,7 +3,7 @@
 #include "hal/cpu.hpp"
 #include "ipc/pipe.hpp"
 #include "loader/elf_loader.hpp"
-#include "mm/address_space.hpp"
+#include "mm/AddressSpace.hpp"
 #include "process/FileDescriptor.hpp"
 #include "process/Signal.hpp"
 #include "process/resource.hpp"

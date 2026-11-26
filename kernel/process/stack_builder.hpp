@@ -3,7 +3,7 @@
 #include "hal/mmu.hpp"
 #include "loader/elf64.hpp"
 #include "loader/elf_loader.hpp"
-#include "mm/address_space.hpp"
+#include "mm/AddressSpace.hpp"
 
 #include <cstddef>
 #include <cstdint>

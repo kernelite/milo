@@ -1,4 +1,4 @@
-#include "mm/address_space.hpp"
+#include "mm/AddressSpace.hpp"
 
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"

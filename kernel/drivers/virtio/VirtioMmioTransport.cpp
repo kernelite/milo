@@ -1,8 +1,8 @@
-#include "drivers/virtio/virtio_mmio.hpp"
+#include "drivers/virtio/VirtioMmioTransport.hpp"
 
 #include "hal/mmu.hpp"
 #include "memory_config.hpp"
-#include "mm/address_space.hpp"
+#include "mm/AddressSpace.hpp"
 
 namespace Kernel::Drivers::Virtio {
 

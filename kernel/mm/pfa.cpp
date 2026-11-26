@@ -2,7 +2,7 @@
 
 #include "hal/console.hpp"
 #include "memory_config.hpp"
-#include "mm/address_space.hpp"
+#include "mm/AddressSpace.hpp"
 
 #include <cstddef>
 #include <cstdint>
