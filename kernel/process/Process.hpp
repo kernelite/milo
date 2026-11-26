@@ -158,12 +158,36 @@ class Process {
     int64_t execute() noexcept;
 
     [[nodiscard]] Process* next_global() const noexcept { return m_global_next; }
-    [[nodiscard]] WaitQueue* active_wait_queue() const noexcept { return m_active_wq; }
+
+    [[nodiscard]] constexpr bool is_on_runqueue() const noexcept { return m_on_runqueue; }
+    constexpr void set_on_runqueue(bool on_rq) noexcept { m_on_runqueue = on_rq; }
+    [[nodiscard]] constexpr Process* rq_next() const noexcept { return m_rq_next; }
+    [[nodiscard]] constexpr Process* rq_prev() const noexcept { return m_rq_prev; }
+    constexpr void set_rq_links(Process* prev_proc, Process* next_proc) noexcept {
+        m_rq_prev = prev_proc;
+        m_rq_next = next_proc;
+    }
+    constexpr void clear_rq_links() noexcept {
+        m_rq_prev = nullptr;
+        m_rq_next = nullptr;
+        m_on_runqueue = false;
+    }
+
+    [[nodiscard]] constexpr WaitQueue* active_wait_queue() const noexcept { return m_active_wq; }
+    constexpr void set_active_wait_queue(WaitQueue* wq) noexcept { m_active_wq = wq; }
+    [[nodiscard]] constexpr Process* wq_next() const noexcept { return m_wq_next; }
+    [[nodiscard]] constexpr Process* wq_prev() const noexcept { return m_wq_prev; }
+    constexpr void set_wq_links(Process* prev_proc, Process* next_proc) noexcept {
+        m_wq_prev = prev_proc;
+        m_wq_next = next_proc;
+    }
+    constexpr void clear_wq_links() noexcept {
+        m_wq_prev = nullptr;
+        m_wq_next = nullptr;
+        m_active_wq = nullptr;
+    }
 
   private:
-    friend class Kernel::Scheduler::Runqueue;
-    friend class WaitQueue;
-
     HAL::KernelContext m_kctx{};
     HAL::CpuContext m_context{};
     int64_t m_exit_status{0};

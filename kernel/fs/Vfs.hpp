@@ -16,6 +16,54 @@ struct VfsStats {
     size_t active_files{0U};
 };
 
+class VfsNamespace final {
+  public:
+    static void reset() noexcept;
+    [[nodiscard]] static VfsStats stats() noexcept;
+
+    [[nodiscard]] static Superblock* alloc_superblock() noexcept;
+    static void free_superblock(Superblock* sb) noexcept;
+
+    [[nodiscard]] static Inode* alloc_inode(Superblock* sb) noexcept;
+    [[nodiscard]] static Dentry* alloc_dentry(Superblock* sb, Dentry* parent,
+                                              StringView name) noexcept;
+    [[nodiscard]] static File* alloc_file() noexcept;
+
+    [[nodiscard]] static int32_t mount_root(Superblock* root_sb) noexcept;
+    [[nodiscard]] static int32_t mount(StringView target_path, Superblock* sb) noexcept;
+    [[nodiscard]] static int32_t umount(StringView target_path) noexcept;
+    [[nodiscard]] static Dentry* root_dentry() noexcept;
+
+    [[nodiscard]] static int32_t namei(StringView path, Dentry* cwd, Dentry** out_dentry,
+                                       bool follow_symlinks = true) noexcept;
+    [[nodiscard]] static int32_t namei_parent(StringView path, Dentry* cwd, Dentry** out_parent,
+                                              StringView* out_leaf,
+                                              bool* out_trailing_slash = nullptr) noexcept;
+    [[nodiscard]] static int32_t readlink(StringView path, Dentry* cwd, char* buf, size_t buf_size,
+                                          size_t* out_len) noexcept;
+
+    [[nodiscard]] static int32_t open_at(Dentry* cwd, StringView path, uint32_t flags,
+                                         uint32_t mode, File** out_file) noexcept;
+    [[nodiscard]] static int32_t open(StringView path, uint32_t flags, uint32_t mode,
+                                      File** out_file) noexcept;
+    [[nodiscard]] static int32_t close(File* file) noexcept;
+    [[nodiscard]] static int64_t read(File* file, void* buf, size_t count) noexcept;
+    [[nodiscard]] static int64_t write(File* file, const void* buf, size_t count) noexcept;
+    [[nodiscard]] static int64_t lseek(File* file, int64_t offset, SeekWhence whence) noexcept;
+    [[nodiscard]] static int32_t ioctl(File* file, uint64_t request, uint64_t arg) noexcept;
+    [[nodiscard]] static int16_t poll(File* file, int16_t events) noexcept;
+    [[nodiscard]] static int32_t readdir(File* file, DirEntryInfo* out_entry) noexcept;
+    [[nodiscard]] static int32_t mkdir_at(Dentry* cwd, StringView path, uint32_t mode) noexcept;
+    [[nodiscard]] static int32_t mkdir(StringView path, uint32_t mode) noexcept;
+    [[nodiscard]] static int32_t unlink_at(Dentry* cwd, StringView path) noexcept;
+    [[nodiscard]] static int32_t unlink(StringView path) noexcept;
+    [[nodiscard]] static int32_t rmdir_at(Dentry* cwd, StringView path) noexcept;
+    [[nodiscard]] static int32_t rmdir(StringView path) noexcept;
+    [[nodiscard]] static int32_t rename_at(Dentry* old_cwd, StringView old_path, Dentry* new_cwd,
+                                           StringView new_path) noexcept;
+    [[nodiscard]] static int32_t rename(StringView old_path, StringView new_path) noexcept;
+};
+
 // Lifecycle & pool management.
 void vfs_reset() noexcept;
 [[nodiscard]] VfsStats vfs_stats() noexcept;

@@ -129,9 +129,72 @@ class Page final {
         return true;
     }
 
+    [[nodiscard]] constexpr uint16_t slab_class_index() const noexcept { return m_order; }
+    [[nodiscard]] constexpr void* slab_cache() const noexcept { return m_slab_cache; }
+    [[nodiscard]] constexpr uint32_t slab_ref_count() const noexcept { return m_ref_count; }
+    [[nodiscard]] constexpr uint32_t compound_page_count() const noexcept { return m_ref_count; }
+    [[nodiscard]] constexpr void* freelist_head() const noexcept { return m_freelist; }
+    constexpr void set_freelist_head(void* head) noexcept { m_freelist = head; }
+    constexpr void increment_slab_ref() noexcept { ++m_ref_count; }
+    constexpr void decrement_slab_ref() noexcept {
+        if (m_ref_count > 0U) {
+            --m_ref_count;
+        }
+    }
+
+    [[nodiscard]] constexpr Page* list_next() const noexcept { return m_next; }
+    [[nodiscard]] constexpr Page* list_prev() const noexcept { return m_prev; }
+    constexpr void set_list_links(Page* prev_page, Page* next_page) noexcept {
+        m_prev = prev_page;
+        m_next = next_page;
+    }
+    constexpr void clear_list_links() noexcept {
+        m_prev = nullptr;
+        m_next = nullptr;
+    }
+
+    void configure_slab(uint16_t class_idx, void* cache_ptr, void* freelist_head_ptr) noexcept {
+        m_flags = PageFlags::Slab;
+        m_order = class_idx;
+        m_slab_cache = cache_ptr;
+        m_ref_count = 0U;
+        m_next = nullptr;
+        m_prev = nullptr;
+        m_freelist = freelist_head_ptr;
+    }
+
+    void release_slab_to_allocated() noexcept {
+        m_flags = PageFlags::Allocated;
+        m_ref_count = 1U;
+        m_order = 0U;
+        m_slab_cache = nullptr;
+        m_next = nullptr;
+        m_prev = nullptr;
+        m_freelist = nullptr;
+    }
+
+    void configure_compound(size_t num_pages) noexcept {
+        m_flags = PageFlags::Compound;
+        m_ref_count = static_cast<uint32_t>(num_pages);
+        m_order = (num_pages <= 0xFFFFU) ? static_cast<uint16_t>(num_pages) : 0xFFFFU;
+        m_slab_cache = nullptr;
+        m_next = nullptr;
+        m_prev = nullptr;
+        m_freelist = nullptr;
+    }
+
+    void release_compound_to_allocated() noexcept {
+        m_flags = PageFlags::Allocated;
+        m_ref_count = 1U;
+        m_order = 0U;
+        m_slab_cache = nullptr;
+        m_next = nullptr;
+        m_prev = nullptr;
+        m_freelist = nullptr;
+    }
+
   private:
     friend class PageFrameAllocator;
-    friend class KernelHeap;
 
     void store_flags(PageFlags new_flags) noexcept {
         __atomic_store_n(reinterpret_cast<uint8_t*>(&m_flags), static_cast<uint8_t>(new_flags),
@@ -165,7 +228,6 @@ class Page final {
 
     uint32_t m_ref_count{0U};
     PageFlags m_flags{PageFlags::Free};
-    uint8_t m_pad{0U};
     uint16_t m_order{0U};
     void* m_slab_cache{nullptr};
     Page* m_next{nullptr};
