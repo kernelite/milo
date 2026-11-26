@@ -36,9 +36,9 @@ TEST_CASE("PFA reserves kernel, initrd, metadata, and /memreserve/ spans", "[pfa
 
     const Kernel::Boot::MemoryMap map = make_single_region_map(RAM_BASE, RAM_SIZE);
     constexpr uintptr_t DTB_START = RAM_BASE + (128UL * 1024UL);
-    constexpr size_t DTB_SIZE = 2U * Arch::PAGE_SIZE;
+    constexpr size_t DTB_SIZE = 2U * Arch::AArch64::PAGE_SIZE;
     constexpr uintptr_t MEMRES_START = RAM_BASE + (256UL * 1024UL);
-    constexpr size_t MEMRES_SIZE = 4U * Arch::PAGE_SIZE;
+    constexpr size_t MEMRES_SIZE = 4U * Arch::AArch64::PAGE_SIZE;
 
     Kernel::Boot::ReserveMap reserve_map{};
     reserve_map.entries[0] =
@@ -49,17 +49,18 @@ TEST_CASE("PFA reserves kernel, initrd, metadata, and /memreserve/ spans", "[pfa
                          INITRD_END, &reserve_map);
 
     SECTION("Reserved regions are marked non-free and excluded from allocations") {
-        for (uintptr_t addr = KERNEL_START; addr < KERNEL_END; addr += Arch::PAGE_SIZE) {
+        for (uintptr_t addr = KERNEL_START; addr < KERNEL_END; addr += Arch::AArch64::PAGE_SIZE) {
             CHECK(Kernel::MM::pfa_is_page_allocated(addr));
         }
-        for (uintptr_t addr = DTB_START; addr < DTB_START + DTB_SIZE; addr += Arch::PAGE_SIZE) {
+        for (uintptr_t addr = DTB_START; addr < DTB_START + DTB_SIZE;
+             addr += Arch::AArch64::PAGE_SIZE) {
             CHECK(Kernel::MM::pfa_is_page_allocated(addr));
         }
-        for (uintptr_t addr = INITRD_START; addr < INITRD_END; addr += Arch::PAGE_SIZE) {
+        for (uintptr_t addr = INITRD_START; addr < INITRD_END; addr += Arch::AArch64::PAGE_SIZE) {
             CHECK(Kernel::MM::pfa_is_page_allocated(addr));
         }
         for (uintptr_t addr = MEMRES_START; addr < MEMRES_START + MEMRES_SIZE;
-             addr += Arch::PAGE_SIZE) {
+             addr += Arch::AArch64::PAGE_SIZE) {
             CHECK(Kernel::MM::pfa_is_page_allocated(addr));
         }
 
@@ -68,7 +69,7 @@ TEST_CASE("PFA reserves kernel, initrd, metadata, and /memreserve/ spans", "[pfa
         for (size_t idx = 0U; idx < 64U; ++idx) {
             const uintptr_t paddr = Kernel::MM::alloc_frame();
             REQUIRE(paddr != 0U);
-            REQUIRE((paddr % Arch::PAGE_SIZE) == 0U);
+            REQUIRE((paddr % Arch::AArch64::PAGE_SIZE) == 0U);
             frames[count++] = paddr;
 
             const bool overlaps_kernel = (paddr >= KERNEL_START && paddr < KERNEL_END);
@@ -108,7 +109,7 @@ TEST_CASE("PFA reserves kernel, initrd, metadata, and /memreserve/ spans", "[pfa
 
         // Hole between 256 KiB and 512 KiB must remain reserved and never handed out
         for (uintptr_t hole_addr = RAM_BASE + (256UL * 1024UL);
-             hole_addr < RAM_BASE + (512UL * 1024UL); hole_addr += Arch::PAGE_SIZE) {
+             hole_addr < RAM_BASE + (512UL * 1024UL); hole_addr += Arch::AArch64::PAGE_SIZE) {
             CHECK(Kernel::MM::pfa_is_page_allocated(hole_addr));
         }
 
@@ -133,7 +134,7 @@ TEST_CASE("PFA single-frame, multi-frame, and recycling invariants", "[pfa][mm]"
     SECTION("Single frame allocation, page_from_paddr round-trip, and recycling") {
         const uintptr_t frame = Kernel::MM::alloc_frame();
         REQUIRE(frame != 0U);
-        CHECK((frame & (Arch::PAGE_SIZE - 1U)) == 0U);
+        CHECK((frame & (Arch::AArch64::PAGE_SIZE - 1U)) == 0U);
         CHECK(Kernel::MM::pfa_is_page_allocated(frame));
         CHECK(Kernel::MM::pfa_free_pages_count() == baseline_free - 1U);
         CHECK(Kernel::MM::pfa_allocated_pages_count() == baseline_alloc + 1U);
@@ -159,18 +160,18 @@ TEST_CASE("PFA single-frame, multi-frame, and recycling invariants", "[pfa][mm]"
         const uintptr_t frame1 = Kernel::MM::alloc_frame();
         const uintptr_t frame2 = Kernel::MM::alloc_frame();
         REQUIRE(frame0 != 0U);
-        REQUIRE(frame1 == frame0 + Arch::PAGE_SIZE);
-        REQUIRE(frame2 == frame1 + Arch::PAGE_SIZE);
+        REQUIRE(frame1 == frame0 + Arch::AArch64::PAGE_SIZE);
+        REQUIRE(frame2 == frame1 + Arch::AArch64::PAGE_SIZE);
 
         // Create a 1-page hole at frame1; requesting 3 contiguous frames must skip [frame0..frame2]
         Kernel::MM::free_frame(frame1);
 
         const uintptr_t span = Kernel::MM::alloc_frames(3U);
         REQUIRE(span != 0U);
-        CHECK((span % Arch::PAGE_SIZE) == 0U);
-        CHECK(span >= frame2 + Arch::PAGE_SIZE);
+        CHECK((span % Arch::AArch64::PAGE_SIZE) == 0U);
+        CHECK(span >= frame2 + Arch::AArch64::PAGE_SIZE);
         for (size_t idx = 0U; idx < 3U; ++idx) {
-            CHECK(Kernel::MM::pfa_is_page_allocated(span + (idx * Arch::PAGE_SIZE)));
+            CHECK(Kernel::MM::pfa_is_page_allocated(span + (idx * Arch::AArch64::PAGE_SIZE)));
         }
 
         Kernel::MM::free_frames(span, 3U);
@@ -237,7 +238,7 @@ TEST_CASE("PFA atomic reference counting and defensive guards", "[pfa][mm][cow]"
         // Unaligned and out-of-bounds physical addresses
         Kernel::MM::free_frame(RAM_BASE + 123U);
         Kernel::MM::free_frame(0x1000U);
-        Kernel::MM::free_frame(RAM_BASE + RAM_SIZE + Arch::PAGE_SIZE);
+        Kernel::MM::free_frame(RAM_BASE + RAM_SIZE + Arch::AArch64::PAGE_SIZE);
         CHECK(Kernel::MM::page_from_paddr(0x1000U) == nullptr);
         CHECK(Kernel::MM::page_to_paddr(nullptr) == 0U);
         CHECK(Kernel::MM::pfa_free_pages_count() == baseline_free);

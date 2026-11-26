@@ -21,7 +21,7 @@ constexpr uintptr_t AARCH64_USER_STACK_TOP = 0x000000003FFF0000ULL;
 constexpr uintptr_t AARCH64_USER_BRK_BASE = 0x0000000010000000ULL;
 constexpr uintptr_t AARCH64_USER_MMAP_BASE = 0x000000003FFE0000ULL;
 
-alignas(Arch::PAGE_SIZE) uint8_t g_sim_ram[HostTest::SIM_RAM_SIZE]{};
+alignas(Arch::AArch64::PAGE_SIZE) uint8_t g_sim_ram[HostTest::SIM_RAM_SIZE]{};
 
 struct MockRootSlot {
     uintptr_t root_paddr{0U};
@@ -49,8 +49,8 @@ void init_default_platform_info() noexcept {
     g_platform_info = HAL::PlatformInfo{
         .ram_base = HostTest::SIM_RAM_BASE,
         .ram_size = HostTest::SIM_RAM_SIZE,
-        .max_ram_size = Arch::MAX_RAM_SIZE,
-        .page_size = Arch::PAGE_SIZE,
+        .max_ram_size = Arch::AArch64::MAX_RAM_SIZE,
+        .page_size = Arch::AArch64::PAGE_SIZE,
         .higher_half_offset = sim_host_base - HostTest::SIM_RAM_BASE,
         .user_va_limit = AARCH64_USER_VA_LIMIT,
         .user_stack_top = AARCH64_USER_STACK_TOP,
@@ -296,7 +296,8 @@ uintptr_t AddressSpaceBackend::create_root() noexcept {
     for (size_t idx = 0U; idx < MAX_MOCK_ROOTS; ++idx) {
         if (!g_roots[idx].in_use) {
             g_roots[idx].in_use = true;
-            g_roots[idx].root_paddr = HostTest::SIM_RAM_BASE + ((idx + 1U) * Arch::PAGE_SIZE);
+            g_roots[idx].root_paddr =
+                HostTest::SIM_RAM_BASE + ((idx + 1U) * Arch::AArch64::PAGE_SIZE);
             ++g_stats.active_address_spaces;
             return g_roots[idx].root_paddr;
         }
@@ -331,7 +332,7 @@ bool AddressSpaceBackend::map_user_page(uintptr_t root_paddr, uintptr_t vaddr, u
         --g_map_calls_remaining;
     }
 
-    const uintptr_t aligned_vaddr = vaddr & ~(Arch::PAGE_SIZE - 1U);
+    const uintptr_t aligned_vaddr = vaddr & ~(Arch::AArch64::PAGE_SIZE - 1U);
     for (const auto& entry : g_mappings) {
         if (entry.valid && entry.root_paddr == root_paddr && entry.vaddr == aligned_vaddr) {
             return false;
@@ -343,7 +344,7 @@ bool AddressSpaceBackend::map_user_page(uintptr_t root_paddr, uintptr_t vaddr, u
             entry.valid = true;
             entry.root_paddr = root_paddr;
             entry.vaddr = aligned_vaddr;
-            entry.paddr = paddr & ~(Arch::PAGE_SIZE - 1U);
+            entry.paddr = paddr & ~(Arch::AArch64::PAGE_SIZE - 1U);
             entry.flags = flags;
             ++g_stats.mapped_page_count;
             return true;
@@ -375,7 +376,7 @@ bool AddressSpaceBackend::unmap_user_page(uintptr_t root_paddr, uintptr_t vaddr)
     if (!is_valid_root(root_paddr)) {
         return false;
     }
-    const uintptr_t aligned_vaddr = vaddr & ~(Arch::PAGE_SIZE - 1U);
+    const uintptr_t aligned_vaddr = vaddr & ~(Arch::AArch64::PAGE_SIZE - 1U);
     for (auto& entry : g_mappings) {
         if (entry.valid && entry.root_paddr == root_paddr && entry.vaddr == aligned_vaddr) {
             entry.valid = false;
@@ -393,7 +394,7 @@ bool AddressSpaceBackend::protect_user_page(uintptr_t root_paddr, uintptr_t vadd
     if (!is_valid_root(root_paddr)) {
         return false;
     }
-    const uintptr_t aligned_vaddr = vaddr & ~(Arch::PAGE_SIZE - 1U);
+    const uintptr_t aligned_vaddr = vaddr & ~(Arch::AArch64::PAGE_SIZE - 1U);
     for (auto& entry : g_mappings) {
         if (entry.valid && entry.root_paddr == root_paddr && entry.vaddr == aligned_vaddr) {
             entry.flags = flags;
@@ -408,7 +409,7 @@ bool AddressSpaceBackend::query_user_page(uintptr_t root_paddr, uintptr_t vaddr,
     if (!is_valid_root(root_paddr)) {
         return false;
     }
-    const uintptr_t aligned_vaddr = vaddr & ~(Arch::PAGE_SIZE - 1U);
+    const uintptr_t aligned_vaddr = vaddr & ~(Arch::AArch64::PAGE_SIZE - 1U);
     for (const auto& entry : g_mappings) {
         if (entry.valid && entry.root_paddr == root_paddr && entry.vaddr == aligned_vaddr) {
             out_paddr = entry.paddr;
@@ -435,10 +436,10 @@ bool AddressSpaceBackend::remap_user_page(uintptr_t root_paddr, uintptr_t vaddr,
     if (!is_valid_root(root_paddr)) {
         return false;
     }
-    const uintptr_t aligned_vaddr = vaddr & ~(Arch::PAGE_SIZE - 1U);
+    const uintptr_t aligned_vaddr = vaddr & ~(Arch::AArch64::PAGE_SIZE - 1U);
     for (auto& entry : g_mappings) {
         if (entry.valid && entry.root_paddr == root_paddr && entry.vaddr == aligned_vaddr) {
-            entry.paddr = paddr & ~(Arch::PAGE_SIZE - 1U);
+            entry.paddr = paddr & ~(Arch::AArch64::PAGE_SIZE - 1U);
             entry.flags = flags;
             return true;
         }

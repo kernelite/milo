@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace Arch {
+namespace Arch::AArch64 {
 
 // QEMU virt AArch64 Physical Memory Parameters
 constexpr uintptr_t RAM_BASE = 0x40000000U;
@@ -13,4 +13,4 @@ constexpr size_t BLOCK_SIZE_2M = 2UL * 1024UL * 1024UL; // 0x200000
 constexpr size_t BLOCK_SHIFT_2M = 21U;
 constexpr size_t MAX_RAM_SIZE = 64ULL * 1024ULL * 1024ULL * 1024ULL; // 64 GiB PA bound
 
-} // namespace Arch
+} // namespace Arch::AArch64
