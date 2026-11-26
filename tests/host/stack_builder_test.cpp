@@ -125,10 +125,10 @@ TEST_CASE("UserStackBuilder constructs System V AArch64 ABI stack layout", "[sta
         Kernel::Loader::LoadedElf loaded{};
         loaded.entry_point = 0x00400120ULL;
         loaded.phdr_vaddr = 0x00400040ULL;
-        loaded.phentsize = sizeof(Elf64_Phdr);
+        loaded.phentsize = sizeof(Kernel::Loader::Elf64_Phdr);
         loaded.phnum = 3U;
 
-        Elf64_auxv_t auxv[Kernel::Process::STANDARD_AUXV_COUNT]{};
+        Kernel::Loader::Elf64_auxv_t auxv[Kernel::Process::STANDARD_AUXV_COUNT]{};
         const size_t auxv_count = Kernel::Process::populate_standard_auxv(
             loaded, auxv, Kernel::Process::STANDARD_AUXV_COUNT);
         REQUIRE(auxv_count == Kernel::Process::STANDARD_AUXV_COUNT);
@@ -168,24 +168,25 @@ TEST_CASE("UserStackBuilder constructs System V AArch64 ABI stack layout", "[sta
         CHECK(std::strcmp(read_stack_cstr(stack, envp0_ptr), "PATH=/bin:/usr/bin") == 0);
         CHECK(std::strcmp(read_stack_cstr(stack, envp1_ptr), "HOME=/root") == 0);
 
-        // Verify auxv entries including patched AT_RANDOM and AT_NULL terminator
+        // Verify auxv entries including patched Kernel::Loader::AT_RANDOM and
+        // Kernel::Loader::AT_NULL terminator
         const uintptr_t auxv_base = envp_base + 24U;
         bool saw_at_random = false;
         bool saw_at_null = false;
         for (size_t idx = 0U; idx <= auxv_count; ++idx) {
-            const uintptr_t entry_vaddr = auxv_base + (idx * sizeof(Elf64_auxv_t));
+            const uintptr_t entry_vaddr = auxv_base + (idx * sizeof(Kernel::Loader::Elf64_auxv_t));
             const uint64_t a_type = read_stack_u64(stack, entry_vaddr);
             const uint64_t a_val = read_stack_u64(stack, entry_vaddr + 8U);
 
-            if (a_type == AT_ENTRY) {
+            if (a_type == Kernel::Loader::AT_ENTRY) {
                 CHECK(a_val == loaded.entry_point);
-            } else if (a_type == AT_PAGESZ) {
+            } else if (a_type == Kernel::Loader::AT_PAGESZ) {
                 CHECK(a_val == Arch::PAGE_SIZE);
-            } else if (a_type == AT_RANDOM) {
+            } else if (a_type == Kernel::Loader::AT_RANDOM) {
                 saw_at_random = true;
                 CHECK(a_val >= stack.virt_base);
                 CHECK(a_val + 16U <= stack.virt_top);
-            } else if (a_type == AT_NULL) {
+            } else if (a_type == Kernel::Loader::AT_NULL) {
                 saw_at_null = true;
                 CHECK(a_val == 0ULL);
             }

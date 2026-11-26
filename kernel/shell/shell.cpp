@@ -166,7 +166,7 @@ void launch_initrd_shell(const char* bin_path, const char* argv0, const char* sh
     }
     proc->exe_path[idx] = '\0';
 
-    Elf64_auxv_t auxv[Kernel::Process::STANDARD_AUXV_COUNT]{};
+    Kernel::Loader::Elf64_auxv_t auxv[Kernel::Process::STANDARD_AUXV_COUNT]{};
     const size_t auxv_count = Kernel::Process::populate_standard_auxv(
         *load_res, auxv, Kernel::Process::STANDARD_AUXV_COUNT);
 
@@ -319,28 +319,28 @@ void cmd_test_loader_pipeline() noexcept {
     print_str("\r\n[TEST] Running Segment Loader Pipeline & OOM Rollback Suite...\r\n");
 
     alignas(16) static uint8_t test_elf_buf[1024] = {0};
-    auto* ehdr = reinterpret_cast<Elf64_Ehdr*>(test_elf_buf);
-    ehdr->e_ident[EI_MAG0] = ELFMAG0;
-    ehdr->e_ident[EI_MAG1] = ELFMAG1;
-    ehdr->e_ident[EI_MAG2] = ELFMAG2;
-    ehdr->e_ident[EI_MAG3] = ELFMAG3;
-    ehdr->e_ident[EI_CLASS] = ELFCLASS64;
-    ehdr->e_ident[EI_DATA] = ELFDATA2LSB;
-    ehdr->e_ident[EI_VERSION] = EV_CURRENT;
-    ehdr->e_type = ET_EXEC;
+    auto* ehdr = reinterpret_cast<Kernel::Loader::Elf64_Ehdr*>(test_elf_buf);
+    ehdr->e_ident[Kernel::Loader::EI_MAG0] = Kernel::Loader::ELFMAG0;
+    ehdr->e_ident[Kernel::Loader::EI_MAG1] = Kernel::Loader::ELFMAG1;
+    ehdr->e_ident[Kernel::Loader::EI_MAG2] = Kernel::Loader::ELFMAG2;
+    ehdr->e_ident[Kernel::Loader::EI_MAG3] = Kernel::Loader::ELFMAG3;
+    ehdr->e_ident[Kernel::Loader::EI_CLASS] = Kernel::Loader::ELFCLASS64;
+    ehdr->e_ident[Kernel::Loader::EI_DATA] = Kernel::Loader::ELFDATA2LSB;
+    ehdr->e_ident[Kernel::Loader::EI_VERSION] = Kernel::Loader::EV_CURRENT;
+    ehdr->e_type = Kernel::Loader::ET_EXEC;
     ehdr->e_machine = HAL::get_platform_info().elf_machine;
-    ehdr->e_version = EV_CURRENT;
+    ehdr->e_version = Kernel::Loader::EV_CURRENT;
     ehdr->e_entry = 0x00400180ULL;
     ehdr->e_phoff = 64;
-    ehdr->e_ehsize = sizeof(Elf64_Ehdr);
-    ehdr->e_phentsize = sizeof(Elf64_Phdr);
+    ehdr->e_ehsize = sizeof(Kernel::Loader::Elf64_Ehdr);
+    ehdr->e_phentsize = sizeof(Kernel::Loader::Elf64_Phdr);
     ehdr->e_phnum = 2;
 
-    auto* phdrs = reinterpret_cast<Elf64_Phdr*>(test_elf_buf + 64);
+    auto* phdrs = reinterpret_cast<Kernel::Loader::Elf64_Phdr*>(test_elf_buf + 64);
 
     // Segment 0: Code RX (non-page aligned offset 0x180, vaddr 0x400180 -> congruent modulo 0x1000)
-    phdrs[0].p_type = PT_LOAD;
-    phdrs[0].p_flags = PF_R | PF_X;
+    phdrs[0].p_type = Kernel::Loader::PT_LOAD;
+    phdrs[0].p_flags = Kernel::Loader::PF_R | Kernel::Loader::PF_X;
     phdrs[0].p_offset = 0x180;
     phdrs[0].p_vaddr = 0x00400180ULL;
     phdrs[0].p_paddr = 0x00400180ULL;
@@ -349,8 +349,8 @@ void cmd_test_loader_pipeline() noexcept {
     phdrs[0].p_align = 0x1000;
 
     // Segment 1: Data RW with BSS (offset 0x240, vaddr 0x401240 -> congruent modulo 0x1000)
-    phdrs[1].p_type = PT_LOAD;
-    phdrs[1].p_flags = PF_R | PF_W;
+    phdrs[1].p_type = Kernel::Loader::PT_LOAD;
+    phdrs[1].p_flags = Kernel::Loader::PF_R | Kernel::Loader::PF_W;
     phdrs[1].p_offset = 0x240;
     phdrs[1].p_vaddr = 0x00401240ULL;
     phdrs[1].p_paddr = 0x00401240ULL;
@@ -393,29 +393,29 @@ void cmd_test_user_isolation() noexcept {
     print_str("\r\n[TEST] Running EL0 User Execution & Fault Isolation Tests...\r\n");
 
     alignas(16) static uint8_t synth_bin[512] = {0};
-    auto* ehdr = reinterpret_cast<Elf64_Ehdr*>(synth_bin);
-    ehdr->e_ident[EI_MAG0] = ELFMAG0;
-    ehdr->e_ident[EI_MAG1] = ELFMAG1;
-    ehdr->e_ident[EI_MAG2] = ELFMAG2;
-    ehdr->e_ident[EI_MAG3] = ELFMAG3;
-    ehdr->e_ident[EI_CLASS] = ELFCLASS64;
-    ehdr->e_ident[EI_DATA] = ELFDATA2LSB;
-    ehdr->e_ident[EI_VERSION] = EV_CURRENT;
-    ehdr->e_ident[EI_OSABI] = ELFOSABI_SYSV;
-    ehdr->e_type = ET_EXEC;
+    auto* ehdr = reinterpret_cast<Kernel::Loader::Elf64_Ehdr*>(synth_bin);
+    ehdr->e_ident[Kernel::Loader::EI_MAG0] = Kernel::Loader::ELFMAG0;
+    ehdr->e_ident[Kernel::Loader::EI_MAG1] = Kernel::Loader::ELFMAG1;
+    ehdr->e_ident[Kernel::Loader::EI_MAG2] = Kernel::Loader::ELFMAG2;
+    ehdr->e_ident[Kernel::Loader::EI_MAG3] = Kernel::Loader::ELFMAG3;
+    ehdr->e_ident[Kernel::Loader::EI_CLASS] = Kernel::Loader::ELFCLASS64;
+    ehdr->e_ident[Kernel::Loader::EI_DATA] = Kernel::Loader::ELFDATA2LSB;
+    ehdr->e_ident[Kernel::Loader::EI_VERSION] = Kernel::Loader::EV_CURRENT;
+    ehdr->e_ident[Kernel::Loader::EI_OSABI] = Kernel::Loader::ELFOSABI_SYSV;
+    ehdr->e_type = Kernel::Loader::ET_EXEC;
     ehdr->e_machine = HAL::get_platform_info().elf_machine;
-    ehdr->e_version = EV_CURRENT;
+    ehdr->e_version = Kernel::Loader::EV_CURRENT;
     ehdr->e_entry = 0x00400100ULL; // Congruent with p_offset 0x100 modulo 0x1000
     ehdr->e_phoff = 64;
-    ehdr->e_ehsize = sizeof(Elf64_Ehdr);
-    ehdr->e_phentsize = sizeof(Elf64_Phdr);
+    ehdr->e_ehsize = sizeof(Kernel::Loader::Elf64_Ehdr);
+    ehdr->e_phentsize = sizeof(Kernel::Loader::Elf64_Phdr);
     ehdr->e_phnum = 1;
 
     const size_t code_bytes = HAL::Test::write_user_exit_program(synth_bin + 0x100, 42);
 
-    auto* phdr = reinterpret_cast<Elf64_Phdr*>(synth_bin + 64);
-    phdr->p_type = PT_LOAD;
-    phdr->p_flags = PF_R | PF_X;
+    auto* phdr = reinterpret_cast<Kernel::Loader::Elf64_Phdr*>(synth_bin + 64);
+    phdr->p_type = Kernel::Loader::PT_LOAD;
+    phdr->p_flags = Kernel::Loader::PF_R | Kernel::Loader::PF_X;
     phdr->p_offset = 0x100;
     phdr->p_vaddr = 0x00400100ULL;
     phdr->p_paddr = 0x00400100ULL;
@@ -569,10 +569,10 @@ void cmd_elf_initrd(const char* path) noexcept {
         return;
     }
 
-    auto parse_res = Elf64View::parse(entry.data, entry.size);
+    auto parse_res = Kernel::Loader::Elf64View::parse(entry.data, entry.size);
     if (!parse_res) {
         print_str("[ELF ERROR] ELF validation failed: ");
-        print_str(elf_status_str(parse_res.error()));
+        print_str(Kernel::Loader::elf_status_str(parse_res.error()));
         print_str("\r\n");
         return;
     }
@@ -580,14 +580,14 @@ void cmd_elf_initrd(const char* path) noexcept {
     const auto& elf = parse_res.value();
     print_str("\r\n================ ELF64 HEADER INFO ================\r\n");
     print_str("  Binary Type         : ");
-    print_str(elf.is_executable() ? "ET_EXEC (Executable)\r\n"
-                                  : "ET_DYN (Position-Independent)\r\n");
+    print_str(elf.is_executable() ? "Kernel::Loader::ET_EXEC (Executable)\r\n"
+                                  : "Kernel::Loader::ET_DYN (Position-Independent)\r\n");
     print_str("  Target Architecture : AArch64 (0xB7)\r\n");
     print_str("  Entry Point         : ");
     print_hex64(elf.entry_point());
     print_str("\r\n  Program Headers     : ");
     print_dec64(elf.segment_count());
-    print_str(" (PT_LOAD segments: ");
+    print_str(" (Kernel::Loader::PT_LOAD segments: ");
     print_dec64(elf.load_segment_count());
     print_str(")\r\n");
     print_str("===================================================\r\n");
@@ -596,17 +596,17 @@ void cmd_elf_initrd(const char* path) noexcept {
     print_str("  Type    Flags   Virtual Address     File Size   Mem Size    BSS Size\r\n");
     print_str("  --------------------------------------------------------------------\r\n");
 
-    elf.for_each_segment([](const Elf64Segment& seg) {
+    elf.for_each_segment([](const Kernel::Loader::Elf64Segment& seg) {
         print_str("  ");
-        if (seg.type == PT_LOAD) {
+        if (seg.type == Kernel::Loader::PT_LOAD) {
             print_str("LOAD    ");
-        } else if (seg.type == PT_PHDR) {
+        } else if (seg.type == Kernel::Loader::PT_PHDR) {
             print_str("PHDR    ");
-        } else if (seg.type == PT_DYNAMIC) {
+        } else if (seg.type == Kernel::Loader::PT_DYNAMIC) {
             print_str("DYNAMIC ");
-        } else if (seg.type == PT_NOTE) {
+        } else if (seg.type == Kernel::Loader::PT_NOTE) {
             print_str("NOTE    ");
-        } else if (seg.type == PT_GNU_STACK) {
+        } else if (seg.type == Kernel::Loader::PT_GNU_STACK) {
             print_str("STACK   ");
         } else {
             print_str("OTHER   ");
@@ -633,8 +633,10 @@ void cmd_test_elf() noexcept {
     print_str("\r\n[TEST] Running ELF64 In-Memory Parser Verification Suite...\r\n");
 
     // 1. ABI Type Size Invariants
-    assert_test(sizeof(Elf64_Ehdr) == 64, "Elf64_Ehdr size is exactly 64 bytes");
-    assert_test(sizeof(Elf64_Phdr) == 56, "Elf64_Phdr size is exactly 56 bytes");
+    assert_test(sizeof(Kernel::Loader::Elf64_Ehdr) == 64,
+                "Kernel::Loader::Elf64_Ehdr size is exactly 64 bytes");
+    assert_test(sizeof(Kernel::Loader::Elf64_Phdr) == 56,
+                "Kernel::Loader::Elf64_Phdr size is exactly 56 bytes");
 
     // 2. Synthesize AArch64 ELF binary
     alignas(16) static uint8_t synth_elf[512];
@@ -642,28 +644,28 @@ void cmd_test_elf() noexcept {
         synth_elf[i] = 0U;
     }
 
-    auto* ehdr = reinterpret_cast<Elf64_Ehdr*>(synth_elf);
-    ehdr->e_ident[EI_MAG0] = ELFMAG0;
-    ehdr->e_ident[EI_MAG1] = ELFMAG1;
-    ehdr->e_ident[EI_MAG2] = ELFMAG2;
-    ehdr->e_ident[EI_MAG3] = ELFMAG3;
-    ehdr->e_ident[EI_CLASS] = ELFCLASS64;
-    ehdr->e_ident[EI_DATA] = ELFDATA2LSB;
-    ehdr->e_ident[EI_VERSION] = EV_CURRENT;
-    ehdr->e_ident[EI_OSABI] = ELFOSABI_SYSV;
-    ehdr->e_type = ET_EXEC;
-    ehdr->e_machine = EM_AARCH64;
-    ehdr->e_version = EV_CURRENT;
+    auto* ehdr = reinterpret_cast<Kernel::Loader::Elf64_Ehdr*>(synth_elf);
+    ehdr->e_ident[Kernel::Loader::EI_MAG0] = Kernel::Loader::ELFMAG0;
+    ehdr->e_ident[Kernel::Loader::EI_MAG1] = Kernel::Loader::ELFMAG1;
+    ehdr->e_ident[Kernel::Loader::EI_MAG2] = Kernel::Loader::ELFMAG2;
+    ehdr->e_ident[Kernel::Loader::EI_MAG3] = Kernel::Loader::ELFMAG3;
+    ehdr->e_ident[Kernel::Loader::EI_CLASS] = Kernel::Loader::ELFCLASS64;
+    ehdr->e_ident[Kernel::Loader::EI_DATA] = Kernel::Loader::ELFDATA2LSB;
+    ehdr->e_ident[Kernel::Loader::EI_VERSION] = Kernel::Loader::EV_CURRENT;
+    ehdr->e_ident[Kernel::Loader::EI_OSABI] = Kernel::Loader::ELFOSABI_SYSV;
+    ehdr->e_type = Kernel::Loader::ET_EXEC;
+    ehdr->e_machine = Kernel::Loader::EM_AARCH64;
+    ehdr->e_version = Kernel::Loader::EV_CURRENT;
     ehdr->e_entry = 0x0000000040080000ULL;
     ehdr->e_phoff = 64;
-    ehdr->e_ehsize = sizeof(Elf64_Ehdr);
-    ehdr->e_phentsize = sizeof(Elf64_Phdr);
+    ehdr->e_ehsize = sizeof(Kernel::Loader::Elf64_Ehdr);
+    ehdr->e_phentsize = sizeof(Kernel::Loader::Elf64_Phdr);
     ehdr->e_phnum = 2;
 
     // Segment 0: Code RX (vaddr % 0x1000 == offset % 0x1000 == 0x100)
-    auto* phdrs = reinterpret_cast<Elf64_Phdr*>(synth_elf + 64);
-    phdrs[0].p_type = PT_LOAD;
-    phdrs[0].p_flags = PF_R | PF_X;
+    auto* phdrs = reinterpret_cast<Kernel::Loader::Elf64_Phdr*>(synth_elf + 64);
+    phdrs[0].p_type = Kernel::Loader::PT_LOAD;
+    phdrs[0].p_flags = Kernel::Loader::PF_R | Kernel::Loader::PF_X;
     phdrs[0].p_offset = 0x100;
     phdrs[0].p_vaddr = 0x400100; // Aligned with offset modulo 0x1000
     phdrs[0].p_paddr = 0x400100;
@@ -672,8 +674,8 @@ void cmd_test_elf() noexcept {
     phdrs[0].p_align = 0x1000;
 
     // Segment 1: Data RW with BSS (vaddr % 0x1000 == offset % 0x1000 == 0x140)
-    phdrs[1].p_type = PT_LOAD;
-    phdrs[1].p_flags = PF_R | PF_W;
+    phdrs[1].p_type = Kernel::Loader::PT_LOAD;
+    phdrs[1].p_flags = Kernel::Loader::PF_R | Kernel::Loader::PF_W;
     phdrs[1].p_offset = 0x140;
     phdrs[1].p_vaddr = 0x401140;
     phdrs[1].p_paddr = 0x401140;
@@ -684,88 +686,94 @@ void cmd_test_elf() noexcept {
     const size_t valid_elf_size = 0x140 + 0x20; // 0x160 bytes total
 
     // 3. Positive Parsing Tests
-    auto res_exec = Elf64View::parse(synth_elf, valid_elf_size);
-    assert_test(res_exec.is_ok(), "Parsed valid AArch64 ET_EXEC binary");
+    auto res_exec = Kernel::Loader::Elf64View::parse(synth_elf, valid_elf_size);
+    assert_test(res_exec.is_ok(), "Parsed valid AArch64 Kernel::Loader::ET_EXEC binary");
     assert_test(res_exec->entry_point() == 0x0000000040080000ULL,
                 "Extracted correct entry point address");
     assert_test(res_exec->segment_count() == 2, "Extracted correct program header segment count");
-    assert_test(res_exec->load_segment_count() == 2, "Identified all PT_LOAD segments");
+    assert_test(res_exec->load_segment_count() == 2,
+                "Identified all Kernel::Loader::PT_LOAD segments");
 
     // Segment extraction & BSS calculation
     size_t inspected_load_segs = 0;
     bool bss_calculated_correctly = false;
-    res_exec->for_each_load_segment([&](const Elf64Segment& seg) {
+    res_exec->for_each_load_segment([&](const Kernel::Loader::Elf64Segment& seg) {
         inspected_load_segs++;
         if (seg.is_writable() && seg.bss_size() == 0x40) {
             bss_calculated_correctly = true;
         }
     });
-    assert_test(inspected_load_segs == 2, "Iterated all PT_LOAD segments without heap allocation");
+    assert_test(inspected_load_segs == 2,
+                "Iterated all Kernel::Loader::PT_LOAD segments without heap allocation");
     assert_test(bss_calculated_correctly,
                 "Calculated zero-fill .bss byte count accurately (0x40 bytes)");
 
-    // Test ET_DYN (Position-Independent Executable)
-    ehdr->e_type = ET_DYN;
-    auto res_dyn = Elf64View::parse(synth_elf, valid_elf_size);
+    // Test Kernel::Loader::ET_DYN (Position-Independent Executable)
+    ehdr->e_type = Kernel::Loader::ET_DYN;
+    auto res_dyn = Kernel::Loader::Elf64View::parse(synth_elf, valid_elf_size);
     assert_test(res_dyn.is_ok() && res_dyn->is_position_independent(),
-                "Parsed valid AArch64 ET_DYN (PIE) binary");
-    ehdr->e_type = ET_EXEC; // restore
+                "Parsed valid AArch64 Kernel::Loader::ET_DYN (PIE) binary");
+    ehdr->e_type = Kernel::Loader::ET_EXEC; // restore
 
     // 4. Defensive Malformation Tests
-    assert_test(Elf64View::parse(synth_elf, 50).error() == ElfStatus::BufferTooSmall,
+    assert_test(Kernel::Loader::Elf64View::parse(synth_elf, 50).error() ==
+                    Kernel::Loader::ElfStatus::BufferTooSmall,
                 "Safely rejected truncated buffer (< 64 bytes) as BufferTooSmall");
 
-    ehdr->e_ident[EI_MAG1] = 'Z';
-    assert_test(Elf64View::parse(synth_elf, valid_elf_size).error() == ElfStatus::InvalidMagic,
+    ehdr->e_ident[Kernel::Loader::EI_MAG1] = 'Z';
+    assert_test(Kernel::Loader::Elf64View::parse(synth_elf, valid_elf_size).error() ==
+                    Kernel::Loader::ElfStatus::InvalidMagic,
                 "Safely rejected corrupted magic bytes as InvalidMagic");
-    ehdr->e_ident[EI_MAG1] = 'E'; // restore
+    ehdr->e_ident[Kernel::Loader::EI_MAG1] = 'E'; // restore
 
-    ehdr->e_ident[EI_CLASS] = ELFCLASS32;
-    assert_test(Elf64View::parse(synth_elf, valid_elf_size).error() == ElfStatus::UnsupportedClass,
+    ehdr->e_ident[Kernel::Loader::EI_CLASS] = Kernel::Loader::ELFCLASS32;
+    assert_test(Kernel::Loader::Elf64View::parse(synth_elf, valid_elf_size).error() ==
+                    Kernel::Loader::ElfStatus::UnsupportedClass,
                 "Safely rejected 32-bit ELF as UnsupportedClass");
-    ehdr->e_ident[EI_CLASS] = ELFCLASS64; // restore
+    ehdr->e_ident[Kernel::Loader::EI_CLASS] = Kernel::Loader::ELFCLASS64; // restore
 
-    ehdr->e_ident[EI_DATA] = ELFDATA2MSB;
-    assert_test(Elf64View::parse(synth_elf, valid_elf_size).error() ==
-                    ElfStatus::UnsupportedEndianness,
+    ehdr->e_ident[Kernel::Loader::EI_DATA] = Kernel::Loader::ELFDATA2MSB;
+    assert_test(Kernel::Loader::Elf64View::parse(synth_elf, valid_elf_size).error() ==
+                    Kernel::Loader::ElfStatus::UnsupportedEndianness,
                 "Safely rejected Big-Endian ELF as UnsupportedEndianness");
-    ehdr->e_ident[EI_DATA] = ELFDATA2LSB; // restore
+    ehdr->e_ident[Kernel::Loader::EI_DATA] = Kernel::Loader::ELFDATA2LSB; // restore
 
-    ehdr->e_machine = EM_X86_64;
-    assert_test(Elf64View::parse(synth_elf, valid_elf_size).error() ==
-                    ElfStatus::UnsupportedMachine,
+    ehdr->e_machine = Kernel::Loader::EM_X86_64;
+    assert_test(Kernel::Loader::Elf64View::parse(synth_elf, valid_elf_size).error() ==
+                    Kernel::Loader::ElfStatus::UnsupportedMachine,
                 "Safely rejected x86_64 machine architecture as UnsupportedMachine");
-    ehdr->e_machine = EM_AARCH64; // restore
+    ehdr->e_machine = Kernel::Loader::EM_AARCH64; // restore
 
-    ehdr->e_type = ET_REL;
-    assert_test(Elf64View::parse(synth_elf, valid_elf_size).error() == ElfStatus::UnsupportedType,
-                "Safely rejected ET_REL relocatable object as UnsupportedType");
-    ehdr->e_type = ET_EXEC; // restore
+    ehdr->e_type = Kernel::Loader::ET_REL;
+    assert_test(Kernel::Loader::Elf64View::parse(synth_elf, valid_elf_size).error() ==
+                    Kernel::Loader::ElfStatus::UnsupportedType,
+                "Safely rejected Kernel::Loader::ET_REL relocatable object as UnsupportedType");
+    ehdr->e_type = Kernel::Loader::ET_EXEC; // restore
 
     ehdr->e_phoff = 0xFFFFFFFFFF000000ULL;
     assert_test(
-        Elf64View::parse(synth_elf, valid_elf_size).error() ==
-            ElfStatus::MalformedProgramHeaderTable,
+        Kernel::Loader::Elf64View::parse(synth_elf, valid_elf_size).error() ==
+            Kernel::Loader::ElfStatus::MalformedProgramHeaderTable,
         "Safely rejected out-of-bounds Program Header Table as MalformedProgramHeaderTable");
     ehdr->e_phoff = 64; // restore
 
     phdrs[0].p_filesz = 0x80;
     phdrs[0].p_memsz = 0x40;
-    assert_test(Elf64View::parse(synth_elf, valid_elf_size).error() ==
-                    ElfStatus::SegmentOutOfBounds,
+    assert_test(Kernel::Loader::Elf64View::parse(synth_elf, valid_elf_size).error() ==
+                    Kernel::Loader::ElfStatus::SegmentOutOfBounds,
                 "Safely rejected segment where p_filesz > p_memsz as SegmentOutOfBounds");
     phdrs[0].p_filesz = 0x40; // restore
 
     phdrs[0].p_offset = valid_elf_size - 0x10;
     phdrs[0].p_filesz = 0x40;
-    assert_test(Elf64View::parse(synth_elf, valid_elf_size).error() ==
-                    ElfStatus::SegmentOutOfBounds,
+    assert_test(Kernel::Loader::Elf64View::parse(synth_elf, valid_elf_size).error() ==
+                    Kernel::Loader::ElfStatus::SegmentOutOfBounds,
                 "Safely rejected truncated segment payload as SegmentOutOfBounds");
     phdrs[0].p_offset = 0x100; // restore
 
     phdrs[0].p_align = 3;
-    assert_test(Elf64View::parse(synth_elf, valid_elf_size).error() ==
-                    ElfStatus::InvalidSegmentAlignment,
+    assert_test(Kernel::Loader::Elf64View::parse(synth_elf, valid_elf_size).error() ==
+                    Kernel::Loader::ElfStatus::InvalidSegmentAlignment,
                 "Safely rejected non-power-of-2 alignment as InvalidSegmentAlignment");
 
     // Incongruent alignment test:
@@ -773,8 +781,8 @@ void cmd_test_elf() noexcept {
     phdrs[0].p_align = 0x1000;
     phdrs[0].p_vaddr = 0x400200; // Intentionally misaligned
     phdrs[0].p_offset = 0x100;
-    assert_test(Elf64View::parse(synth_elf, valid_elf_size).error() ==
-                    ElfStatus::InvalidSegmentAlignment,
+    assert_test(Kernel::Loader::Elf64View::parse(synth_elf, valid_elf_size).error() ==
+                    Kernel::Loader::ElfStatus::InvalidSegmentAlignment,
                 "Safely rejected incongruent virtual address alignment as InvalidSegmentAlignment");
     phdrs[0].p_vaddr = 0x400100; // restore
 }
@@ -1500,30 +1508,30 @@ void cmd_test_user_mm() noexcept {
         synth_elf[i] = 0U;
     }
 
-    auto* const ehdr = reinterpret_cast<Elf64_Ehdr*>(synth_elf);
-    ehdr->e_ident[EI_MAG0] = ELFMAG0;
-    ehdr->e_ident[EI_MAG1] = ELFMAG1;
-    ehdr->e_ident[EI_MAG2] = ELFMAG2;
-    ehdr->e_ident[EI_MAG3] = ELFMAG3;
-    ehdr->e_ident[EI_CLASS] = ELFCLASS64;
-    ehdr->e_ident[EI_DATA] = ELFDATA2LSB;
-    ehdr->e_ident[EI_VERSION] = EV_CURRENT;
-    ehdr->e_ident[EI_OSABI] = ELFOSABI_SYSV;
-    ehdr->e_type = ET_EXEC;
+    auto* const ehdr = reinterpret_cast<Kernel::Loader::Elf64_Ehdr*>(synth_elf);
+    ehdr->e_ident[Kernel::Loader::EI_MAG0] = Kernel::Loader::ELFMAG0;
+    ehdr->e_ident[Kernel::Loader::EI_MAG1] = Kernel::Loader::ELFMAG1;
+    ehdr->e_ident[Kernel::Loader::EI_MAG2] = Kernel::Loader::ELFMAG2;
+    ehdr->e_ident[Kernel::Loader::EI_MAG3] = Kernel::Loader::ELFMAG3;
+    ehdr->e_ident[Kernel::Loader::EI_CLASS] = Kernel::Loader::ELFCLASS64;
+    ehdr->e_ident[Kernel::Loader::EI_DATA] = Kernel::Loader::ELFDATA2LSB;
+    ehdr->e_ident[Kernel::Loader::EI_VERSION] = Kernel::Loader::EV_CURRENT;
+    ehdr->e_ident[Kernel::Loader::EI_OSABI] = Kernel::Loader::ELFOSABI_SYSV;
+    ehdr->e_type = Kernel::Loader::ET_EXEC;
     ehdr->e_machine = HAL::get_platform_info().elf_machine;
-    ehdr->e_version = EV_CURRENT;
+    ehdr->e_version = Kernel::Loader::EV_CURRENT;
     ehdr->e_entry = 0x0000000000400100ULL;
     ehdr->e_phoff = 64U;
-    ehdr->e_ehsize = sizeof(Elf64_Ehdr);
-    ehdr->e_phentsize = sizeof(Elf64_Phdr);
+    ehdr->e_ehsize = sizeof(Kernel::Loader::Elf64_Ehdr);
+    ehdr->e_phentsize = sizeof(Kernel::Loader::Elf64_Phdr);
     ehdr->e_phnum = 2U;
 
-    auto* const phdrs = reinterpret_cast<Elf64_Phdr*>(synth_elf + 64U);
+    auto* const phdrs = reinterpret_cast<Kernel::Loader::Elf64_Phdr*>(synth_elf + 64U);
 
     // Segment 0: Code RX (p_offset = 0x100, p_vaddr = 0x400100)
     const size_t code_bytes = HAL::Test::write_user_mm_suite_program(synth_elf + 0x100U);
-    phdrs[0].p_type = PT_LOAD;
-    phdrs[0].p_flags = PF_R | PF_X;
+    phdrs[0].p_type = Kernel::Loader::PT_LOAD;
+    phdrs[0].p_flags = Kernel::Loader::PF_R | Kernel::Loader::PF_X;
     phdrs[0].p_offset = 0x100U;
     phdrs[0].p_vaddr = 0x0000000000400100ULL;
     phdrs[0].p_paddr = 0x0000000000400100ULL;
@@ -1533,8 +1541,8 @@ void cmd_test_user_mm() noexcept {
 
     // Segment 1: Data RW + .bss (p_offset = 0x540, p_vaddr = 0x401540, p_memsz = 0x180 ->
     // page-aligned ceiling is 0x402000)
-    phdrs[1].p_type = PT_LOAD;
-    phdrs[1].p_flags = PF_R | PF_W;
+    phdrs[1].p_type = Kernel::Loader::PT_LOAD;
+    phdrs[1].p_flags = Kernel::Loader::PF_R | Kernel::Loader::PF_W;
     phdrs[1].p_offset = 0x540U;
     phdrs[1].p_vaddr = 0x0000000000401540ULL;
     phdrs[1].p_paddr = 0x0000000000401540ULL;
@@ -1663,28 +1671,28 @@ void cmd_test_proc_exit() noexcept {
         synth_elf[i] = 0U;
     }
 
-    auto* const ehdr = reinterpret_cast<Elf64_Ehdr*>(synth_elf);
-    ehdr->e_ident[EI_MAG0] = ELFMAG0;
-    ehdr->e_ident[EI_MAG1] = ELFMAG1;
-    ehdr->e_ident[EI_MAG2] = ELFMAG2;
-    ehdr->e_ident[EI_MAG3] = ELFMAG3;
-    ehdr->e_ident[EI_CLASS] = ELFCLASS64;
-    ehdr->e_ident[EI_DATA] = ELFDATA2LSB;
-    ehdr->e_ident[EI_VERSION] = EV_CURRENT;
-    ehdr->e_ident[EI_OSABI] = ELFOSABI_SYSV;
-    ehdr->e_type = ET_EXEC;
+    auto* const ehdr = reinterpret_cast<Kernel::Loader::Elf64_Ehdr*>(synth_elf);
+    ehdr->e_ident[Kernel::Loader::EI_MAG0] = Kernel::Loader::ELFMAG0;
+    ehdr->e_ident[Kernel::Loader::EI_MAG1] = Kernel::Loader::ELFMAG1;
+    ehdr->e_ident[Kernel::Loader::EI_MAG2] = Kernel::Loader::ELFMAG2;
+    ehdr->e_ident[Kernel::Loader::EI_MAG3] = Kernel::Loader::ELFMAG3;
+    ehdr->e_ident[Kernel::Loader::EI_CLASS] = Kernel::Loader::ELFCLASS64;
+    ehdr->e_ident[Kernel::Loader::EI_DATA] = Kernel::Loader::ELFDATA2LSB;
+    ehdr->e_ident[Kernel::Loader::EI_VERSION] = Kernel::Loader::EV_CURRENT;
+    ehdr->e_ident[Kernel::Loader::EI_OSABI] = Kernel::Loader::ELFOSABI_SYSV;
+    ehdr->e_type = Kernel::Loader::ET_EXEC;
     ehdr->e_machine = HAL::get_platform_info().elf_machine;
-    ehdr->e_version = EV_CURRENT;
+    ehdr->e_version = Kernel::Loader::EV_CURRENT;
     ehdr->e_entry = 0x0000000000400100ULL;
     ehdr->e_phoff = 64U;
-    ehdr->e_ehsize = sizeof(Elf64_Ehdr);
-    ehdr->e_phentsize = sizeof(Elf64_Phdr);
+    ehdr->e_ehsize = sizeof(Kernel::Loader::Elf64_Ehdr);
+    ehdr->e_phentsize = sizeof(Kernel::Loader::Elf64_Phdr);
     ehdr->e_phnum = 1U;
 
     const size_t elf_code_bytes = HAL::Test::write_user_proc_lifecycle_program(synth_elf + 0x100U);
-    auto* const phdr = reinterpret_cast<Elf64_Phdr*>(synth_elf + 64U);
-    phdr->p_type = PT_LOAD;
-    phdr->p_flags = PF_R | PF_X;
+    auto* const phdr = reinterpret_cast<Kernel::Loader::Elf64_Phdr*>(synth_elf + 64U);
+    phdr->p_type = Kernel::Loader::PT_LOAD;
+    phdr->p_flags = Kernel::Loader::PF_R | Kernel::Loader::PF_X;
     phdr->p_offset = 0x100U;
     phdr->p_vaddr = 0x0000000000400100ULL;
     phdr->p_paddr = 0x0000000000400100ULL;
@@ -1867,7 +1875,7 @@ void cmd_test_musl() noexcept {
         return;
     }
 
-    Elf64_auxv_t auxv[Kernel::Process::STANDARD_AUXV_COUNT]{};
+    Kernel::Loader::Elf64_auxv_t auxv[Kernel::Process::STANDARD_AUXV_COUNT]{};
     const size_t auxv_count = Kernel::Process::populate_standard_auxv(
         *load_res, auxv, Kernel::Process::STANDARD_AUXV_COUNT);
 

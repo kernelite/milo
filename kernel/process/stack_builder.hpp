@@ -10,6 +10,9 @@
 
 namespace Kernel::Process {
 
+using Kernel::Loader::Elf64_auxv_t;
+using Kernel::Loader::Result;
+
 constexpr uintptr_t DEFAULT_USER_STACK_TOP = 0x000000003FFF0000ULL;
 constexpr size_t DEFAULT_USER_STACK_SIZE = 64UL * 1024UL; // 64 KiB (16 pages)
 constexpr size_t STANDARD_AUXV_COUNT = 11U;               // Excludes AT_NULL terminator

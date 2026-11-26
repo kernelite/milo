@@ -1,5 +1,7 @@
 #include "loader/elf64.hpp"
 
+namespace Kernel::Loader {
+
 const char* elf_status_str(ElfStatus status) noexcept {
     switch (status) {
     case ElfStatus::Success:
@@ -120,3 +122,4 @@ Result<Elf64View, ElfStatus> Elf64View::parse(const uint8_t* data, size_t size) 
 
     return Elf64View(data, size, ehdr, phdrs);
 }
+} // namespace Kernel::Loader

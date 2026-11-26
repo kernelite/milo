@@ -3381,7 +3381,7 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
     }
 
     auto new_stack = stack_res.value();
-    Elf64_auxv_t auxv[Kernel::Process::STANDARD_AUXV_COUNT]{};
+    Kernel::Loader::Elf64_auxv_t auxv[Kernel::Process::STANDARD_AUXV_COUNT]{};
     const size_t auxv_count =
         Kernel::Process::populate_standard_auxv(loaded, auxv, Kernel::Process::STANDARD_AUXV_COUNT);
 

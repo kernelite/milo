@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 
+namespace Kernel::Loader {
+
 // Standard fixed-width ELF64 types conforming to the System V ABI
 using Elf64_Addr = uint64_t;
 using Elf64_Off = uint64_t;
@@ -336,3 +338,4 @@ class Elf64View {
     const Elf64_Ehdr* m_ehdr{nullptr};
     const Elf64_Phdr* m_phdrs{nullptr};
 };
+} // namespace Kernel::Loader
