@@ -121,10 +121,7 @@ int64_t sys_prlimit64(int32_t pid, uint32_t resource, uintptr_t user_new_rlim,
         }
     }
 
-    LinuxRlimit64 current_rlim{
-        .rlim_cur = Kernel::Process::RLIM64_INFINITY,
-        .rlim_max = Kernel::Process::RLIM64_INFINITY,
-    };
+    Kernel::Process::RLimit64 current_rlim{};
 
     switch (resource) {
     case Kernel::Process::RLIMIT_NOFILE:
@@ -148,19 +145,22 @@ int64_t sys_prlimit64(int32_t pid, uint32_t resource, uintptr_t user_new_rlim,
     }
 
     if (user_old_rlim != 0U) {
-        if (Kernel::MM::copy_to_user(caller->address_space, user_old_rlim, &current_rlim,
-                                     sizeof(current_rlim)) < 0) {
+        const linux_rlimit64 raw_old = current_rlim.to_linux_rlimit64();
+        if (Kernel::MM::copy_to_user(caller->address_space, user_old_rlim, &raw_old,
+                                     sizeof(raw_old)) < 0) {
             return ERR_EFAULT;
         }
     }
 
     if (user_new_rlim != 0U) {
-        LinuxRlimit64 new_rlim{};
-        if (Kernel::MM::copy_from_user(caller->address_space, &new_rlim, user_new_rlim,
-                                       sizeof(new_rlim)) < 0) {
+        linux_rlimit64 raw_new{};
+        if (Kernel::MM::copy_from_user(caller->address_space, &raw_new, user_new_rlim,
+                                       sizeof(raw_new)) < 0) {
             return ERR_EFAULT;
         }
-        if (new_rlim.rlim_cur > new_rlim.rlim_max) {
+        const Kernel::Process::RLimit64 new_rlim =
+            Kernel::Process::RLimit64::from_linux_rlimit64(raw_new);
+        if (!new_rlim.is_valid()) {
             return ERR_EINVAL;
         }
         if (resource == Kernel::Process::RLIMIT_NOFILE) {
@@ -669,15 +669,15 @@ int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
     }
 
     if (user_rusage != 0U) {
-        LinuxRusage rusage{};
+        linux_rusage rusage{};
         const uint64_t child_user_usec =
             static_cast<uint64_t>(target_child->utime + target_child->cutime) * 10000ULL;
         const uint64_t child_sys_usec =
             static_cast<uint64_t>(target_child->stime + target_child->cstime) * 10000ULL;
-        rusage.ru_utime.tv_sec = static_cast<int64_t>(child_user_usec / 1000000ULL);
-        rusage.ru_utime.tv_usec = static_cast<int64_t>(child_user_usec % 1000000ULL);
-        rusage.ru_stime.tv_sec = static_cast<int64_t>(child_sys_usec / 1000000ULL);
-        rusage.ru_stime.tv_usec = static_cast<int64_t>(child_sys_usec % 1000000ULL);
+        rusage.ru_utime =
+            Kernel::Time::Duration::from_microseconds(child_user_usec).to_linux_timeval();
+        rusage.ru_stime =
+            Kernel::Time::Duration::from_microseconds(child_sys_usec).to_linux_timeval();
         const int64_t rusage_res =
             Kernel::MM::copy_to_user(parent->address_space, user_rusage, &rusage, sizeof(rusage));
         if (rusage_res < 0) {

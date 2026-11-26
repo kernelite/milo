@@ -377,17 +377,18 @@ int64_t sys_utimensat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_tim
         return ERR_EINVAL;
     }
 
-    LinuxTimespec times[2]{
+    linux_timespec times[2]{
         {.tv_sec = 0, .tv_nsec = UTIME_NOW},
         {.tv_sec = 0, .tv_nsec = UTIME_NOW},
     };
+    Kernel::Time::Duration parsed_times[2]{};
     if (user_times != 0U) {
         if (Kernel::MM::copy_from_user(proc->address_space, times, user_times, sizeof(times)) < 0) {
             return ERR_EFAULT;
         }
-        for (const auto& time_val : times) {
-            if (time_val.tv_nsec != UTIME_NOW && time_val.tv_nsec != UTIME_OMIT &&
-                (time_val.tv_nsec < 0 || time_val.tv_nsec >= 1000000000LL)) {
+        for (size_t idx = 0U; idx < 2U; ++idx) {
+            if (times[idx].tv_nsec != UTIME_NOW && times[idx].tv_nsec != UTIME_OMIT &&
+                !Kernel::Time::Duration::from_linux_timespec(times[idx], parsed_times[idx])) {
                 return ERR_EINVAL;
             }
         }
@@ -449,14 +450,12 @@ int64_t sys_utimensat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_tim
         if (times[0].tv_nsec == UTIME_NOW) {
             inode->atime_ns = now_ns;
         } else if (times[0].tv_nsec != UTIME_OMIT) {
-            inode->atime_ns = (static_cast<uint64_t>(times[0].tv_sec) * 1000000000ULL) +
-                              static_cast<uint64_t>(times[0].tv_nsec);
+            inode->atime_ns = parsed_times[0].nanoseconds();
         }
         if (times[1].tv_nsec == UTIME_NOW) {
             inode->mtime_ns = now_ns;
         } else if (times[1].tv_nsec != UTIME_OMIT) {
-            inode->mtime_ns = (static_cast<uint64_t>(times[1].tv_sec) * 1000000000ULL) +
-                              static_cast<uint64_t>(times[1].tv_nsec);
+            inode->mtime_ns = parsed_times[1].nanoseconds();
         }
         inode->ctime_ns = now_ns;
     }
@@ -657,8 +656,7 @@ int64_t sys_fstat(uint64_t raw_fd, uintptr_t user_statbuf) noexcept {
     if (file == nullptr || file->inode == nullptr) {
         return ERR_EBADF;
     }
-    LinuxStat stat{};
-    fill_stat_from_inode(*file->inode, stat);
+    const linux_stat stat = inode_to_linux_stat(*file->inode);
     return Kernel::MM::copy_to_user(proc->address_space, user_statbuf, &stat, sizeof(stat));
 }
 
@@ -682,8 +680,7 @@ int64_t sys_newfstatat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_st
         if (file == nullptr || file->inode == nullptr) {
             return ERR_EBADF;
         }
-        LinuxStat stat{};
-        fill_stat_from_inode(*file->inode, stat);
+        const linux_stat stat = inode_to_linux_stat(*file->inode);
         return Kernel::MM::copy_to_user(proc->address_space, user_statbuf, &stat, sizeof(stat));
     }
 
@@ -709,8 +706,7 @@ int64_t sys_newfstatat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_st
         return (vfs_res != Kernel::FS::kOk) ? vfs_res : ERR_ENOENT;
     }
 
-    LinuxStat stat{};
-    fill_stat_from_inode(*target->inode, stat);
+    const linux_stat stat = inode_to_linux_stat(*target->inode);
     Kernel::FS::dentry_put(target);
     return Kernel::MM::copy_to_user(proc->address_space, user_statbuf, &stat, sizeof(stat));
 }
@@ -855,19 +851,19 @@ int64_t sys_getdents64(uint64_t raw_fd, uintptr_t user_dirp, uint64_t count) noe
     size_t bytes_written = 0U;
     auto push_dirent = [&](uint64_t ino, uint8_t d_type, const char* name, size_t name_len,
                            uint64_t next_off) -> bool {
-        const size_t raw_reclen = sizeof(LinuxDirent64Header) + name_len + 1U;
+        const size_t raw_reclen = sizeof(linux_dirent64_hdr) + name_len + 1U;
         const size_t aligned_reclen = (raw_reclen + 7U) & ~7U;
         if (bytes_written + aligned_reclen > count || aligned_reclen > 128U) {
             return false;
         }
         uint8_t record[128]{};
-        auto* const hdr = reinterpret_cast<LinuxDirent64Header*>(record);
+        auto* const hdr = reinterpret_cast<linux_dirent64_hdr*>(record);
         hdr->d_ino = ino;
         hdr->d_off = static_cast<int64_t>(next_off);
         hdr->d_reclen = static_cast<uint16_t>(aligned_reclen);
         hdr->d_type = d_type;
         for (size_t idx = 0U; idx < name_len; ++idx) {
-            record[sizeof(LinuxDirent64Header) + idx] = static_cast<uint8_t>(name[idx]);
+            record[sizeof(linux_dirent64_hdr) + idx] = static_cast<uint8_t>(name[idx]);
         }
         if (Kernel::MM::copy_to_user(root_paddr, user_dirp + bytes_written, record,
                                      aligned_reclen) < 0) {
@@ -1311,15 +1307,15 @@ int64_t sys_writev(uint64_t raw_fd, uintptr_t user_iov, uint64_t raw_iovcnt) noe
     }
     const auto iovcnt = static_cast<size_t>(raw_iovcnt);
 
-    if (!validate_user_read_range(root_paddr, user_iov, iovcnt * sizeof(UserIovec))) {
+    if (!validate_user_read_range(root_paddr, user_iov, iovcnt * sizeof(linux_iovec))) {
         return ERR_EFAULT;
     }
 
     uint64_t total_written = 0ULL;
     for (size_t idx = 0U; idx < iovcnt; ++idx) {
-        UserIovec iov{};
-        const uintptr_t entry_vaddr = user_iov + (idx * sizeof(UserIovec));
-        if (Kernel::MM::copy_from_user(root_paddr, &iov, entry_vaddr, sizeof(UserIovec)) < 0) {
+        linux_iovec iov{};
+        const uintptr_t entry_vaddr = user_iov + (idx * sizeof(linux_iovec));
+        if (Kernel::MM::copy_from_user(root_paddr, &iov, entry_vaddr, sizeof(linux_iovec)) < 0) {
             return (total_written > 0ULL) ? static_cast<int64_t>(total_written) : ERR_EFAULT;
         }
         if (iov.iov_len == 0ULL) {
@@ -1363,13 +1359,13 @@ int64_t sys_ppoll(uintptr_t user_fds, uint64_t nfds, uintptr_t user_tmo, uintptr
     const uintptr_t root_paddr = proc->address_space.root_paddr();
     const auto count = static_cast<size_t>(nfds);
 
-    LinuxPollFd stack_fds[POLL_STACK_THRESHOLD]{};
-    LinuxPollFd* heap_fds = nullptr;
-    LinuxPollFd* kfdfs = stack_fds;
+    linux_pollfd stack_fds[POLL_STACK_THRESHOLD]{};
+    linux_pollfd* heap_fds = nullptr;
+    linux_pollfd* kfdfs = stack_fds;
 
     struct PollHeapGuard {
-        LinuxPollFd* ptr{nullptr};
-        explicit PollHeapGuard(LinuxPollFd* heap_ptr) noexcept : ptr(heap_ptr) {}
+        linux_pollfd* ptr{nullptr};
+        explicit PollHeapGuard(linux_pollfd* heap_ptr) noexcept : ptr(heap_ptr) {}
         PollHeapGuard(const PollHeapGuard&) = delete;
         PollHeapGuard& operator=(const PollHeapGuard&) = delete;
         PollHeapGuard(PollHeapGuard&&) = delete;
@@ -1378,7 +1374,7 @@ int64_t sys_ppoll(uintptr_t user_fds, uint64_t nfds, uintptr_t user_tmo, uintptr
     };
 
     if (count > POLL_STACK_THRESHOLD) {
-        heap_fds = new (std::nothrow) LinuxPollFd[count]{};
+        heap_fds = new (std::nothrow) linux_pollfd[count]{};
         if (heap_fds == nullptr) {
             return ERR_ENOMEM;
         }
@@ -1390,7 +1386,7 @@ int64_t sys_ppoll(uintptr_t user_fds, uint64_t nfds, uintptr_t user_tmo, uintptr
         if (user_fds == 0U) {
             return ERR_EFAULT;
         }
-        if (Kernel::MM::copy_from_user(root_paddr, kfdfs, user_fds, count * sizeof(LinuxPollFd)) <
+        if (Kernel::MM::copy_from_user(root_paddr, kfdfs, user_fds, count * sizeof(linux_pollfd)) <
             0) {
             return ERR_EFAULT;
         }
@@ -1400,20 +1396,21 @@ int64_t sys_ppoll(uintptr_t user_fds, uint64_t nfds, uintptr_t user_tmo, uintptr
     bool zero_timeout = false;
     uint64_t deadline_ticks = 0ULL;
     if (user_tmo != 0U) {
-        LinuxTimespec tmo{};
-        if (Kernel::MM::copy_from_user(root_paddr, &tmo, user_tmo, sizeof(tmo)) < 0) {
+        linux_timespec raw_tmo{};
+        if (Kernel::MM::copy_from_user(root_paddr, &raw_tmo, user_tmo, sizeof(raw_tmo)) < 0) {
             return ERR_EFAULT;
         }
-        if (tmo.tv_sec < 0 || tmo.tv_nsec < 0 || tmo.tv_nsec >= 1000000000LL) {
+        Kernel::Time::Duration tmo_duration{};
+        if (!Kernel::Time::Duration::from_linux_timespec(raw_tmo, tmo_duration)) {
             return ERR_EINVAL;
         }
         has_timeout = true;
-        if (tmo.tv_sec == 0 && tmo.tv_nsec == 0) {
+        if (tmo_duration.is_zero()) {
             zero_timeout = true;
         } else {
             const uint64_t freq = HAL::QemuVirt::GenericTimer::frequency_hz();
             deadline_ticks =
-                HAL::QemuVirt::GenericTimer::counter_ticks() + timespec_to_timer_ticks(tmo, freq);
+                HAL::QemuVirt::GenericTimer::counter_ticks() + tmo_duration.to_timer_ticks(freq);
         }
     }
 
@@ -1459,7 +1456,7 @@ int64_t sys_ppoll(uintptr_t user_fds, uint64_t nfds, uintptr_t user_tmo, uintptr
             (has_timeout && HAL::QemuVirt::GenericTimer::counter_ticks() >= deadline_ticks)) {
             if (count > 0U) {
                 if (Kernel::MM::copy_to_user(root_paddr, user_fds, kfdfs,
-                                             count * sizeof(LinuxPollFd)) < 0) {
+                                             count * sizeof(linux_pollfd)) < 0) {
                     restore_mask_normal();
                     return ERR_EFAULT;
                 }
@@ -1529,27 +1526,28 @@ int64_t sys_pselect6(int32_t nfds, uintptr_t user_rfds, uintptr_t user_wfds, uin
     bool zero_timeout = false;
     uint64_t deadline_ticks = 0ULL;
     if (user_tmo != 0U) {
-        LinuxTimespec tmo{};
-        if (Kernel::MM::copy_from_user(root_paddr, &tmo, user_tmo, sizeof(tmo)) < 0) {
+        linux_timespec raw_tmo{};
+        if (Kernel::MM::copy_from_user(root_paddr, &raw_tmo, user_tmo, sizeof(raw_tmo)) < 0) {
             return ERR_EFAULT;
         }
-        if (tmo.tv_sec < 0 || tmo.tv_nsec < 0 || tmo.tv_nsec >= 1000000000LL) {
+        Kernel::Time::Duration tmo_duration{};
+        if (!Kernel::Time::Duration::from_linux_timespec(raw_tmo, tmo_duration)) {
             return ERR_EINVAL;
         }
         has_timeout = true;
-        if (tmo.tv_sec == 0 && tmo.tv_nsec == 0) {
+        if (tmo_duration.is_zero()) {
             zero_timeout = true;
         } else {
             const uint64_t freq = HAL::QemuVirt::GenericTimer::frequency_hz();
             deadline_ticks =
-                HAL::QemuVirt::GenericTimer::counter_ticks() + timespec_to_timer_ticks(tmo, freq);
+                HAL::QemuVirt::GenericTimer::counter_ticks() + tmo_duration.to_timer_ticks(freq);
         }
     }
 
     bool swapped_mask = false;
     const uint64_t saved_mask = proc->blocked_signals;
     if (user_sigpack != 0U) {
-        LinuxSigsetArgpack pack{};
+        linux_sigset_argpack pack{};
         if (Kernel::MM::copy_from_user(root_paddr, &pack, user_sigpack, sizeof(pack)) < 0) {
             return ERR_EFAULT;
         }

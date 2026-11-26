@@ -4,6 +4,7 @@
 #include "hal/mmu.hpp"
 #include "mm/AddressSpace.hpp"
 #include "process/Process.hpp"
+#include "time/Duration.hpp"
 #include "uapi/errno.hpp"
 #include "uapi/fs.hpp"
 #include "uapi/signal.hpp"
@@ -32,25 +33,9 @@ constexpr size_t MAX_FDSET_WORDS = MAX_FDSET_FDS / 64U;
 
 constexpr size_t POLL_STACK_THRESHOLD = 32U;
 
-// Transitional ABI type aliases (removed in Sub-Issue 1B)
-using UserIovec = ::linux_iovec;
-using LinuxStat = ::linux_stat;
-using LinuxDirent64Header = ::linux_dirent64_hdr;
-using LinuxSigAction = ::linux_sigaction;
-using LinuxTms = ::linux_tms;
-using LinuxUtsname = ::linux_utsname;
-using LinuxTimespec = ::linux_timespec;
-using LinuxTimeval = ::linux_timeval;
-using LinuxRusage = ::linux_rusage;
-using LinuxRlimit64 = ::linux_rlimit64;
-using LinuxPollFd = ::linux_pollfd;
-using LinuxSigsetArgpack = ::linux_sigset_argpack;
-using LinuxSysinfo = ::linux_sysinfo;
-
 // Shared syscall helper functions
 void wait_for_event_or_tick() noexcept;
-[[nodiscard]] uint64_t timespec_to_timer_ticks(const LinuxTimespec& time_spec,
-                                               uint64_t freq) noexcept;
+[[nodiscard]] Kernel::Time::Duration monotonic_now() noexcept;
 [[nodiscard]] uint64_t monotonic_now_ns() noexcept;
 
 [[nodiscard]] size_t cstr_len(const char* str) noexcept;
@@ -61,7 +46,7 @@ void cstr_copy(char* dst, const char* src, size_t cap) noexcept;
                                       size_t out_cap) noexcept;
 [[nodiscard]] Kernel::FS::File* get_proc_file(Kernel::Process::Process* proc,
                                               uint64_t raw_fd) noexcept;
-void fill_stat_from_inode(const Kernel::FS::Inode& inode, LinuxStat& stat_out) noexcept;
+[[nodiscard]] linux_stat inode_to_linux_stat(const Kernel::FS::Inode& inode) noexcept;
 
 void unmap_and_free_range(Kernel::MM::AddressSpace& adrsp, uintptr_t start_vaddr,
                           uintptr_t end_vaddr, size_t page_size) noexcept;
