@@ -324,4 +324,31 @@ void build_dentry_path(const Kernel::FS::Dentry* target, char* out, size_t cap) 
                                     uint64_t flags) noexcept;
 [[nodiscard]] int64_t sys_uname(uintptr_t user_buf) noexcept;
 
+// Signal syscalls (SignalSyscalls.cpp)
+[[nodiscard]] int64_t sys_rt_sigaction(uint64_t sig, uintptr_t user_act, uintptr_t user_oldact,
+                                       uint64_t sigsetsize) noexcept;
+[[nodiscard]] int64_t sys_rt_sigprocmask(uint64_t how, uintptr_t user_set, uintptr_t user_oldset,
+                                         uint64_t sigsetsize) noexcept;
+[[nodiscard]] int64_t sys_rt_sigreturn(HAL::CpuContext& ctx) noexcept;
+[[nodiscard]] int64_t sys_kill(int32_t pid, uint64_t sig) noexcept;
+
+// Process lifecycle & job-control syscalls (ProcessSyscalls.cpp)
+[[noreturn]] void sys_exit(uint64_t raw_status) noexcept;
+[[nodiscard]] int64_t sys_clone(HAL::CpuContext& parent_ctx, uint64_t flags, uintptr_t child_stack,
+                                uintptr_t parent_tid, uint64_t tls, uintptr_t child_tid) noexcept;
+[[nodiscard]] int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user_argv,
+                                 uintptr_t user_envp) noexcept;
+[[nodiscard]] int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
+                                uintptr_t user_rusage) noexcept;
+[[nodiscard]] int64_t sys_getpid() noexcept;
+[[nodiscard]] int64_t sys_getppid() noexcept;
+[[nodiscard]] int64_t sys_set_tid_address(uintptr_t tidptr) noexcept;
+[[nodiscard]] int64_t sys_setpgid(int32_t raw_pid, int32_t raw_pgid) noexcept;
+[[nodiscard]] int64_t sys_getpgid(int32_t raw_pid) noexcept;
+[[nodiscard]] int64_t sys_getsid(int32_t raw_pid) noexcept;
+[[nodiscard]] int64_t sys_setsid() noexcept;
+[[nodiscard]] int64_t sys_umask(uint64_t mask) noexcept;
+[[nodiscard]] int64_t sys_prlimit64(int32_t pid, uint32_t resource, uintptr_t user_new_rlim,
+                                    uintptr_t user_old_rlim) noexcept;
+
 } // namespace Kernel::Syscalls

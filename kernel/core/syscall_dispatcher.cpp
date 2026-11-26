@@ -1747,837 +1747,6 @@ int64_t sys_pselect6(int32_t nfds, uintptr_t user_rfds, uintptr_t user_wfds, uin
     }
 }
 
-// ==========================================================================
-// Signals & Process Group Job Control
-// ==========================================================================
-
-int64_t sys_rt_sigaction(uint64_t sig, uintptr_t user_act, uintptr_t user_oldact,
-                         uint64_t sigsetsize) noexcept {
-    auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr) {
-        return ERR_EINVAL;
-    }
-    if (sigsetsize != sizeof(uint64_t) || sig == 0U || sig > Kernel::Process::MAX_SIGNALS) {
-        return ERR_EINVAL;
-    }
-
-    const size_t idx = static_cast<size_t>(sig - 1U);
-    if (user_oldact != 0U) {
-        const auto& cur = proc->sigactions[idx];
-        const LinuxSigAction out{
-            .sa_handler = cur.handler,
-            .sa_flags = cur.flags,
-            .sa_restorer = cur.restorer,
-            .sa_mask = cur.mask,
-        };
-        if (Kernel::MM::copy_to_user(proc->address_space, user_oldact, &out, sizeof(out)) < 0) {
-            return ERR_EFAULT;
-        }
-    }
-
-    if (user_act != 0U) {
-        if (sig == Kernel::Process::SIG_KILL || sig == Kernel::Process::SIG_STOP) {
-            return ERR_EINVAL;
-        }
-        LinuxSigAction dest{};
-        if (Kernel::MM::copy_from_user(proc->address_space, &dest, user_act, sizeof(dest)) < 0) {
-            return ERR_EFAULT;
-        }
-        proc->sigactions[idx] = Kernel::Process::SigAction{
-            .handler = dest.sa_handler,
-            .flags = dest.sa_flags,
-            .restorer = dest.sa_restorer,
-            .mask = dest.sa_mask,
-        };
-    }
-
-    return 0;
-}
-
-int64_t sys_rt_sigprocmask(uint64_t how, uintptr_t user_set, uintptr_t user_oldset,
-                           uint64_t sigsetsize) noexcept {
-    auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr || sigsetsize != sizeof(uint64_t)) {
-        return ERR_EINVAL;
-    }
-
-    if (user_oldset != 0U) {
-        const uint64_t old_mask = proc->blocked_signals;
-        if (Kernel::MM::copy_to_user(proc->address_space, user_oldset, &old_mask,
-                                     sizeof(old_mask)) < 0) {
-            return ERR_EFAULT;
-        }
-    }
-
-    if (user_set != 0U) {
-        uint64_t set_val = 0ULL;
-        if (Kernel::MM::copy_from_user(proc->address_space, &set_val, user_set, sizeof(set_val)) <
-            0) {
-            return ERR_EFAULT;
-        }
-        constexpr uint64_t UNMASKABLE =
-            (1ULL << (Kernel::Process::SIG_KILL - 1U)) | (1ULL << (Kernel::Process::SIG_STOP - 1U));
-        set_val &= ~UNMASKABLE;
-
-        if (how == SIG_BLOCK) {
-            proc->blocked_signals |= set_val;
-        } else if (how == SIG_UNBLOCK) {
-            proc->blocked_signals &= ~set_val;
-        } else if (how == SIG_SETMASK) {
-            proc->blocked_signals = set_val;
-        } else {
-            return ERR_EINVAL;
-        }
-    }
-
-    return 0;
-}
-
-int64_t sys_kill(int32_t pid, uint64_t sig) noexcept {
-    auto* const caller = Kernel::Process::current_process();
-    if (caller == nullptr) {
-        return ERR_EINVAL;
-    }
-    if (sig > Kernel::Process::MAX_SIGNALS) {
-        return ERR_EINVAL;
-    }
-
-    bool delivered_any = false;
-    if (pid > 0) {
-        auto* const target = Kernel::Process::find_process_by_pid(static_cast<uint32_t>(pid));
-        if (target == nullptr || target->state == Kernel::Process::ProcessState::Zombie) {
-            return ERR_ESRCH;
-        }
-        if (sig > 0U) {
-            Kernel::Process::send_signal(*target, static_cast<uint32_t>(sig));
-        }
-        return 0;
-    }
-
-    const uint32_t target_pgid = (pid == 0) ? caller->pgid : static_cast<uint32_t>(-pid);
-    for (auto* proc = Kernel::Process::process_list_head(); proc != nullptr;
-         proc = proc->global_next) {
-        if (proc->state == Kernel::Process::ProcessState::Unused ||
-            proc->state == Kernel::Process::ProcessState::Zombie) {
-            continue;
-        }
-        if (pid == -1) {
-            if (proc->pid > 1U && proc != caller) {
-                if (sig > 0U) {
-                    Kernel::Process::send_signal(*proc, static_cast<uint32_t>(sig));
-                }
-                delivered_any = true;
-            }
-        } else if (proc->pgid == target_pgid) {
-            if (sig > 0U) {
-                Kernel::Process::send_signal(*proc, static_cast<uint32_t>(sig));
-            }
-            delivered_any = true;
-        }
-    }
-
-    return delivered_any ? 0 : ERR_ESRCH;
-}
-
-int64_t sys_setpgid(int32_t raw_pid, int32_t raw_pgid) noexcept {
-    auto* const caller = Kernel::Process::current_process();
-    if (caller == nullptr || raw_pid < 0 || raw_pgid < 0) {
-        return ERR_EINVAL;
-    }
-
-    const uint32_t target_pid = (raw_pid == 0) ? caller->pid : static_cast<uint32_t>(raw_pid);
-    auto* const target = Kernel::Process::find_process_by_pid(target_pid);
-    if (target == nullptr) {
-        return ERR_ESRCH;
-    }
-    if (target != caller && target->ppid != caller->pid) {
-        return ERR_ESRCH;
-    }
-
-    const uint32_t new_pgid = (raw_pgid == 0) ? target->pid : static_cast<uint32_t>(raw_pgid);
-    target->pgid = new_pgid;
-    return 0;
-}
-
-int64_t sys_getpgid(int32_t raw_pid) noexcept {
-    auto* const caller = Kernel::Process::current_process();
-    if (caller == nullptr || raw_pid < 0) {
-        return ERR_EINVAL;
-    }
-    if (raw_pid == 0) {
-        return static_cast<int64_t>(caller->pgid);
-    }
-    auto* const target = Kernel::Process::find_process_by_pid(static_cast<uint32_t>(raw_pid));
-    if (target == nullptr) {
-        return ERR_ESRCH;
-    }
-    return static_cast<int64_t>(target->pgid);
-}
-
-int64_t sys_getsid(int32_t raw_pid) noexcept {
-    auto* const caller = Kernel::Process::current_process();
-    if (caller == nullptr || raw_pid < 0) {
-        return ERR_EINVAL;
-    }
-    if (raw_pid == 0) {
-        return static_cast<int64_t>(caller->sid);
-    }
-    auto* const target = Kernel::Process::find_process_by_pid(static_cast<uint32_t>(raw_pid));
-    if (target == nullptr) {
-        return ERR_ESRCH;
-    }
-    return static_cast<int64_t>(target->sid);
-}
-
-int64_t sys_setsid() noexcept {
-    auto* const caller = Kernel::Process::current_process();
-    if (caller == nullptr) {
-        return ERR_EINVAL;
-    }
-    if (caller->pgid == caller->pid) {
-        return ERR_EPERM;
-    }
-    caller->sid = caller->pid;
-    caller->pgid = caller->pid;
-    return static_cast<int64_t>(caller->sid);
-}
-
-// ==========================================================================
-// Process Lifecycle, Memory Management, Resource Limits & System Identity
-// ==========================================================================
-
-[[noreturn]] void sys_exit(uint64_t raw_status) noexcept {
-    const auto exit_code =
-        static_cast<int64_t>(static_cast<int32_t>(static_cast<uint32_t>(raw_status)));
-    if (Kernel::Process::current_process() != nullptr) {
-        Kernel::Process::exit_current_process(exit_code);
-    }
-    HAL::get_cpu().return_to_kernel(exit_code);
-    while (true) {
-        HAL::get_cpu().halt();
-    }
-}
-
-int64_t sys_getpid() noexcept {
-    const auto* const proc = Kernel::Process::current_process();
-    return (proc != nullptr) ? static_cast<int64_t>(proc->pid) : 0;
-}
-
-int64_t sys_getppid() noexcept {
-    const auto* const proc = Kernel::Process::current_process();
-    return (proc != nullptr) ? static_cast<int64_t>(proc->ppid) : 0;
-}
-
-int64_t sys_umask(uint64_t mask) noexcept {
-    auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr) {
-        return 0022;
-    }
-    const uint32_t old_mask = proc->umask;
-    proc->umask = static_cast<uint32_t>(mask) & 0777U;
-    return static_cast<int64_t>(old_mask);
-}
-
-int64_t sys_prlimit64(int32_t pid, uint32_t resource, uintptr_t user_new_rlim,
-                      uintptr_t user_old_rlim) noexcept {
-    auto* const caller = Kernel::Process::current_process();
-    if (caller == nullptr) {
-        return ERR_EINVAL;
-    }
-    if (pid < 0 || resource >= Kernel::Process::RLIM_NLIMITS) {
-        return ERR_EINVAL;
-    }
-
-    Kernel::Process::Process* target = caller;
-    if (pid > 0 && static_cast<uint32_t>(pid) != caller->pid) {
-        target = Kernel::Process::find_process_by_pid(static_cast<uint32_t>(pid));
-        if (target == nullptr || target->state == Kernel::Process::ProcessState::Zombie) {
-            return ERR_ESRCH;
-        }
-    }
-
-    LinuxRlimit64 current_rlim{
-        .rlim_cur = Kernel::Process::RLIM64_INFINITY,
-        .rlim_max = Kernel::Process::RLIM64_INFINITY,
-    };
-
-    switch (resource) {
-    case Kernel::Process::RLIMIT_NOFILE:
-        current_rlim.rlim_cur = target->rlim_nofile_cur;
-        current_rlim.rlim_max = target->rlim_nofile_max;
-        break;
-    case Kernel::Process::RLIMIT_STACK:
-        current_rlim.rlim_cur = Kernel::Process::DEFAULT_USER_STACK_SIZE;
-        current_rlim.rlim_max = Kernel::Process::DEFAULT_USER_STACK_SIZE;
-        break;
-    case Kernel::Process::RLIMIT_NPROC:
-        current_rlim.rlim_cur = target->rlim_nproc_cur;
-        current_rlim.rlim_max = target->rlim_nproc_max;
-        break;
-    case Kernel::Process::RLIMIT_CORE:
-        current_rlim.rlim_cur = 0ULL;
-        current_rlim.rlim_max = 0ULL;
-        break;
-    default:
-        break;
-    }
-
-    if (user_old_rlim != 0U) {
-        if (Kernel::MM::copy_to_user(caller->address_space, user_old_rlim, &current_rlim,
-                                     sizeof(current_rlim)) < 0) {
-            return ERR_EFAULT;
-        }
-    }
-
-    if (user_new_rlim != 0U) {
-        LinuxRlimit64 new_rlim{};
-        if (Kernel::MM::copy_from_user(caller->address_space, &new_rlim, user_new_rlim,
-                                       sizeof(new_rlim)) < 0) {
-            return ERR_EFAULT;
-        }
-        if (new_rlim.rlim_cur > new_rlim.rlim_max) {
-            return ERR_EINVAL;
-        }
-        if (resource == Kernel::Process::RLIMIT_NOFILE) {
-            if (new_rlim.rlim_max > target->rlim_nofile_max ||
-                new_rlim.rlim_max > Kernel::Process::DEFAULT_RLIMIT_NOFILE_MAX) {
-                return ERR_EPERM;
-            }
-            target->rlim_nofile_cur = new_rlim.rlim_cur;
-            target->rlim_nofile_max = new_rlim.rlim_max;
-        } else if (resource == Kernel::Process::RLIMIT_NPROC) {
-            if (new_rlim.rlim_max > target->rlim_nproc_max) {
-                return ERR_EPERM;
-            }
-            target->rlim_nproc_cur = new_rlim.rlim_cur;
-            target->rlim_nproc_max = new_rlim.rlim_max;
-        }
-    }
-
-    return 0;
-}
-
-int64_t sys_clone(HAL::CpuContext& parent_ctx, uint64_t flags, uintptr_t child_stack,
-                  uintptr_t parent_tid, uint64_t tls, uintptr_t child_tid) noexcept {
-    (void)tls;
-
-    auto* const parent = Kernel::Process::current_process();
-    if (parent == nullptr) {
-        return ERR_EINVAL;
-    }
-
-    constexpr uint64_t UNSUPPORTED_CLONE_FLAGS =
-        CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_VFORK | CLONE_THREAD;
-    constexpr uint64_t ALLOWED_CLONE_FLAGS =
-        CSIGNAL_MASK | CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID;
-
-    if ((flags & UNSUPPORTED_CLONE_FLAGS) != 0ULL || (flags & ~ALLOWED_CLONE_FLAGS) != 0ULL) {
-        return ERR_EINVAL;
-    }
-
-    const uint64_t exit_sig = flags & CSIGNAL_MASK;
-    if (exit_sig != 0ULL && exit_sig != SIGCHLD_NUM) {
-        return ERR_EINVAL;
-    }
-
-    if (child_stack != 0U && child_stack >= Kernel::MM::user_addr_space_limit()) {
-        return ERR_EINVAL;
-    }
-
-    if (Kernel::Process::active_process_count() >= parent->rlim_nproc_cur) {
-        return ERR_EAGAIN;
-    }
-
-    auto* const child = Kernel::Process::allocate_process(parent->pid);
-    if (child == nullptr) {
-        return ERR_EAGAIN;
-    }
-
-    auto clone_as_res = parent->address_space.clone();
-    if (!clone_as_res.is_ok()) {
-        Kernel::Process::release_process(*child);
-        return ERR_ENOMEM;
-    }
-
-    child->address_space = static_cast<Kernel::MM::AddressSpace&&>(clone_as_res.value());
-    child->pgid = parent->pgid;
-    child->sid = parent->sid;
-    child->umask = parent->umask;
-    child->rlim_nofile_cur = parent->rlim_nofile_cur;
-    child->rlim_nofile_max = parent->rlim_nofile_max;
-    child->rlim_nproc_cur = parent->rlim_nproc_cur;
-    child->rlim_nproc_max = parent->rlim_nproc_max;
-    child->entry_point = parent->entry_point;
-    child->brk_start = parent->brk_start;
-    child->brk_current = parent->brk_current;
-    child->mmap_next_vaddr = parent->mmap_next_vaddr;
-    child->user_stack = Kernel::Process::UserStack{};
-    child->blocked_signals = parent->blocked_signals;
-    cstr_copy(child->cwd, parent->cwd, sizeof(child->cwd));
-    cstr_copy(child->exe_path, parent->exe_path, sizeof(child->exe_path));
-
-    for (size_t i = 0U; i < Kernel::Process::MAX_SIGNALS; ++i) {
-        child->sigactions[i] = parent->sigactions[i];
-    }
-
-    if (parent->fd_table != nullptr && parent->fd_capacity > 0U) {
-        if (parent->fd_capacity > child->fd_capacity) {
-            if (!Kernel::Process::ensure_fd_capacity(*child, parent->fd_capacity)) {
-                Kernel::Process::release_process(*child);
-                return ERR_ENOMEM;
-            }
-        }
-        for (size_t idx = 0U; idx < parent->fd_capacity; ++idx) {
-            Kernel::Process::copy_fd_slot(child->fd_table[idx], parent->fd_table[idx], false);
-        }
-    }
-
-    const auto child_pid_s32 = static_cast<int32_t>(child->pid);
-    if ((flags & CLONE_PARENT_SETTID) != 0ULL && parent_tid != 0U) {
-        const int64_t tid_res = Kernel::MM::copy_to_user(parent->address_space, parent_tid,
-                                                         &child_pid_s32, sizeof(child_pid_s32));
-        if (tid_res < 0) {
-            Kernel::Process::release_process(*child);
-            return ERR_EFAULT;
-        }
-    }
-
-    if ((flags & CLONE_CHILD_SETTID) != 0ULL && child_tid != 0U) {
-        const int64_t tid_res = Kernel::MM::copy_to_user(child->address_space, child_tid,
-                                                         &child_pid_s32, sizeof(child_pid_s32));
-        if (tid_res < 0) {
-            Kernel::Process::release_process(*child);
-            return ERR_EFAULT;
-        }
-    }
-
-    auto& cpu = HAL::get_cpu();
-    child->context = parent_ctx;
-    if (child_stack != 0U) {
-        cpu.set_user_stack_pointer(child->context, child_stack);
-    }
-    cpu.set_syscall_return(child->context, 0);
-    child->kctx_initialized = false;
-    Kernel::Scheduler::enqueue(child);
-
-    return static_cast<int64_t>(child->pid);
-}
-
-int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user_argv,
-                   uintptr_t user_envp) noexcept {
-    auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr) {
-        return ERR_EINVAL;
-    }
-
-    const size_t page_size = HAL::get_platform_info().page_size;
-    const uintptr_t scratch_paddr = Kernel::MM::alloc_frame();
-    if (scratch_paddr == 0U) {
-        return ERR_ENOMEM;
-    }
-
-    auto* const scratch_kva = reinterpret_cast<char*>(Kernel::MM::phys_to_virt(scratch_paddr));
-    char* const raw_path_buf = scratch_kva;
-    char* const string_pool = scratch_kva + EXEC_MAX_PATH_LEN;
-    const size_t string_pool_cap = page_size - EXEC_MAX_PATH_LEN;
-
-    const char* argv_kptrs[EXEC_MAX_ARGS + 3U]{};
-    const char* envp_kptrs[EXEC_MAX_ENVS + 1U]{};
-
-    const uintptr_t caller_root = proc->address_space.root_paddr();
-    size_t path_len = 0U;
-    const int64_t path_res =
-        copy_user_cstring(caller_root, user_pathname, raw_path_buf, EXEC_MAX_PATH_LEN, path_len);
-    if (path_res < 0) {
-        Kernel::MM::free_frame(scratch_paddr);
-        return path_res;
-    }
-
-    char canon_path[Kernel::Process::MAX_PATH_LEN]{};
-    if (!normalize_vfs_path(proc->cwd, raw_path_buf, canon_path, sizeof(canon_path))) {
-        Kernel::MM::free_frame(scratch_paddr);
-        return ERR_ENOENT;
-    }
-
-    size_t pool_offset = 0U;
-    int argc = 0;
-    const int64_t argv_res =
-        stage_user_string_array(caller_root, user_argv, argv_kptrs, EXEC_MAX_ARGS, string_pool,
-                                string_pool_cap, pool_offset, argc);
-    if (argv_res < 0) {
-        Kernel::MM::free_frame(scratch_paddr);
-        return argv_res;
-    }
-
-    int envc = 0;
-    const int64_t envp_res =
-        stage_user_string_array(caller_root, user_envp, envp_kptrs, EXEC_MAX_ENVS, string_pool,
-                                string_pool_cap, pool_offset, envc);
-    if (envp_res < 0) {
-        Kernel::MM::free_frame(scratch_paddr);
-        return envp_res;
-    }
-    (void)envc;
-
-    auto open_and_read_exec = [&](const char* path, uintptr_t& out_buf_paddr, size_t& out_num_pages,
-                                  size_t& out_file_size) -> int64_t {
-        out_buf_paddr = 0U;
-        out_num_pages = 0U;
-        out_file_size = 0U;
-
-        Kernel::FS::File* exec_file = nullptr;
-        const int32_t orc = Kernel::FS::vfs_open(Kernel::FS::StringView(path),
-                                                 Kernel::FS::kOpenReadOnly, 0U, &exec_file);
-        if (orc != Kernel::FS::kOk) {
-            return orc;
-        }
-        if (exec_file->inode == nullptr || !exec_file->inode->is_reg() ||
-            exec_file->inode->size == 0U) {
-            (void)Kernel::FS::vfs_close(exec_file);
-            return ERR_ENOEXEC;
-        }
-
-        const auto file_size = static_cast<size_t>(exec_file->inode->size);
-        const size_t num_pages = (file_size + page_size - 1U) / page_size;
-        const uintptr_t buf_paddr = Kernel::MM::alloc_frames(num_pages);
-        if (buf_paddr == 0U) {
-            (void)Kernel::FS::vfs_close(exec_file);
-            return ERR_ENOMEM;
-        }
-
-        auto* const dst = reinterpret_cast<uint8_t*>(Kernel::MM::phys_to_virt(buf_paddr));
-        size_t total = 0U;
-        while (total < file_size) {
-            const int64_t nread = Kernel::FS::vfs_read(exec_file, dst + total, file_size - total);
-            if (nread <= 0) {
-                Kernel::MM::free_frames(buf_paddr, num_pages);
-                (void)Kernel::FS::vfs_close(exec_file);
-                return (nread < 0) ? nread : ERR_ENOEXEC;
-            }
-            total += static_cast<size_t>(nread);
-        }
-        (void)Kernel::FS::vfs_close(exec_file);
-
-        out_buf_paddr = buf_paddr;
-        out_num_pages = num_pages;
-        out_file_size = file_size;
-        return 0;
-    };
-
-    uintptr_t exec_buf_paddr = 0U;
-    size_t exec_buf_pages = 0U;
-    size_t exec_file_size = 0U;
-    const int64_t read_exec_res =
-        open_and_read_exec(canon_path, exec_buf_paddr, exec_buf_pages, exec_file_size);
-    if (read_exec_res < 0) {
-        Kernel::MM::free_frame(scratch_paddr);
-        return read_exec_res;
-    }
-
-    const auto* exec_bytes =
-        reinterpret_cast<const uint8_t*>(Kernel::MM::phys_to_virt(exec_buf_paddr));
-
-    // Handle '#!' shebang scripts (e.g., #!/bin/bash or #!/bin/sh)
-    char shebang_interp[Kernel::Process::MAX_PATH_LEN]{};
-    char shebang_arg[Kernel::Process::MAX_PATH_LEN]{};
-    bool has_shebang_arg = false;
-    char exec_binary_path[Kernel::Process::MAX_PATH_LEN]{};
-    cstr_copy(exec_binary_path, canon_path, sizeof(exec_binary_path));
-
-    if (exec_file_size >= 2U && exec_bytes[0] == '#' && exec_bytes[1] == '!') {
-        size_t pos = 2U;
-        while (pos < exec_file_size && (exec_bytes[pos] == ' ' || exec_bytes[pos] == '\t')) {
-            pos++;
-        }
-        size_t interp_len = 0U;
-        while (pos < exec_file_size && exec_bytes[pos] != ' ' && exec_bytes[pos] != '\t' &&
-               exec_bytes[pos] != '\n' && exec_bytes[pos] != '\r') {
-            if (interp_len + 1U >= sizeof(shebang_interp)) {
-                Kernel::MM::free_frames(exec_buf_paddr, exec_buf_pages);
-                Kernel::MM::free_frame(scratch_paddr);
-                return ERR_ENOEXEC;
-            }
-            shebang_interp[interp_len++] = static_cast<char>(exec_bytes[pos++]);
-        }
-        shebang_interp[interp_len] = '\0';
-        if (interp_len == 0U) {
-            Kernel::MM::free_frames(exec_buf_paddr, exec_buf_pages);
-            Kernel::MM::free_frame(scratch_paddr);
-            return ERR_ENOEXEC;
-        }
-
-        while (pos < exec_file_size && (exec_bytes[pos] == ' ' || exec_bytes[pos] == '\t')) {
-            pos++;
-        }
-        size_t arg_len = 0U;
-        while (pos < exec_file_size && exec_bytes[pos] != '\n' && exec_bytes[pos] != '\r') {
-            if (arg_len + 1U < sizeof(shebang_arg)) {
-                shebang_arg[arg_len++] = static_cast<char>(exec_bytes[pos]);
-            }
-            pos++;
-        }
-        while (arg_len > 0U &&
-               (shebang_arg[arg_len - 1U] == ' ' || shebang_arg[arg_len - 1U] == '\t')) {
-            arg_len--;
-        }
-        shebang_arg[arg_len] = '\0';
-        has_shebang_arg = (arg_len > 0U);
-
-        Kernel::MM::free_frames(exec_buf_paddr, exec_buf_pages);
-        exec_buf_paddr = 0U;
-
-        if (!normalize_vfs_path("/", shebang_interp, exec_binary_path, sizeof(exec_binary_path))) {
-            Kernel::MM::free_frame(scratch_paddr);
-            return ERR_ENOENT;
-        }
-        const int64_t interp_res =
-            open_and_read_exec(exec_binary_path, exec_buf_paddr, exec_buf_pages, exec_file_size);
-        if (interp_res < 0) {
-            Kernel::MM::free_frame(scratch_paddr);
-            return interp_res;
-        }
-        exec_bytes = reinterpret_cast<const uint8_t*>(Kernel::MM::phys_to_virt(exec_buf_paddr));
-
-        const int extra = has_shebang_arg ? 2 : 1;
-        if (static_cast<size_t>(argc) + static_cast<size_t>(extra) > EXEC_MAX_ARGS) {
-            Kernel::MM::free_frames(exec_buf_paddr, exec_buf_pages);
-            Kernel::MM::free_frame(scratch_paddr);
-            return ERR_E2BIG;
-        }
-        for (int idx = argc; idx >= 1; --idx) {
-            argv_kptrs[idx + extra] = argv_kptrs[idx];
-        }
-        argv_kptrs[0] = exec_binary_path;
-        if (has_shebang_arg) {
-            argv_kptrs[1] = shebang_arg;
-            argv_kptrs[2] = canon_path;
-        } else {
-            argv_kptrs[1] = canon_path;
-        }
-        argc += extra;
-    }
-
-    auto load_res = Kernel::Loader::load_elf(exec_bytes, exec_file_size);
-    Kernel::MM::free_frames(exec_buf_paddr, exec_buf_pages);
-    if (!load_res.is_ok()) {
-        Kernel::MM::free_frame(scratch_paddr);
-        return (load_res.error() == Kernel::Loader::ElfLoaderError::OutOfMemory) ? ERR_ENOMEM
-                                                                                 : ERR_ENOEXEC;
-    }
-
-    auto loaded = static_cast<Kernel::Loader::LoadedElf&&>(load_res.value());
-    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(loaded.address_space);
-    if (!stack_res.is_ok()) {
-        loaded.address_space.destroy();
-        Kernel::MM::free_frame(scratch_paddr);
-        return ERR_ENOMEM;
-    }
-
-    auto new_stack = stack_res.value();
-    Kernel::Loader::Elf64_auxv_t auxv[Kernel::Process::STANDARD_AUXV_COUNT]{};
-    const size_t auxv_count =
-        Kernel::Process::populate_standard_auxv(loaded, auxv, Kernel::Process::STANDARD_AUXV_COUNT);
-
-    auto abi_res = Kernel::Process::UserStackBuilder::build_abi_layout(
-        new_stack, argc, argv_kptrs, envp_kptrs, auxv, auxv_count);
-    if (!abi_res.is_ok()) {
-        if (!loaded.address_space.is_valid() && new_stack.phys_base != 0U &&
-            new_stack.num_pages > 0U) {
-            Kernel::MM::free_frames(new_stack.phys_base, new_stack.num_pages);
-        }
-        loaded.address_space.destroy();
-        Kernel::MM::free_frame(scratch_paddr);
-        return ERR_E2BIG;
-    }
-
-    if (proc->fd_table == nullptr &&
-        !Kernel::Process::init_fd_table(*proc, Kernel::Process::INITIAL_FD_CAPACITY)) {
-        if (!loaded.address_space.is_valid() && new_stack.phys_base != 0U &&
-            new_stack.num_pages > 0U) {
-            Kernel::MM::free_frames(new_stack.phys_base, new_stack.num_pages);
-        }
-        loaded.address_space.destroy();
-        Kernel::MM::free_frame(scratch_paddr);
-        return ERR_ENOMEM;
-    }
-
-    loaded.address_space.activate();
-
-    if (!proc->address_space.is_valid() && proc->user_stack.phys_base != 0U &&
-        proc->user_stack.num_pages > 0U) {
-        Kernel::MM::free_frames(proc->user_stack.phys_base, proc->user_stack.num_pages);
-    }
-    proc->address_space = static_cast<Kernel::MM::AddressSpace&&>(loaded.address_space);
-    cstr_copy(proc->exe_path, exec_binary_path, sizeof(proc->exe_path));
-
-    Kernel::Process::close_cloexec_fds(*proc);
-    for (size_t i = 0U; i < Kernel::Process::MAX_SIGNALS; ++i) {
-        if (proc->sigactions[i].handler != Kernel::Process::KERNEL_SIG_IGN) {
-            proc->sigactions[i] = Kernel::Process::SigAction{};
-        }
-    }
-
-    const auto platform = HAL::get_platform_info();
-    proc->entry_point = loaded.entry_point;
-    proc->user_stack = new_stack;
-    const uintptr_t new_brk = (loaded.max_vaddr != 0U) ? loaded.max_vaddr : platform.user_brk_base;
-    proc->brk_start = new_brk;
-    proc->brk_current = new_brk;
-    proc->mmap_next_vaddr = platform.user_mmap_base;
-
-    Kernel::Process::init_user_cpu_context(ctx, proc->entry_point, proc->user_stack.final_sp_el0,
-                                           proc->user_stack.argc, proc->user_stack.argv_vaddr);
-
-    Kernel::MM::free_frame(scratch_paddr);
-    return 0;
-}
-
-int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
-                  uintptr_t user_rusage) noexcept {
-    auto* const parent = Kernel::Process::current_process();
-    if (parent == nullptr) {
-        return ERR_EINVAL;
-    }
-
-    constexpr uint64_t ALLOWED_WAIT_OPTIONS = WAIT_WNOHANG | WAIT_WUNTRACED | WAIT_WCONTINUED;
-    if ((options & ~ALLOWED_WAIT_OPTIONS) != 0ULL) {
-        return ERR_EINVAL;
-    }
-
-    auto& cpu = HAL::get_cpu();
-    const bool irq_was_enabled = cpu.interrupts_enabled();
-
-    Kernel::Process::Process* target_child = nullptr;
-    int32_t encoded_wstatus = 0;
-    bool reap_child = false;
-
-    while (true) {
-        cpu.disable_interrupts();
-
-        bool has_matching_child = false;
-        Kernel::Process::Process* ready_child = nullptr;
-
-        for (auto* candidate = Kernel::Process::process_list_head(); candidate != nullptr;
-             candidate = candidate->global_next) {
-            if (candidate->state == Kernel::Process::ProcessState::Unused) {
-                continue;
-            }
-            if (candidate->ppid != parent->pid) {
-                continue;
-            }
-            if (target_pid > 0 && candidate->pid != static_cast<uint32_t>(target_pid)) {
-                continue;
-            }
-            if (target_pid == 0 && candidate->pgid != parent->pgid) {
-                continue;
-            }
-            if (target_pid < -1 && candidate->pgid != static_cast<uint32_t>(-target_pid)) {
-                continue;
-            }
-
-            has_matching_child = true;
-            if (candidate->state == Kernel::Process::ProcessState::Zombie) {
-                ready_child = candidate;
-                encoded_wstatus = static_cast<int32_t>(
-                    (static_cast<uint32_t>(candidate->exit_status) & 0xFFU) << 8U);
-                reap_child = true;
-                break;
-            }
-            if ((options & WAIT_WUNTRACED) != 0ULL &&
-                candidate->state == Kernel::Process::ProcessState::Stopped &&
-                !candidate->stop_reported) {
-                ready_child = candidate;
-                encoded_wstatus =
-                    static_cast<int32_t>(((candidate->stop_signal & 0xFFU) << 8U) | 0x7FU);
-                candidate->stop_reported = true;
-                reap_child = false;
-                break;
-            }
-            if ((options & WAIT_WCONTINUED) != 0ULL && candidate->continued) {
-                ready_child = candidate;
-                encoded_wstatus = 0xFFFF;
-                candidate->continued = false;
-                reap_child = false;
-                break;
-            }
-        }
-
-        if (!has_matching_child) {
-            if (irq_was_enabled) {
-                cpu.enable_interrupts();
-            }
-            return ERR_ECHILD;
-        }
-
-        if (ready_child != nullptr) {
-            target_child = ready_child;
-            break;
-        }
-
-        if ((options & WAIT_WNOHANG) != 0ULL) {
-            if (irq_was_enabled) {
-                cpu.enable_interrupts();
-            }
-            return 0;
-        }
-
-        if (Kernel::Process::has_unblocked_pending_signal(*parent)) {
-            if (irq_was_enabled) {
-                cpu.enable_interrupts();
-            }
-            return ERR_EINTR;
-        }
-
-        parent->child_wait_queue.sleep();
-    }
-
-    if (irq_was_enabled) {
-        cpu.enable_interrupts();
-    }
-
-    if (user_wstatus != 0U) {
-        const int64_t status_res = Kernel::MM::copy_to_user(
-            parent->address_space, user_wstatus, &encoded_wstatus, sizeof(encoded_wstatus));
-        if (status_res < 0) {
-            return ERR_EFAULT;
-        }
-    }
-
-    if (user_rusage != 0U) {
-        LinuxRusage rusage{};
-        const uint64_t child_user_usec =
-            static_cast<uint64_t>(target_child->utime + target_child->cutime) * 10000ULL;
-        const uint64_t child_sys_usec =
-            static_cast<uint64_t>(target_child->stime + target_child->cstime) * 10000ULL;
-        rusage.ru_utime.tv_sec = static_cast<int64_t>(child_user_usec / 1000000ULL);
-        rusage.ru_utime.tv_usec = static_cast<int64_t>(child_user_usec % 1000000ULL);
-        rusage.ru_stime.tv_sec = static_cast<int64_t>(child_sys_usec / 1000000ULL);
-        rusage.ru_stime.tv_usec = static_cast<int64_t>(child_sys_usec % 1000000ULL);
-        const int64_t rusage_res =
-            Kernel::MM::copy_to_user(parent->address_space, user_rusage, &rusage, sizeof(rusage));
-        if (rusage_res < 0) {
-            return ERR_EFAULT;
-        }
-    }
-
-    const uint32_t reported_pid = target_child->pid;
-    if (reap_child) {
-        parent->cutime += target_child->utime + target_child->cutime;
-        parent->cstime += target_child->stime + target_child->cstime;
-        Kernel::Process::release_process(*target_child);
-    }
-    return static_cast<int64_t>(reported_pid);
-}
-
-int64_t sys_set_tid_address(uintptr_t tidptr) noexcept {
-    auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr) {
-        return 0;
-    }
-    proc->clear_child_tid = tidptr;
-    return static_cast<int64_t>(proc->pid);
-}
-
 } // namespace
 
 namespace Kernel::Process {
@@ -2812,10 +1981,11 @@ class SyscallDispatcher : public HAL::TrapHandler {
 
         case SYS_EXIT:
         case SYS_EXIT_GROUP:
-            sys_exit(cpu.get_syscall_arg(ctx, 0U));
+            Kernel::Syscalls::sys_exit(cpu.get_syscall_arg(ctx, 0U));
 
         case SYS_SET_TID_ADDRESS:
-            ret_val = sys_set_tid_address(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)));
+            ret_val = Kernel::Syscalls::sys_set_tid_address(
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)));
             break;
 
         case SYS_NANOSLEEP:
@@ -2835,25 +2005,25 @@ class SyscallDispatcher : public HAL::TrapHandler {
             break;
 
         case SYS_KILL:
-            ret_val =
-                sys_kill(static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
-                         cpu.get_syscall_arg(ctx, 1U));
+            ret_val = Kernel::Syscalls::sys_kill(
+                static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
+                cpu.get_syscall_arg(ctx, 1U));
             break;
 
         case SYS_RT_SIGACTION:
-            ret_val = sys_rt_sigaction(
+            ret_val = Kernel::Syscalls::sys_rt_sigaction(
                 cpu.get_syscall_arg(ctx, 0U), static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 2U)), cpu.get_syscall_arg(ctx, 3U));
             break;
 
         case SYS_RT_SIGPROCMASK:
-            ret_val = sys_rt_sigprocmask(
+            ret_val = Kernel::Syscalls::sys_rt_sigprocmask(
                 cpu.get_syscall_arg(ctx, 0U), static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 2U)), cpu.get_syscall_arg(ctx, 3U));
             break;
 
         case SYS_RT_SIGRETURN:
-            ret_val = Kernel::Process::restore_signal_frame(ctx);
+            ret_val = Kernel::Syscalls::sys_rt_sigreturn(ctx);
             break;
 
         case SYS_TIMES:
@@ -2862,23 +2032,23 @@ class SyscallDispatcher : public HAL::TrapHandler {
             break;
 
         case SYS_SETPGID:
-            ret_val = sys_setpgid(
+            ret_val = Kernel::Syscalls::sys_setpgid(
                 static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
                 static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 1U))));
             break;
 
         case SYS_GETPGID:
-            ret_val = sys_getpgid(
+            ret_val = Kernel::Syscalls::sys_getpgid(
                 static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))));
             break;
 
         case SYS_GETSID:
-            ret_val = sys_getsid(
+            ret_val = Kernel::Syscalls::sys_getsid(
                 static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))));
             break;
 
         case SYS_SETSID:
-            ret_val = sys_setsid();
+            ret_val = Kernel::Syscalls::sys_setsid();
             break;
 
         case SYS_UNAME:
@@ -2893,15 +2063,15 @@ class SyscallDispatcher : public HAL::TrapHandler {
             break;
 
         case SYS_UMASK:
-            ret_val = sys_umask(cpu.get_syscall_arg(ctx, 0U));
+            ret_val = Kernel::Syscalls::sys_umask(cpu.get_syscall_arg(ctx, 0U));
             break;
 
         case SYS_GETPID:
-            ret_val = sys_getpid();
+            ret_val = Kernel::Syscalls::sys_getpid();
             break;
 
         case SYS_GETPPID:
-            ret_val = sys_getppid();
+            ret_val = Kernel::Syscalls::sys_getppid();
             break;
 
         case SYS_GETUID:
@@ -2940,31 +2110,32 @@ class SyscallDispatcher : public HAL::TrapHandler {
             break;
 
         case SYS_CLONE:
-            ret_val = sys_clone(ctx, cpu.get_syscall_arg(ctx, 0U),
-                                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
-                                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 2U)),
-                                cpu.get_syscall_arg(ctx, 3U),
-                                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 4U)));
+            ret_val = Kernel::Syscalls::sys_clone(
+                ctx, cpu.get_syscall_arg(ctx, 0U),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 2U)), cpu.get_syscall_arg(ctx, 3U),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 4U)));
             break;
 
         case SYS_EXECVE:
-            ret_val = sys_execve(ctx, static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)),
-                                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
-                                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 2U)));
+            ret_val = Kernel::Syscalls::sys_execve(
+                ctx, static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 2U)));
             if (ret_val == 0) {
                 return;
             }
             break;
 
         case SYS_WAIT4:
-            ret_val = sys_wait4(
+            ret_val = Kernel::Syscalls::sys_wait4(
                 static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)), cpu.get_syscall_arg(ctx, 2U),
                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 3U)));
             break;
 
         case SYS_PRLIMIT64:
-            ret_val = sys_prlimit64(
+            ret_val = Kernel::Syscalls::sys_prlimit64(
                 static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
                 static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 1U)),
                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 2U)),

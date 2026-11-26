@@ -4,6 +4,8 @@ SRCS_CXX += kernel/main.cpp \
             kernel/syscalls/SyscallHelpers.cpp \
             kernel/syscalls/MemorySyscalls.cpp \
             kernel/syscalls/TimeSyscalls.cpp \
+            kernel/syscalls/SignalSyscalls.cpp \
+            kernel/syscalls/ProcessSyscalls.cpp \
             arch/$(ARCH)/cpu.cpp \
             kernel/shell/shell.cpp \
             kernel/mm/pfa.cpp \
