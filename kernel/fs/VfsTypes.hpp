@@ -79,6 +79,99 @@ class StringView {
     size_t m_size{0U};
 };
 
+// Zero-overhead intrusive RAII smart pointer for VFS types providing retain()/release().
+template <typename T> class RefPtr final {
+  public:
+    constexpr RefPtr() noexcept = default;
+    // NOLINTNEXTLINE(hicpp-explicit-conversions)
+    constexpr RefPtr([[maybe_unused]] decltype(nullptr) null_ptr) noexcept {}
+
+    [[nodiscard]] static RefPtr adopt(T* raw) noexcept { return RefPtr(raw, AdoptTag{}); }
+
+    [[nodiscard]] static RefPtr retain_from(T* raw) noexcept {
+        if (raw != nullptr) {
+            raw->retain();
+        }
+        return RefPtr(raw, AdoptTag{});
+    }
+
+    ~RefPtr() noexcept { reset(); }
+
+    RefPtr(const RefPtr& other) noexcept : m_ptr(other.m_ptr) {
+        if (m_ptr != nullptr) {
+            m_ptr->retain();
+        }
+    }
+
+    RefPtr& operator=(const RefPtr& other) noexcept {
+        if (this != &other) {
+            reset();
+            m_ptr = other.m_ptr;
+            if (m_ptr != nullptr) {
+                m_ptr->retain();
+            }
+        }
+        return *this;
+    }
+
+    RefPtr(RefPtr&& other) noexcept : m_ptr(other.m_ptr) { other.m_ptr = nullptr; }
+
+    RefPtr& operator=(RefPtr&& other) noexcept {
+        if (this != &other) {
+            reset();
+            m_ptr = other.m_ptr;
+            other.m_ptr = nullptr;
+        }
+        return *this;
+    }
+
+    RefPtr& operator=([[maybe_unused]] decltype(nullptr) null_ptr) noexcept {
+        reset();
+        return *this;
+    }
+
+    void reset() noexcept {
+        if (m_ptr != nullptr) {
+            m_ptr->release();
+            m_ptr = nullptr;
+        }
+    }
+
+    [[nodiscard]] T* detach() noexcept {
+        T* const raw = m_ptr;
+        m_ptr = nullptr;
+        return raw;
+    }
+
+    [[nodiscard]] constexpr T* get() const noexcept { return m_ptr; }
+    [[nodiscard]] constexpr T* operator->() const noexcept { return m_ptr; }
+    [[nodiscard]] constexpr T& operator*() const noexcept { return *m_ptr; }
+    [[nodiscard]] explicit constexpr operator bool() const noexcept { return m_ptr != nullptr; }
+
+    [[nodiscard]] constexpr bool operator==(const RefPtr& other) const noexcept {
+        return m_ptr == other.m_ptr;
+    }
+    [[nodiscard]] constexpr bool operator!=(const RefPtr& other) const noexcept {
+        return m_ptr != other.m_ptr;
+    }
+    [[nodiscard]] constexpr bool operator==(const T* raw) const noexcept { return m_ptr == raw; }
+    [[nodiscard]] constexpr bool operator!=(const T* raw) const noexcept { return m_ptr != raw; }
+    [[nodiscard]] constexpr bool
+    operator==([[maybe_unused]] decltype(nullptr) null_ptr) const noexcept {
+        return m_ptr == nullptr;
+    }
+    [[nodiscard]] constexpr bool
+    operator!=([[maybe_unused]] decltype(nullptr) null_ptr) const noexcept {
+        return m_ptr != nullptr;
+    }
+
+  private:
+    struct AdoptTag {};
+    constexpr RefPtr(T* raw, [[maybe_unused]] AdoptTag tag) noexcept : m_ptr(raw) {}
+
+    T* m_ptr{nullptr};
+};
+
 // POSIX-compatible negative errno constants (freestanding-safe).
 inline constexpr int32_t kOk = 0;
 inline constexpr int32_t kEperm = -1;

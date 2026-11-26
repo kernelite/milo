@@ -75,7 +75,7 @@ HOST_KERNEL_SRCS := \
 	kernel/drivers/virtio/virtio_blk.cpp \
     kernel/fs/cpio.cpp \
 	kernel/fs/ext2/ext2.cpp \
-    kernel/fs/vfs.cpp \
+    kernel/fs/Vfs.cpp \
     kernel/fs/rootfs/rootfs.cpp \
     kernel/fs/devfs/devfs.cpp \
     kernel/fs/tmpfs/tmpfs.cpp \
