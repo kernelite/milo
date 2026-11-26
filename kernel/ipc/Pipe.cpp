@@ -179,7 +179,7 @@ int64_t Pipe::read(void* dst, size_t count, bool nonblock) noexcept {
         if (nonblock) {
             return Kernel::FS::kEagain;
         }
-        const auto* const cur = Kernel::Process::current_process();
+        const auto* const cur = Kernel::Process::Process::current();
         if (cur != nullptr && Kernel::Process::has_unblocked_pending_signal(*cur)) {
             return Kernel::FS::kEintr;
         }
@@ -219,7 +219,7 @@ int64_t Pipe::write(const void* src, size_t count, bool nonblock) noexcept {
     while (total_written < count) {
         if (m_readers == 0U) {
             m_read_wq.wake_all();
-            if (auto* const cur = Kernel::Process::current_process(); cur != nullptr) {
+            if (auto* const cur = Kernel::Process::Process::current(); cur != nullptr) {
                 Kernel::Process::send_signal(*cur, Kernel::Process::SIG_PIPE);
             }
             return (total_written > 0U) ? static_cast<int64_t>(total_written) : Kernel::FS::kEpipe;
@@ -227,7 +227,7 @@ int64_t Pipe::write(const void* src, size_t count, bool nonblock) noexcept {
 
         while (m_count == PIPE_BUF_SIZE) {
             if (m_readers == 0U) {
-                if (auto* const cur = Kernel::Process::current_process(); cur != nullptr) {
+                if (auto* const cur = Kernel::Process::Process::current(); cur != nullptr) {
                     Kernel::Process::send_signal(*cur, Kernel::Process::SIG_PIPE);
                 }
                 return (total_written > 0U) ? static_cast<int64_t>(total_written)
@@ -238,7 +238,7 @@ int64_t Pipe::write(const void* src, size_t count, bool nonblock) noexcept {
                 return (total_written > 0U) ? static_cast<int64_t>(total_written)
                                             : Kernel::FS::kEagain;
             }
-            const auto* const cur = Kernel::Process::current_process();
+            const auto* const cur = Kernel::Process::Process::current();
             if (cur != nullptr && Kernel::Process::has_unblocked_pending_signal(*cur)) {
                 return (total_written > 0U) ? static_cast<int64_t>(total_written)
                                             : Kernel::FS::kEintr;

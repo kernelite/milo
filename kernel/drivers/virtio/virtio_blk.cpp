@@ -215,7 +215,7 @@ int VirtioBlkDevice::submit_chunk(uint32_t type, uint64_t lba, void* buf,
     VirtioBlkRequest req{};
     req.completed.store(false, std::memory_order_relaxed);
     req.status = VIRTIO_BLK_S_UNSET;
-    if (auto* const proc = Process::current_process(); proc != nullptr) {
+    if (auto* const proc = Process::Process::current(); proc != nullptr) {
         req.waiter_pid = proc->pid();
     }
 
@@ -299,7 +299,7 @@ int VirtioBlkDevice::submit_chunk(uint32_t type, uint64_t lba, void* buf,
 
     while (!req.completed.load(std::memory_order_acquire)) {
         m_sleep_count.fetch_add(1ULL, std::memory_order_relaxed);
-        if (Process::current_process() != nullptr) {
+        if (Process::Process::current() != nullptr) {
             req.wait_queue.sleep();
         } else {
 #if defined(__aarch64__) && !defined(HOST_TEST)

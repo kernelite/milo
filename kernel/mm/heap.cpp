@@ -521,7 +521,7 @@ bool run_concurrent_refcount_test() noexcept {
     t1.join();
     t2.join();
 #else
-    auto* const thread_a = Kernel::Process::allocate_process(0U);
+    auto* const thread_a = Kernel::Process::Process::create(0U);
     if (thread_a == nullptr) {
         page_put(shared_frame);
         page_put(shared_frame);
@@ -529,9 +529,9 @@ bool run_concurrent_refcount_test() noexcept {
         return false;
     }
 
-    auto* const thread_b = Kernel::Process::allocate_process(0U);
+    auto* const thread_b = Kernel::Process::Process::create(0U);
     if (thread_b == nullptr) {
-        Kernel::Process::release_process(*thread_a);
+        Kernel::Process::Process::destroy(*thread_a);
         page_put(shared_frame);
         page_put(shared_frame);
         page_put(shared_frame);
@@ -552,8 +552,8 @@ bool run_concurrent_refcount_test() noexcept {
     Kernel::Scheduler::enqueue(thread_b);
     Kernel::Scheduler::run_until_idle();
 
-    Kernel::Process::release_process(*thread_a);
-    Kernel::Process::release_process(*thread_b);
+    Kernel::Process::Process::destroy(*thread_a);
+    Kernel::Process::Process::destroy(*thread_b);
 #endif
 
     const bool workers_ok =

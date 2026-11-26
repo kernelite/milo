@@ -153,7 +153,7 @@ void launch_initrd_shell(const char* bin_path, const char* argv0, const char* sh
         return;
     }
 
-    auto* const proc = Kernel::Process::allocate_process(0U);
+    auto* const proc = Kernel::Process::Process::create(0U);
     if (proc == nullptr) {
         load_res->address_space.destroy();
         print_str("[ERROR] Failed to allocate PCB.\r\n");
@@ -166,11 +166,11 @@ void launch_initrd_shell(const char* bin_path, const char* argv0, const char* sh
     const size_t auxv_count = Kernel::Process::populate_standard_auxv(
         *load_res, auxv, Kernel::Process::STANDARD_AUXV_COUNT);
 
-    Kernel::Process::attach_loaded_elf(*proc, static_cast<Kernel::Loader::LoadedElf&&>(*load_res));
+    proc->attach_elf(static_cast<Kernel::Loader::LoadedElf&&>(*load_res));
 
     auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space());
     if (!stack_res.is_ok()) {
-        Kernel::Process::release_process(*proc);
+        Kernel::Process::Process::destroy(*proc);
         print_str("[ERROR] Failed to allocate user stack.\r\n");
         return;
     }
@@ -182,7 +182,7 @@ void launch_initrd_shell(const char* bin_path, const char* argv0, const char* sh
     if (!Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack(), 1, argv, envp,
                                                              auxv, auxv_count)
              .is_ok()) {
-        Kernel::Process::release_process(*proc);
+        Kernel::Process::Process::destroy(*proc);
         print_str("[ERROR] Failed to build System V ABI stack.\r\n");
         return;
     }
@@ -197,10 +197,10 @@ void launch_initrd_shell(const char* bin_path, const char* argv0, const char* sh
     print_str("[KERNEL] Launching interactive ");
     print_str(bin_path);
     print_str("...\r\n");
-    const int64_t exit_status = Kernel::Process::execute_process(*proc);
+    const int64_t exit_status = proc->execute();
 
     Kernel::Process::set_foreground_pgid(prev_fg_pgid);
-    Kernel::Process::release_process(*proc);
+    Kernel::Process::Process::destroy(*proc);
 
     print_str("\r\n[KERNEL] ");
     print_str(argv0);
@@ -231,7 +231,7 @@ void cmd_test_blk() noexcept {
         tx_buf[i] = static_cast<uint8_t>((i * 7U) ^ 0x3DU);
     }
 
-    const auto* const cur = Kernel::Process::current_process();
+    const auto* const cur = Kernel::Process::Process::current();
     const uint64_t ticks_before = Kernel::Scheduler::timer_ticks();
     const uint64_t sleeps_before = blk->sleep_count();
     const uint64_t irqs_before = blk->irq_completions();
@@ -877,9 +877,9 @@ void cmd_test_dynamic_io() noexcept {
     print_str("\r\n[TEST] Running Dynamic I/O Scalability & Zero-Leak Suite...\r\n");
 
     const size_t pages_before = Kernel::MM::pfa_free_pages_count();
-    const size_t procs_before = Kernel::Process::active_process_count();
+    const size_t procs_before = Kernel::Process::Process::active_count();
 
-    auto* const proc = Kernel::Process::allocate_process(0U);
+    auto* const proc = Kernel::Process::Process::create(0U);
     assert_test(proc != nullptr && proc->fds().capacity() == Kernel::Process::INITIAL_FD_CAPACITY,
                 "PCB initialized dynamic fd_table with 16 slots");
     if (proc == nullptr) {
@@ -941,9 +941,9 @@ void cmd_test_dynamic_io() noexcept {
         proc->fds().close(static_cast<size_t>(read_fds[i]));
         proc->fds().close(static_cast<size_t>(write_fds[i]));
     }
-    Kernel::Process::release_process(*proc);
+    Kernel::Process::Process::destroy(*proc);
 
-    assert_test(Kernel::Process::active_process_count() == procs_before,
+    assert_test(Kernel::Process::Process::active_count() == procs_before,
                 "Process table count returned to baseline");
     assert_test(Kernel::MM::pfa_free_pages_count() == pages_before,
                 "Zero physical frame leaks after tearing down 100 pipes and dynamic fd_table");
@@ -1249,9 +1249,9 @@ void cmd_test_syscall() noexcept {
     print_str("\r\n[TEST] Running PCB, User-Pointer Validation & Syscall ABI Suite...\r\n");
 
     const size_t pages_before = Kernel::MM::pfa_allocated_pages_count();
-    const size_t procs_before = Kernel::Process::active_process_count();
+    const size_t procs_before = Kernel::Process::Process::active_count();
 
-    auto* const proc = Kernel::Process::allocate_process(0U);
+    auto* const proc = Kernel::Process::Process::create(0U);
     assert_test(proc != nullptr, "Allocated PCB slot from static process table");
     if (proc == nullptr) {
         return;
@@ -1267,7 +1267,7 @@ void cmd_test_syscall() noexcept {
     auto as_res = Kernel::MM::AddressSpace::create();
     assert_test(as_res.is_ok(), "Created isolated AddressSpace for PCB");
     if (!as_res.is_ok()) {
-        Kernel::Process::release_process(*proc);
+        Kernel::Process::Process::destroy(*proc);
         return;
     }
     proc->address_space() = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
@@ -1348,7 +1348,7 @@ void cmd_test_syscall() noexcept {
                                            proc->user_stack().final_sp_el0, proc->user_stack().argc,
                                            proc->user_stack().argv_vaddr);
 
-    const int64_t exit_status = Kernel::Process::execute_process(*proc);
+    const int64_t exit_status = proc->execute();
 
     assert_test(exit_status == 0,
                 "EL0 syscalls verified (-EFAULT, -EBADF, -ENOSYS, valid SYS_WRITE & SYS_EXIT)");
@@ -1406,14 +1406,14 @@ void cmd_test_syscall() noexcept {
     Kernel::Process::init_user_cpu_context(proc->context(), CODE_VADDR,
                                            proc->user_stack().final_sp_el0, IOCTL_ARGS_VADDR, 0ULL);
 
-    const int64_t tty_exit_status = Kernel::Process::execute_process(*proc);
+    const int64_t tty_exit_status = proc->execute();
     assert_test(tty_exit_status == 0,
                 "EL0 TTY ioctl (TCGETS/TCSETS/TIOCGWINSZ/-ENOTTY/-EINVAL/-EBADF) & sys_read "
                 "validation verified");
 
-    Kernel::Process::release_process(*proc);
+    Kernel::Process::Process::destroy(*proc);
 
-    assert_test(Kernel::Process::active_process_count() == procs_before,
+    assert_test(Kernel::Process::Process::active_count() == procs_before,
                 "PCB slot released cleanly back to static process table");
     assert_test(Kernel::MM::pfa_allocated_pages_count() == pages_before,
                 "All process page tables, stack, and data frames freed cleanly");
@@ -1422,7 +1422,7 @@ void cmd_test_syscall() noexcept {
 void cmd_test_tty_echo() noexcept {
     print_str("\r\n[TEST] Launching Interactive EL0 TTY Echo Process...\r\n");
 
-    auto* const proc = Kernel::Process::allocate_process(0U);
+    auto* const proc = Kernel::Process::Process::create(0U);
     if (proc == nullptr) {
         print_str("[FAIL] Failed to allocate PCB\r\n");
         return;
@@ -1430,7 +1430,7 @@ void cmd_test_tty_echo() noexcept {
 
     auto as_res = Kernel::MM::AddressSpace::create();
     if (!as_res.is_ok()) {
-        Kernel::Process::release_process(*proc);
+        Kernel::Process::Process::destroy(*proc);
         print_str("[FAIL] Failed to create AddressSpace\r\n");
         return;
     }
@@ -1478,7 +1478,7 @@ void cmd_test_tty_echo() noexcept {
 
     auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space());
     if (!stack_res.is_ok()) {
-        Kernel::Process::release_process(*proc);
+        Kernel::Process::Process::destroy(*proc);
         print_str("[FAIL] Failed to allocate user stack\r\n");
         return;
     }
@@ -1491,10 +1491,10 @@ void cmd_test_tty_echo() noexcept {
     Kernel::Process::init_user_cpu_context(proc->context(), CODE_VADDR,
                                            proc->user_stack().final_sp_el0, ARGS_VADDR, 0ULL);
 
-    const int64_t exit_status = Kernel::Process::execute_process(*proc);
+    const int64_t exit_status = proc->execute();
     assert_test(exit_status == 0, "EL0 interactive TTY read/write echo completed cleanly");
 
-    Kernel::Process::release_process(*proc);
+    Kernel::Process::Process::destroy(*proc);
 }
 
 void cmd_test_user_mm() noexcept {
@@ -1502,7 +1502,7 @@ void cmd_test_user_mm() noexcept {
               "(sys_mmap/sys_munmap) Suite...\r\n");
 
     const size_t pages_before = Kernel::MM::pfa_allocated_pages_count();
-    const size_t procs_before = Kernel::Process::active_process_count();
+    const size_t procs_before = Kernel::Process::Process::active_count();
 
     // Synthesize a 2-segment ELF (Code RX at 0x400100, Data RW + BSS at 0x401540..0x4016C0)
     alignas(16) static uint8_t synth_elf[2048]{};
@@ -1562,14 +1562,14 @@ void cmd_test_user_mm() noexcept {
     assert_test(load_res->max_vaddr == EXPECTED_BRK_START,
                 "LoadedElf::max_vaddr equals page-aligned end of .bss (0x402000)");
 
-    auto* const proc = Kernel::Process::allocate_process(0U);
+    auto* const proc = Kernel::Process::Process::create(0U);
     assert_test(proc != nullptr, "Allocated PCB for user_mm test");
     if (proc == nullptr) {
         load_res->address_space.destroy();
         return;
     }
 
-    Kernel::Process::attach_loaded_elf(*proc, static_cast<Kernel::Loader::LoadedElf&&>(*load_res));
+    proc->attach_elf(static_cast<Kernel::Loader::LoadedElf&&>(*load_res));
     assert_test(proc->brk_start() == EXPECTED_BRK_START &&
                     proc->brk_current() == EXPECTED_BRK_START,
                 "PCB brk_start and brk_current initialized to LoadedElf::max_vaddr");
@@ -1581,7 +1581,7 @@ void cmd_test_user_mm() noexcept {
     auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space());
     assert_test(stack_res.is_ok(), "Allocated and mapped user stack");
     if (!stack_res.is_ok()) {
-        Kernel::Process::release_process(*proc);
+        Kernel::Process::Process::destroy(*proc);
         return;
     }
     proc->set_user_stack(stack_res.value());
@@ -1592,15 +1592,15 @@ void cmd_test_user_mm() noexcept {
     Kernel::Process::init_user_cpu_context(proc->context(), proc->entry_point(),
                                            proc->user_stack().final_sp_el0, ARGS_VADDR, 0ULL);
 
-    const int64_t exit_status = Kernel::Process::execute_process(*proc);
+    const int64_t exit_status = proc->execute();
     assert_test(exit_status == 0,
                 "EL0 sys_brk (expand/shrink/ceiling) & sys_mmap/sys_munmap verified");
     assert_test(proc->brk_current() == EXPECTED_BRK_START,
                 "Shrinking brk restored brk_current to brk_start");
 
-    Kernel::Process::release_process(*proc);
+    Kernel::Process::Process::destroy(*proc);
 
-    assert_test(Kernel::Process::active_process_count() == procs_before,
+    assert_test(Kernel::Process::Process::active_count() == procs_before,
                 "PCB slot released cleanly back to static process table");
     assert_test(Kernel::MM::pfa_allocated_pages_count() == pages_before,
                 "All ELF, heap, mmap, stack, and page-table frames freed cleanly");
@@ -1611,11 +1611,11 @@ void cmd_test_proc_exit() noexcept {
         "\r\n[TEST] Running Process PID & Exit Lifecycle Suite (getpid/_exit/exit_group)...\r\n");
 
     const size_t pages_before = Kernel::MM::pfa_allocated_pages_count();
-    const size_t procs_before = Kernel::Process::active_process_count();
+    const size_t procs_before = Kernel::Process::Process::active_count();
     const uintptr_t kernel_root = Kernel::MM::AddressSpace::current_root_paddr();
 
     // 1) Test SYS_GETPID (#172) + SYS_EXIT (#93)
-    auto* const proc1 = Kernel::Process::allocate_process(0U);
+    auto* const proc1 = Kernel::Process::Process::create(0U);
     assert_test(proc1 != nullptr && proc1->pid() > 0U,
                 "Allocated PCB 1 with non-zero monotonic PID");
     if (proc1 == nullptr) {
@@ -1625,7 +1625,7 @@ void cmd_test_proc_exit() noexcept {
 
     auto as1_res = Kernel::MM::AddressSpace::create();
     if (!as1_res.is_ok()) {
-        Kernel::Process::release_process(*proc1);
+        Kernel::Process::Process::destroy(*proc1);
         print_str("[FAIL] Failed to create AddressSpace for PCB 1\r\n");
         return;
     }
@@ -1644,7 +1644,7 @@ void cmd_test_proc_exit() noexcept {
 
     auto stack1_res = Kernel::Process::UserStackBuilder::create_and_map(proc1->address_space());
     if (!stack1_res.is_ok()) {
-        Kernel::Process::release_process(*proc1);
+        Kernel::Process::Process::destroy(*proc1);
         print_str("[FAIL] Failed to allocate user stack for PCB 1\r\n");
         return;
     }
@@ -1657,15 +1657,15 @@ void cmd_test_proc_exit() noexcept {
     Kernel::Process::init_user_cpu_context(proc1->context(), CODE_VADDR,
                                            proc1->user_stack().final_sp_el0, pid1, 0ULL);
 
-    const int64_t status1 = Kernel::Process::execute_process(*proc1);
+    const int64_t status1 = proc1->execute();
     assert_test(status1 == 42 && proc1->state() == Kernel::Process::ProcessState::Zombie &&
                     proc1->exit_status() == 42,
                 "SYS_GETPID & SYS_EXIT(42) transitioned PCB 1 to Zombie with status 42");
     assert_test(Kernel::MM::AddressSpace::current_root_paddr() == kernel_root,
                 "TTBR0_EL1 restored to kernel root after SYS_EXIT");
 
-    Kernel::Process::release_process(*proc1);
-    assert_test(Kernel::Process::find_process_by_pid(pid1) == nullptr &&
+    Kernel::Process::Process::destroy(*proc1);
+    assert_test(Kernel::Process::Process::find_by_pid(pid1) == nullptr &&
                     Kernel::MM::pfa_allocated_pages_count() == pages_before,
                 "Reaping PCB 1 freed all physical frames back to baseline");
 
@@ -1710,7 +1710,7 @@ void cmd_test_proc_exit() noexcept {
         return;
     }
 
-    auto* const proc2 = Kernel::Process::allocate_process(0U);
+    auto* const proc2 = Kernel::Process::Process::create(0U);
     assert_test(proc2 != nullptr && proc2->pid() > pid1,
                 "Allocated PCB 2 with strictly monotonic PID");
     if (proc2 == nullptr) {
@@ -1718,11 +1718,11 @@ void cmd_test_proc_exit() noexcept {
         return;
     }
 
-    Kernel::Process::attach_loaded_elf(*proc2, static_cast<Kernel::Loader::LoadedElf&&>(*load_res));
+    proc2->attach_elf(static_cast<Kernel::Loader::LoadedElf&&>(*load_res));
 
     auto stack2_res = Kernel::Process::UserStackBuilder::create_and_map(proc2->address_space());
     if (!stack2_res.is_ok()) {
-        Kernel::Process::release_process(*proc2);
+        Kernel::Process::Process::destroy(*proc2);
         print_str("[FAIL] Failed to allocate user stack for PCB 2\r\n");
         return;
     }
@@ -1734,15 +1734,15 @@ void cmd_test_proc_exit() noexcept {
     Kernel::Process::init_user_cpu_context(proc2->context(), proc2->entry_point(),
                                            proc2->user_stack().final_sp_el0, proc2->pid(), 1ULL);
 
-    const int64_t status2 = Kernel::Process::execute_process(*proc2);
+    const int64_t status2 = proc2->execute();
     assert_test(status2 == 42 && proc2->state() == Kernel::Process::ProcessState::Zombie &&
                     proc2->exit_status() == 42,
                 "SYS_EXIT_GROUP(42) terminated EL0 process and delivered exit status 42");
     assert_test(Kernel::MM::AddressSpace::current_root_paddr() == kernel_root,
                 "TTBR0_EL1 restored to kernel root after SYS_EXIT_GROUP");
 
-    Kernel::Process::release_process(*proc2);
-    assert_test(Kernel::Process::active_process_count() == procs_before &&
+    Kernel::Process::Process::destroy(*proc2);
+    assert_test(Kernel::Process::Process::active_count() == procs_before &&
                     Kernel::MM::pfa_allocated_pages_count() == pages_before,
                 "Reaping PCB 2 reclaimed all ELF, stack, and page-table frames");
 }
@@ -1751,9 +1751,9 @@ void cmd_test_fork_exec() noexcept {
     print_str("\r\n[TEST] Running EL0 Process Fork (clone), Execve & Wait4 Suite...\r\n");
 
     const size_t pages_before = Kernel::MM::pfa_allocated_pages_count();
-    const size_t procs_before = Kernel::Process::active_process_count();
+    const size_t procs_before = Kernel::Process::Process::active_count();
 
-    auto* const parent = Kernel::Process::allocate_process(0U);
+    auto* const parent = Kernel::Process::Process::create(0U);
     assert_test(parent != nullptr, "Allocated parent PCB for fork/execve/wait4 test");
     if (parent == nullptr) {
         return;
@@ -1761,7 +1761,7 @@ void cmd_test_fork_exec() noexcept {
 
     auto as_res = Kernel::MM::AddressSpace::create();
     if (!as_res.is_ok()) {
-        Kernel::Process::release_process(*parent);
+        Kernel::Process::Process::destroy(*parent);
         print_str("[FAIL] Failed to create parent AddressSpace\r\n");
         return;
     }
@@ -1821,7 +1821,7 @@ void cmd_test_fork_exec() noexcept {
 
     auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(parent->address_space());
     if (!stack_res.is_ok()) {
-        Kernel::Process::release_process(*parent);
+        Kernel::Process::Process::destroy(*parent);
         print_str("[FAIL] Failed to allocate user stack\r\n");
         return;
     }
@@ -1834,13 +1834,13 @@ void cmd_test_fork_exec() noexcept {
     Kernel::Process::init_user_cpu_context(parent->context(), CODE_VADDR,
                                            parent->user_stack().final_sp_el0, ARGS_VADDR, 0ULL);
 
-    const int64_t exit_status = Kernel::Process::execute_process(*parent);
+    const int64_t exit_status = parent->execute();
     assert_test(exit_status == 0,
                 "EL0 clone(), failed execve(-ENOENT), execve(/bin/hello), and wait4() verified");
 
-    Kernel::Process::release_process(*parent);
+    Kernel::Process::Process::destroy(*parent);
 
-    assert_test(Kernel::Process::active_process_count() == procs_before,
+    assert_test(Kernel::Process::Process::active_count() == procs_before,
                 "All parent and child PCB slots released back to baseline");
     assert_test(Kernel::MM::pfa_allocated_pages_count() == pages_before,
                 "All cloned, execve, stack, and page-table frames freed cleanly");
@@ -1855,7 +1855,7 @@ void cmd_test_musl() noexcept {
     }
 
     const size_t pages_before = Kernel::MM::pfa_allocated_pages_count();
-    const size_t procs_before = Kernel::Process::active_process_count();
+    const size_t procs_before = Kernel::Process::Process::active_count();
 
     Kernel::FS::CpioEntry entry{};
     const Kernel::FS::CpioStatus cpio_st = Kernel::FS::cpio_lookup(
@@ -1873,7 +1873,7 @@ void cmd_test_musl() noexcept {
         return;
     }
 
-    auto* const proc = Kernel::Process::allocate_process(0U);
+    auto* const proc = Kernel::Process::Process::create(0U);
     assert_test(proc != nullptr, "Allocated PCB for /bin/hello_musl");
     if (proc == nullptr) {
         load_res->address_space.destroy();
@@ -1884,11 +1884,11 @@ void cmd_test_musl() noexcept {
     const size_t auxv_count = Kernel::Process::populate_standard_auxv(
         *load_res, auxv, Kernel::Process::STANDARD_AUXV_COUNT);
 
-    Kernel::Process::attach_loaded_elf(*proc, static_cast<Kernel::Loader::LoadedElf&&>(*load_res));
+    proc->attach_elf(static_cast<Kernel::Loader::LoadedElf&&>(*load_res));
 
     auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space());
     if (!stack_res.is_ok()) {
-        Kernel::Process::release_process(*proc);
+        Kernel::Process::Process::destroy(*proc);
         print_str("[FAIL] Failed to allocate user stack\r\n");
         return;
     }
@@ -1904,13 +1904,13 @@ void cmd_test_musl() noexcept {
                                            proc->user_stack().final_sp_el0, proc->user_stack().argc,
                                            proc->user_stack().argv_vaddr);
 
-    const int64_t exit_status = Kernel::Process::execute_process(*proc);
+    const int64_t exit_status = proc->execute();
     assert_test(exit_status == 0 && proc->state() == Kernel::Process::ProcessState::Zombie,
                 "/bin/hello_musl printed via musl stdio and exited with status 0");
 
-    Kernel::Process::release_process(*proc);
+    Kernel::Process::Process::destroy(*proc);
 
-    assert_test(Kernel::Process::active_process_count() == procs_before,
+    assert_test(Kernel::Process::Process::active_count() == procs_before,
                 "PCB count returned to baseline");
     assert_test(Kernel::MM::pfa_allocated_pages_count() == pages_before,
                 "Physical frame count returned to baseline");
@@ -1920,7 +1920,7 @@ void cmd_test_sched() noexcept {
     print_str("\r\n[TEST] Running Preemptive Timer IRQ, Timeslice & WaitQueue Suite...\r\n");
 
     const size_t pages_before = Kernel::MM::pfa_allocated_pages_count();
-    const size_t procs_before = Kernel::Process::active_process_count();
+    const size_t procs_before = Kernel::Process::Process::active_count();
     const uint64_t ticks_before = Kernel::Scheduler::timer_ticks();
 
     // 1. Verify WaitQueue initialization
@@ -1928,7 +1928,7 @@ void cmd_test_sched() noexcept {
     assert_test(wait_queue.empty(), "WaitQueue initialized empty");
 
     // 2. Spawn EL0 coordinator + two CPU-bound workers preempted by 100Hz timer IRQs
-    auto* const parent = Kernel::Process::allocate_process(0U);
+    auto* const parent = Kernel::Process::Process::create(0U);
     assert_test(parent != nullptr, "Allocated coordinator PCB");
     if (parent == nullptr) {
         return;
@@ -1936,7 +1936,7 @@ void cmd_test_sched() noexcept {
 
     auto as_res = Kernel::MM::AddressSpace::create();
     if (!as_res.is_ok()) {
-        Kernel::Process::release_process(*parent);
+        Kernel::Process::Process::destroy(*parent);
         print_str("[FAIL] Failed to create AddressSpace\r\n");
         return;
     }
@@ -1965,7 +1965,7 @@ void cmd_test_sched() noexcept {
 
     auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(parent->address_space());
     if (!stack_res.is_ok()) {
-        Kernel::Process::release_process(*parent);
+        Kernel::Process::Process::destroy(*parent);
         print_str("[FAIL] Failed to allocate user stack\r\n");
         return;
     }
@@ -1978,7 +1978,7 @@ void cmd_test_sched() noexcept {
     Kernel::Process::init_user_cpu_context(parent->context(), CODE_VADDR,
                                            parent->user_stack().final_sp_el0, ARGS_VADDR, 0ULL);
 
-    const int64_t exit_status = Kernel::Process::execute_process(*parent);
+    const int64_t exit_status = parent->execute();
     const uint64_t ticks_after = Kernel::Scheduler::timer_ticks();
 
     HAL::Test::SchedSuiteArgs out_args{};
@@ -1993,9 +1993,9 @@ void cmd_test_sched() noexcept {
     assert_test(exit_status == 0,
                 "Parent blocked on WaitQueue in wait4() and reaped both workers cleanly");
 
-    Kernel::Process::release_process(*parent);
+    Kernel::Process::Process::destroy(*parent);
 
-    assert_test(Kernel::Process::active_process_count() == procs_before,
+    assert_test(Kernel::Process::Process::active_count() == procs_before,
                 "All PCB slots released back to baseline");
     assert_test(Kernel::MM::pfa_allocated_pages_count() == pages_before,
                 "All kernel stack, user stack, and page-table frames freed cleanly");
@@ -2145,14 +2145,14 @@ void cmd_test_concurrent_refcount() noexcept {
     print_str("\r\n[TEST] Running Concurrent PFA Refcount Validation (1,000,000 ops)...\r\n");
 
     const size_t free_before = Kernel::MM::pfa_free_pages_count();
-    const size_t procs_before = Kernel::Process::active_process_count();
+    const size_t procs_before = Kernel::Process::Process::active_count();
 
     const bool refcount_ok = Kernel::MM::run_concurrent_refcount_test();
     assert_test(refcount_ok, "1,000,000 parallel Kernel::MM::page_get()/Kernel::MM::page_put() ops "
                              "reclaimed frame without double-free");
 
     const size_t free_after = Kernel::MM::pfa_free_pages_count();
-    assert_test(Kernel::Process::active_process_count() == procs_before &&
+    assert_test(Kernel::Process::Process::active_count() == procs_before &&
                     free_after == free_before,
                 "PFA free page count returned strictly to pre-test baseline");
 }
@@ -2161,9 +2161,9 @@ void cmd_test_cow_isolation() noexcept {
     print_str("\r\n[TEST] Running EL0 Copy-on-Write (CoW) Isolation Suite...\r\n");
 
     const size_t free_before = Kernel::MM::pfa_free_pages_count();
-    const size_t procs_before = Kernel::Process::active_process_count();
+    const size_t procs_before = Kernel::Process::Process::active_count();
 
-    auto* const parent = Kernel::Process::allocate_process(0U);
+    auto* const parent = Kernel::Process::Process::create(0U);
     assert_test(parent != nullptr, "Allocated parent PCB for CoW isolation test");
     if (parent == nullptr) {
         return;
@@ -2171,7 +2171,7 @@ void cmd_test_cow_isolation() noexcept {
 
     auto as_res = Kernel::MM::AddressSpace::create();
     if (!as_res.is_ok()) {
-        Kernel::Process::release_process(*parent);
+        Kernel::Process::Process::destroy(*parent);
         print_str("[FAIL] Failed to create parent AddressSpace\r\n");
         return;
     }
@@ -2188,7 +2188,7 @@ void cmd_test_cow_isolation() noexcept {
         if (data_paddr != 0U) {
             Kernel::MM::free_frame(data_paddr);
         }
-        Kernel::Process::release_process(*parent);
+        Kernel::Process::Process::destroy(*parent);
         print_str("[FAIL] Failed to allocate test frames\r\n");
         return;
     }
@@ -2211,7 +2211,7 @@ void cmd_test_cow_isolation() noexcept {
 
     auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(parent->address_space());
     if (!stack_res.is_ok()) {
-        Kernel::Process::release_process(*parent);
+        Kernel::Process::Process::destroy(*parent);
         print_str("[FAIL] Failed to allocate user stack\r\n");
         return;
     }
@@ -2224,14 +2224,14 @@ void cmd_test_cow_isolation() noexcept {
     Kernel::Process::init_user_cpu_context(parent->context(), CODE_VADDR,
                                            parent->user_stack().final_sp_el0, DATA_VADDR, 0ULL);
 
-    const int64_t exit_status = Kernel::Process::execute_process(*parent);
+    const int64_t exit_status = parent->execute();
     assert_test(exit_status == 0,
                 "CoW isolation verified: child wrote 0x2222 while parent retained 0x1111");
 
-    Kernel::Process::release_process(*parent);
+    Kernel::Process::Process::destroy(*parent);
 
     const size_t free_after = Kernel::MM::pfa_free_pages_count();
-    assert_test(Kernel::Process::active_process_count() == procs_before &&
+    assert_test(Kernel::Process::Process::active_count() == procs_before &&
                     free_after == free_before,
                 "All CoW shared/copied frames and page tables reclaimed to baseline");
 }
@@ -2240,9 +2240,9 @@ void cmd_test_demand_paging() noexcept {
     print_str("\r\n[TEST] Running EL0 Demand-Zero 1 GiB Capacity Suite...\r\n");
 
     const size_t free_before = Kernel::MM::pfa_free_pages_count();
-    const size_t procs_before = Kernel::Process::active_process_count();
+    const size_t procs_before = Kernel::Process::Process::active_count();
 
-    auto* const proc = Kernel::Process::allocate_process(0U);
+    auto* const proc = Kernel::Process::Process::create(0U);
     assert_test(proc != nullptr, "Allocated PCB for 1 GiB demand-paging capacity test");
     if (proc == nullptr) {
         return;
@@ -2250,7 +2250,7 @@ void cmd_test_demand_paging() noexcept {
 
     auto as_res = Kernel::MM::AddressSpace::create();
     if (!as_res.is_ok()) {
-        Kernel::Process::release_process(*proc);
+        Kernel::Process::Process::destroy(*proc);
         print_str("[FAIL] Failed to create AddressSpace\r\n");
         return;
     }
@@ -2259,7 +2259,7 @@ void cmd_test_demand_paging() noexcept {
     constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
     const uintptr_t code_paddr = Kernel::MM::alloc_frame();
     if (code_paddr == 0U) {
-        Kernel::Process::release_process(*proc);
+        Kernel::Process::Process::destroy(*proc);
         print_str("[FAIL] Failed to allocate code frame\r\n");
         return;
     }
@@ -2275,7 +2275,7 @@ void cmd_test_demand_paging() noexcept {
 
     auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space());
     if (!stack_res.is_ok()) {
-        Kernel::Process::release_process(*proc);
+        Kernel::Process::Process::destroy(*proc);
         print_str("[FAIL] Failed to allocate user stack\r\n");
         return;
     }
@@ -2288,15 +2288,15 @@ void cmd_test_demand_paging() noexcept {
     Kernel::Process::init_user_cpu_context(proc->context(), CODE_VADDR,
                                            proc->user_stack().final_sp_el0, 0ULL, 0ULL);
 
-    const int64_t exit_status = Kernel::Process::execute_process(*proc);
+    const int64_t exit_status = proc->execute();
     assert_test(
         exit_status == 0,
         "1 GiB SYS_MMAP (>256 MiB RAM) succeeded & persisted 0xBEEF across first/mid/last pages");
 
-    Kernel::Process::release_process(*proc);
+    Kernel::Process::Process::destroy(*proc);
 
     const size_t free_after = Kernel::MM::pfa_free_pages_count();
-    assert_test(Kernel::Process::active_process_count() == procs_before &&
+    assert_test(Kernel::Process::Process::active_count() == procs_before &&
                     free_after == free_before,
                 "All demand-zero page tables and touched frames reclaimed to baseline");
 }
@@ -2306,8 +2306,8 @@ void run_lazy_memory_acceptance_suite() noexcept {
     print_str("  Lazy Memory Verification & Acceptance Suite\r\n");
     print_str("=============================================\r\n");
 
-    if (auto* const warmup = Kernel::Process::allocate_process(0U); warmup != nullptr) {
-        Kernel::Process::release_process(*warmup);
+    if (auto* const warmup = Kernel::Process::Process::create(0U); warmup != nullptr) {
+        Kernel::Process::Process::destroy(*warmup);
     }
 
     const size_t suite_baseline_free = Kernel::MM::pfa_free_pages_count();

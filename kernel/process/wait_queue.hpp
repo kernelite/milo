@@ -4,7 +4,7 @@
 
 namespace Kernel::Process {
 
-struct Process;
+class Process;
 
 class WaitQueue {
   public:

@@ -126,7 +126,7 @@ int64_t console_read(File* file, void* buf, size_t count, uint64_t* /*offset*/) 
         return 0;
     }
 
-    auto* const proc = Kernel::Process::current_process();
+    auto* const proc = Kernel::Process::Process::current();
     const bool nonblock = (file->flags & kOpenNonBlock) != 0U;
     const bool canonical = (g_console_termios.c_lflag & Kernel::UAPI::ICANON) != 0U;
     const bool echo = (g_console_termios.c_lflag & Kernel::UAPI::ECHO) != 0U;
@@ -288,7 +288,7 @@ int64_t console_lseek(File* /*file*/, int64_t /*offset*/, SeekWhence /*whence*/)
 }
 
 int32_t console_ioctl(File* /*file*/, uint64_t request, uint64_t arg) noexcept {
-    auto* const proc = Kernel::Process::current_process();
+    auto* const proc = Kernel::Process::Process::current();
     const uintptr_t root_paddr = (proc != nullptr) ? proc->address_space().root_paddr()
                                                    : Kernel::MM::AddressSpace::current_root_paddr();
     const auto user_arg = static_cast<uintptr_t>(arg);
