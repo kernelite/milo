@@ -1,7 +1,7 @@
 #include "fs/Vfs.hpp"
 #include "fs/devfs/devfs.hpp"
 #include "fs/rootfs/rootfs.hpp"
-#include "ipc/pipe.hpp"
+#include "ipc/Pipe.hpp"
 #include "mocks/host_hal.hpp"
 
 #include <array>

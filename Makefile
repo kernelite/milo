@@ -79,7 +79,7 @@ HOST_KERNEL_SRCS := \
     kernel/fs/rootfs/rootfs.cpp \
     kernel/fs/devfs/devfs.cpp \
     kernel/fs/tmpfs/tmpfs.cpp \
-    kernel/ipc/pipe.cpp \
+    kernel/ipc/Pipe.cpp \
     kernel/mm/pfa.cpp \
     kernel/mm/heap.cpp \
     kernel/mm/AddressSpace.cpp \

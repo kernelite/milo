@@ -1,6 +1,6 @@
 #include "fs/devfs/devfs.hpp"
 #include "hal/targets/qemu_virt/timer.hpp"
-#include "ipc/pipe.hpp"
+#include "ipc/Pipe.hpp"
 #include "syscalls/SyscallInternal.hpp"
 
 #include <new>
