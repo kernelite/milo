@@ -1,7 +1,7 @@
 #include "drivers/block/block_device.hpp"
+#include "fs/Vfs.hpp"
 #include "fs/ext2/ext2.hpp"
 #include "fs/rootfs/rootfs.hpp"
-#include "fs/vfs.hpp"
 
 #include <cstdint>
 #include <cstring>

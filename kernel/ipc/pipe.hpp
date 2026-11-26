@@ -1,6 +1,6 @@
 #pragma once
 
-#include "fs/vfs.hpp"
+#include "fs/Vfs.hpp"
 #include "process/wait_queue.hpp"
 
 #include <cstddef>

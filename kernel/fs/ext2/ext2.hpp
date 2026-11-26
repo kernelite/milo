@@ -1,7 +1,7 @@
 #pragma once
 
 #include "drivers/block/block_device.hpp"
-#include "fs/vfs.hpp"
+#include "fs/Vfs.hpp"
 
 #include <cstddef>
 #include <cstdint>

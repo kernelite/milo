@@ -1,4 +1,4 @@
-#include "fs/vfs.hpp"
+#include "fs/Vfs.hpp"
 
 namespace Kernel::FS {
 

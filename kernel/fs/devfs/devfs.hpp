@@ -1,6 +1,6 @@
 #pragma once
 
-#include "fs/vfs.hpp"
+#include "fs/Vfs.hpp"
 
 #include <cstddef>
 #include <cstdint>
