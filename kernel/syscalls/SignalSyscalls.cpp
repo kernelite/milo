@@ -13,9 +13,9 @@ int64_t sys_rt_sigaction(uint64_t sig, uintptr_t user_act, uintptr_t user_oldact
         return ERR_EINVAL;
     }
 
-    const size_t idx = static_cast<size_t>(sig - 1U);
+    const auto sig_num = static_cast<uint32_t>(sig);
     if (user_oldact != 0U) {
-        const auto& cur = proc->sigactions[idx];
+        const auto& cur = proc->signals.action(sig_num);
         const linux_sigaction out{
             .sa_handler = cur.handler,
             .sa_flags = cur.flags,
@@ -28,19 +28,19 @@ int64_t sys_rt_sigaction(uint64_t sig, uintptr_t user_act, uintptr_t user_oldact
     }
 
     if (user_act != 0U) {
-        if (sig == Kernel::Process::SIG_KILL || sig == Kernel::Process::SIG_STOP) {
-            return ERR_EINVAL;
-        }
         linux_sigaction dest{};
         if (Kernel::MM::copy_from_user(proc->address_space, &dest, user_act, sizeof(dest)) < 0) {
             return ERR_EFAULT;
         }
-        proc->sigactions[idx] = Kernel::Process::SigAction{
+        const Kernel::Process::SigAction act{
             .handler = dest.sa_handler,
             .flags = dest.sa_flags,
             .restorer = dest.sa_restorer,
             .mask = dest.sa_mask,
         };
+        if (!proc->signals.set_action(sig_num, act)) {
+            return ERR_EINVAL;
+        }
     }
 
     return 0;
@@ -54,7 +54,7 @@ int64_t sys_rt_sigprocmask(uint64_t how, uintptr_t user_set, uintptr_t user_olds
     }
 
     if (user_oldset != 0U) {
-        const uint64_t old_mask = proc->blocked_signals;
+        const uint64_t old_mask = proc->signals.blocked();
         if (Kernel::MM::copy_to_user(proc->address_space, user_oldset, &old_mask,
                                      sizeof(old_mask)) < 0) {
             return ERR_EFAULT;
@@ -67,16 +67,13 @@ int64_t sys_rt_sigprocmask(uint64_t how, uintptr_t user_set, uintptr_t user_olds
             0) {
             return ERR_EFAULT;
         }
-        constexpr uint64_t UNMASKABLE =
-            (1ULL << (Kernel::Process::SIG_KILL - 1U)) | (1ULL << (Kernel::Process::SIG_STOP - 1U));
-        set_val &= ~UNMASKABLE;
 
         if (how == SIG_BLOCK) {
-            proc->blocked_signals |= set_val;
+            proc->signals.block(set_val);
         } else if (how == SIG_UNBLOCK) {
-            proc->blocked_signals &= ~set_val;
+            proc->signals.unblock(set_val);
         } else if (how == SIG_SETMASK) {
-            proc->blocked_signals = set_val;
+            proc->signals.set_blocked(set_val);
         } else {
             return ERR_EINVAL;
         }

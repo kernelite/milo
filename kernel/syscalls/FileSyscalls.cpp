@@ -1400,7 +1400,7 @@ int64_t sys_ppoll(uintptr_t user_fds, uint64_t nfds, uintptr_t user_tmo, uintptr
     }
 
     bool swapped_mask = false;
-    const uint64_t saved_mask = proc->blocked_signals;
+    uint64_t saved_mask = 0ULL;
     if (user_sigmask != 0U) {
         if (sigsetsize != sizeof(uint64_t)) {
             return ERR_EINVAL;
@@ -1409,22 +1409,19 @@ int64_t sys_ppoll(uintptr_t user_fds, uint64_t nfds, uintptr_t user_tmo, uintptr
         if (Kernel::MM::copy_from_user(root_paddr, &new_mask, user_sigmask, sizeof(new_mask)) < 0) {
             return ERR_EFAULT;
         }
-        constexpr uint64_t UNMASKABLE =
-            (1ULL << (Kernel::Process::SIG_KILL - 1U)) | (1ULL << (Kernel::Process::SIG_STOP - 1U));
-        proc->blocked_signals = new_mask & ~UNMASKABLE;
+        saved_mask = proc->signals.swap_temp_mask(new_mask);
         swapped_mask = true;
     }
 
     auto restore_mask_normal = [&]() {
         if (swapped_mask) {
-            proc->blocked_signals = saved_mask;
+            proc->signals.set_blocked(saved_mask);
         }
     };
 
     auto restore_mask_eintr = [&]() {
         if (swapped_mask) {
-            proc->has_saved_sigmask = true;
-            proc->saved_sigmask = saved_mask;
+            proc->signals.preserve_saved_mask_for_eintr(saved_mask);
         }
     };
 
@@ -1530,7 +1527,7 @@ int64_t sys_pselect6(int32_t nfds, uintptr_t user_rfds, uintptr_t user_wfds, uin
     }
 
     bool swapped_mask = false;
-    const uint64_t saved_mask = proc->blocked_signals;
+    uint64_t saved_mask = 0ULL;
     if (user_sigpack != 0U) {
         linux_sigset_argpack pack{};
         if (Kernel::MM::copy_from_user(root_paddr, &pack, user_sigpack, sizeof(pack)) < 0) {
@@ -1545,23 +1542,20 @@ int64_t sys_pselect6(int32_t nfds, uintptr_t user_rfds, uintptr_t user_wfds, uin
                                            sizeof(new_mask)) < 0) {
                 return ERR_EFAULT;
             }
-            constexpr uint64_t UNMASKABLE = (1ULL << (Kernel::Process::SIG_KILL - 1U)) |
-                                            (1ULL << (Kernel::Process::SIG_STOP - 1U));
-            proc->blocked_signals = new_mask & ~UNMASKABLE;
+            saved_mask = proc->signals.swap_temp_mask(new_mask);
             swapped_mask = true;
         }
     }
 
     auto restore_mask_normal = [&]() {
         if (swapped_mask) {
-            proc->blocked_signals = saved_mask;
+            proc->signals.set_blocked(saved_mask);
         }
     };
 
     auto restore_mask_eintr = [&]() {
         if (swapped_mask) {
-            proc->has_saved_sigmask = true;
-            proc->saved_sigmask = saved_mask;
+            proc->signals.preserve_saved_mask_for_eintr(saved_mask);
         }
     };
 

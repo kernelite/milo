@@ -42,7 +42,6 @@ struct Process {
     uint64_t rlim_nofile_max{DEFAULT_RLIMIT_NOFILE_MAX};
     uint64_t rlim_nproc_cur{0ULL};
     uint64_t rlim_nproc_max{0ULL};
-    uint64_t saved_sigmask{0ULL};
     MM::AddressSpace address_space;
     uintptr_t kstack_paddr{0U};
     uintptr_t kstack_top{0U};
@@ -51,11 +50,9 @@ struct Process {
     uintptr_t brk_current{0U};
     uintptr_t mmap_next_vaddr{0U};
     uintptr_t clear_child_tid{0U};
-    uint64_t pending_signals{0ULL};
-    uint64_t blocked_signals{0ULL};
     UserStack user_stack{};
     WaitQueue child_wait_queue;
-    SigAction sigactions[MAX_SIGNALS]{};
+    SignalTable signals;
     FdTable fds;
     uint32_t pid{0U};
     uint32_t ppid{0U};
@@ -67,7 +64,6 @@ struct Process {
     ProcessState state{ProcessState::Unused};
     bool stop_reported{false};
     bool continued{false};
-    bool has_saved_sigmask{false};
     bool kctx_initialized{false};
     char cwd[MAX_PATH_LEN]{};
     char exe_path[MAX_PATH_LEN]{};
