@@ -1,5 +1,5 @@
+#include "fs/Vfs.hpp"
 #include "fs/devfs/devfs.hpp"
-#include "fs/vfs.hpp"
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
 #include "hal/targets/qemu_virt/timer.hpp"

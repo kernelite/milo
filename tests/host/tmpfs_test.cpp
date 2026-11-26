@@ -1,6 +1,6 @@
+#include "fs/Vfs.hpp"
 #include "fs/rootfs/rootfs.hpp"
 #include "fs/tmpfs/tmpfs.hpp"
-#include "fs/vfs.hpp"
 #include "memory_config.hpp"
 #include "mm/pfa.hpp"
 #include "mocks/host_hal.hpp"
