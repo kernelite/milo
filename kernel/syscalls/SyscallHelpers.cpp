@@ -142,11 +142,10 @@ bool normalize_vfs_path(const char* base_dir, const char* input, char* out,
 }
 
 Kernel::FS::File* get_proc_file(Kernel::Process::Process* proc, uint64_t raw_fd) noexcept {
-    if (proc == nullptr || proc->fd_table == nullptr || raw_fd >= proc->fd_capacity) {
+    if (proc == nullptr) {
         return nullptr;
     }
-    auto& desc = proc->fd_table[static_cast<size_t>(raw_fd)];
-    return desc.is_open() ? desc.file : nullptr;
+    return proc->fds.get_file(raw_fd);
 }
 
 linux_stat inode_to_linux_stat(const Kernel::FS::Inode& inode) noexcept {

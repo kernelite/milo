@@ -884,7 +884,7 @@ void cmd_test_dynamic_io() noexcept {
     const size_t procs_before = Kernel::Process::active_process_count();
 
     auto* const proc = Kernel::Process::allocate_process(0U);
-    assert_test(proc != nullptr && proc->fd_capacity == Kernel::Process::INITIAL_FD_CAPACITY,
+    assert_test(proc != nullptr && proc->fds.capacity() == Kernel::Process::INITIAL_FD_CAPACITY,
                 "PCB initialized dynamic fd_table with 16 slots");
     if (proc == nullptr) {
         return;
@@ -903,7 +903,7 @@ void cmd_test_dynamic_io() noexcept {
     bool pipes_ok = true;
 
     for (size_t i = 0U; i < PIPE_COUNT; ++i) {
-        const int rfd = Kernel::Process::allocate_fd(*proc, 0U);
+        const int rfd = proc->fds.allocate(proc->rlim_nofile_cur, 0U);
         if (rfd < 0) {
             pipes_ok = false;
             break;
@@ -916,33 +916,33 @@ void cmd_test_dynamic_io() noexcept {
             break;
         }
 
-        proc->fd_table[rfd] = Kernel::Process::FileDescriptor{.file = read_file, .fd_flags = 0U};
+        (void)proc->fds.install(static_cast<size_t>(rfd), read_file, 0U);
 
-        const int wfd = Kernel::Process::allocate_fd(*proc, static_cast<size_t>(rfd) + 1U);
+        const int wfd = proc->fds.allocate(proc->rlim_nofile_cur, static_cast<size_t>(rfd) + 1U);
         if (wfd < 0) {
-            Kernel::Process::close_fd(*proc, static_cast<size_t>(rfd));
+            proc->fds.close(static_cast<size_t>(rfd));
             (void)Kernel::FS::vfs_close(write_file);
             pipes_ok = false;
             break;
         }
 
-        proc->fd_table[wfd] = Kernel::Process::FileDescriptor{.file = write_file, .fd_flags = 0U};
+        (void)proc->fds.install(static_cast<size_t>(wfd), write_file, 0U);
         read_fds[i] = rfd;
         write_fds[i] = wfd;
     }
 
-    assert_test(pipes_ok && proc->fd_capacity == 256U,
+    assert_test(pipes_ok && proc->fds.capacity() == 256U,
                 "Allocated 100 concurrent heap pipes and geometrically grew fd_table to 256 slots");
 
     // 2. Grow fd_table past 512 slots to validate high-FD indexing
-    const bool grew_512 = Kernel::Process::ensure_fd_capacity(*proc, 520U);
-    assert_test(grew_512 && proc->fd_capacity == 1024U,
+    const bool grew_512 = proc->fds.ensure_capacity(520U, proc->rlim_nofile_cur);
+    assert_test(grew_512 && proc->fds.capacity() == 1024U,
                 "Geometric krealloc expanded fd_table cleanly to 1024 slots");
 
     // 3. Close all pipes and release PCB
     for (size_t i = 0U; i < PIPE_COUNT; ++i) {
-        Kernel::Process::close_fd(*proc, static_cast<size_t>(read_fds[i]));
-        Kernel::Process::close_fd(*proc, static_cast<size_t>(write_fds[i]));
+        proc->fds.close(static_cast<size_t>(read_fds[i]));
+        proc->fds.close(static_cast<size_t>(write_fds[i]));
     }
     Kernel::Process::release_process(*proc);
 
@@ -1261,8 +1261,10 @@ void cmd_test_syscall() noexcept {
     }
     assert_test(proc->pid > 0U && proc->state == Kernel::Process::ProcessState::Ready,
                 "PCB initialized with valid PID and Ready state");
-    assert_test(proc->fd_table != nullptr && proc->fd_table[0].is_tty() &&
-                    proc->fd_table[1].is_tty() && proc->fd_table[2].is_tty(),
+    assert_test(proc->fds.is_initialized() && proc->fds.at(0U) != nullptr &&
+                    proc->fds.at(0U)->is_tty() && proc->fds.at(1U) != nullptr &&
+                    proc->fds.at(1U)->is_tty() && proc->fds.at(2U) != nullptr &&
+                    proc->fds.at(2U)->is_tty(),
                 "PCB initialized FDs 0, 1, and 2 as ConsoleTty descriptors");
 
     auto as_res = Kernel::MM::AddressSpace::create();
@@ -1357,7 +1359,7 @@ void cmd_test_syscall() noexcept {
                 "PCB transitioned to Zombie state and recorded exit_status");
 
     // 3. Execute EL0 TTY ioctl & non-blocking sys_read verification suite
-    assert_test(Kernel::Process::init_fd_table(*proc, Kernel::Process::INITIAL_FD_CAPACITY),
+    assert_test(proc->fds.init(Kernel::Process::INITIAL_FD_CAPACITY),
                 "Re-initialized dynamic fd_table for TTY ioctl verification suite");
     Kernel::FS::File* tty_in = nullptr;
     Kernel::FS::File* tty_out = nullptr;
@@ -1365,9 +1367,9 @@ void cmd_test_syscall() noexcept {
     (void)Kernel::FS::devfs_open_console(Kernel::FS::kOpenReadOnly, &tty_in);
     (void)Kernel::FS::devfs_open_console(Kernel::FS::kOpenWriteOnly, &tty_out);
     (void)Kernel::FS::devfs_open_console(Kernel::FS::kOpenWriteOnly, &tty_err);
-    proc->fd_table[0] = Kernel::Process::FileDescriptor{.file = tty_in, .fd_flags = 0U};
-    proc->fd_table[1] = Kernel::Process::FileDescriptor{.file = tty_out, .fd_flags = 0U};
-    proc->fd_table[2] = Kernel::Process::FileDescriptor{.file = tty_err, .fd_flags = 0U};
+    (void)proc->fds.install(0U, tty_in, 0U);
+    (void)proc->fds.install(1U, tty_out, 0U);
+    (void)proc->fds.install(2U, tty_err, 0U);
 
     constexpr uint64_t NON_TTY_FD = 3ULL;
     Kernel::FS::File* non_tty_file = nullptr;
@@ -1385,8 +1387,7 @@ void cmd_test_syscall() noexcept {
             }
         }
     }
-    proc->fd_table[NON_TTY_FD] =
-        Kernel::Process::FileDescriptor{.file = non_tty_file, .fd_flags = 0U};
+    (void)proc->fds.install(static_cast<size_t>(NON_TTY_FD), non_tty_file, 0U);
 
     constexpr uintptr_t IOCTL_ARGS_VADDR = DATA_PAGE0_VADDR + 0x100ULL;
     const HAL::Test::TtyIoctlSuiteArgs ioctl_args{

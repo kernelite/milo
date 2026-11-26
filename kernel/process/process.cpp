@@ -12,8 +12,6 @@
 extern "C" void* memcpy(void* dest, const void* src, size_t count) noexcept;
 
 namespace {
-constexpr int ERR_EMFILE = -24;
-
 Kernel::Process::Process* g_process_list_head = nullptr;
 Kernel::Process::Process* g_process_list_tail = nullptr;
 Kernel::Process::Process* g_current_process = nullptr;
@@ -51,154 +49,7 @@ bool is_stop_signal(uint32_t sig) noexcept {
 
 namespace Kernel::Process {
 
-Process::~Process() noexcept {
-    destroy_fd_table(*this);
-}
-
-bool init_fd_table(Process& proc, size_t initial_capacity) noexcept {
-    if (proc.fd_table != nullptr) {
-        destroy_fd_table(proc);
-    }
-    if (initial_capacity == 0U) {
-        initial_capacity = INITIAL_FD_CAPACITY;
-    }
-
-    auto* const table = static_cast<FileDescriptor*>(
-        MM::kzalloc(initial_capacity * sizeof(FileDescriptor), alignof(FileDescriptor)));
-    if (table == nullptr) {
-        return false;
-    }
-
-    for (size_t idx = 0U; idx < initial_capacity; ++idx) {
-        new (&table[idx]) FileDescriptor{};
-    }
-
-    proc.fd_table = table;
-    proc.fd_capacity = initial_capacity;
-    return true;
-}
-
-void destroy_fd_table(Process& proc) noexcept {
-    if (proc.fd_table == nullptr) {
-        proc.fd_capacity = 0U;
-        return;
-    }
-
-    for (size_t idx = 0U; idx < proc.fd_capacity; ++idx) {
-        if (proc.fd_table[idx].is_open()) {
-            close_fd(proc, idx);
-        }
-    }
-
-    MM::kfree(proc.fd_table);
-    proc.fd_table = nullptr;
-    proc.fd_capacity = 0U;
-}
-
-bool ensure_fd_capacity(Process& proc, size_t required_slots) noexcept {
-    if (required_slots > proc.rlim_nofile_cur) {
-        return false;
-    }
-    if (proc.fd_table != nullptr && required_slots <= proc.fd_capacity) {
-        return true;
-    }
-
-    size_t new_capacity = (proc.fd_capacity > 0U) ? proc.fd_capacity : INITIAL_FD_CAPACITY;
-    while (new_capacity < required_slots) {
-        if (new_capacity >= proc.rlim_nofile_cur) {
-            new_capacity = static_cast<size_t>(proc.rlim_nofile_cur);
-            break;
-        }
-        if (new_capacity > (SIZE_MAX / 2U)) {
-            new_capacity = static_cast<size_t>(proc.rlim_nofile_cur);
-            break;
-        }
-        const size_t doubled = new_capacity * 2U;
-        new_capacity =
-            (doubled > proc.rlim_nofile_cur) ? static_cast<size_t>(proc.rlim_nofile_cur) : doubled;
-    }
-
-    auto* const grown = static_cast<FileDescriptor*>(MM::krealloc(
-        proc.fd_table, new_capacity * sizeof(FileDescriptor), alignof(FileDescriptor)));
-    if (grown == nullptr) {
-        return false;
-    }
-
-    for (size_t idx = proc.fd_capacity; idx < new_capacity; ++idx) {
-        new (&grown[idx]) FileDescriptor{};
-    }
-
-    proc.fd_table = grown;
-    proc.fd_capacity = new_capacity;
-    return true;
-}
-
-int allocate_fd(Process& proc, size_t min_fd) noexcept {
-    const auto max_fds = static_cast<size_t>(proc.rlim_nofile_cur);
-    if (min_fd >= max_fds) {
-        return ERR_EMFILE;
-    }
-
-    if (proc.fd_table == nullptr || min_fd >= proc.fd_capacity) {
-        if (!ensure_fd_capacity(proc, min_fd + 1U)) {
-            return ERR_EMFILE;
-        }
-    }
-
-    const size_t search_limit = (proc.fd_capacity < max_fds) ? proc.fd_capacity : max_fds;
-    for (size_t idx = min_fd; idx < search_limit; ++idx) {
-        if (!proc.fd_table[idx].is_open()) {
-            return static_cast<int>(idx);
-        }
-    }
-
-    if (proc.fd_capacity >= max_fds) {
-        return ERR_EMFILE;
-    }
-
-    const size_t next_slot = proc.fd_capacity;
-    if (!ensure_fd_capacity(proc, next_slot + 1U)) {
-        return ERR_EMFILE;
-    }
-
-    return static_cast<int>(next_slot);
-}
-
-void close_fd(Process& proc, size_t fd_idx) noexcept {
-    if (proc.fd_table == nullptr || fd_idx >= proc.fd_capacity) {
-        return;
-    }
-
-    auto& desc = proc.fd_table[fd_idx];
-    if (!desc.is_open()) {
-        desc = FileDescriptor{};
-        return;
-    }
-
-    (void)Kernel::FS::vfs_close(desc.file);
-    desc = FileDescriptor{};
-}
-
-void copy_fd_slot(FileDescriptor& dst, const FileDescriptor& src, bool clear_cloexec) noexcept {
-    dst = src;
-    if (clear_cloexec) {
-        dst.fd_flags &= ~FD_FLAG_CLOEXEC;
-    }
-    if (dst.is_open()) {
-        Kernel::FS::file_get(dst.file);
-    }
-}
-
-void close_cloexec_fds(Process& proc) noexcept {
-    if (proc.fd_table == nullptr) {
-        return;
-    }
-    for (size_t idx = 0U; idx < proc.fd_capacity; ++idx) {
-        if (proc.fd_table[idx].is_open() && (proc.fd_table[idx].fd_flags & FD_FLAG_CLOEXEC) != 0U) {
-            close_fd(proc, idx);
-        }
-    }
-}
+Process::~Process() noexcept = default;
 
 Process* allocate_process(uint32_t ppid) noexcept {
     auto& cpu = HAL::get_cpu();
@@ -220,8 +71,6 @@ Process* allocate_process(uint32_t ppid) noexcept {
         return nullptr;
     }
     auto* const proc = new (raw_proc) Process{};
-    proc->fd_table = nullptr;
-    proc->fd_capacity = 0U;
 
     const uintptr_t kstack_pa = Kernel::MM::alloc_frames(KERNEL_STACK_PAGES);
     if (kstack_pa == 0U) {
@@ -233,7 +82,7 @@ Process* allocate_process(uint32_t ppid) noexcept {
         return nullptr;
     }
 
-    if (!init_fd_table(*proc, INITIAL_FD_CAPACITY)) {
+    if (!proc->fds.init(INITIAL_FD_CAPACITY)) {
         Kernel::MM::free_frames(kstack_pa, KERNEL_STACK_PAGES);
         proc->~Process();
         MM::kfree(proc);
@@ -280,7 +129,7 @@ Process* allocate_process(uint32_t ppid) noexcept {
         if (stderr_file != nullptr) {
             (void)Kernel::FS::vfs_close(stderr_file);
         }
-        destroy_fd_table(*proc);
+        proc->fds.destroy();
         Kernel::MM::free_frames(kstack_pa, KERNEL_STACK_PAGES);
         proc->~Process();
         MM::kfree(proc);
@@ -289,9 +138,9 @@ Process* allocate_process(uint32_t ppid) noexcept {
         }
         return nullptr;
     }
-    proc->fd_table[0] = FileDescriptor{.file = stdin_file, .fd_flags = 0U};
-    proc->fd_table[1] = FileDescriptor{.file = stdout_file, .fd_flags = 0U};
-    proc->fd_table[2] = FileDescriptor{.file = stderr_file, .fd_flags = 0U};
+    (void)proc->fds.install(0U, stdin_file, 0U);
+    (void)proc->fds.install(1U, stdout_file, 0U);
+    (void)proc->fds.install(2U, stderr_file, 0U);
 
     proc->global_prev = g_process_list_tail;
     proc->global_next = nullptr;
@@ -340,7 +189,7 @@ void release_process(Process& proc) noexcept {
     record_reaped_ticks(proc.pid, proc.utime + proc.stime);
 
     // Idempotent teardown of dynamic fd_table, user stack, address space, kstack, and PCB
-    destroy_fd_table(proc);
+    proc.fds.destroy();
 
     if (!proc.address_space.is_valid() && proc.user_stack.phys_base != 0U &&
         proc.user_stack.num_pages > 0U) {
@@ -705,7 +554,7 @@ int64_t execute_process(Process& proc) noexcept {
 
     // Close all open descriptors & free fd_table immediately so downstream
     // pipe readers receive EOF before the parent calls wait4()
-    destroy_fd_table(*proc);
+    proc->fds.destroy();
 
     if (proc->clear_child_tid != 0U) {
         const uint32_t zero_tid = 0U;
