@@ -5,7 +5,7 @@ namespace Kernel::Syscalls {
 
 int64_t sys_rt_sigaction(uint64_t sig, uintptr_t user_act, uintptr_t user_oldact,
                          uint64_t sigsetsize) noexcept {
-    auto* const proc = Kernel::Process::current_process();
+    auto* const proc = Kernel::Process::Process::current();
     if (proc == nullptr) {
         return ERR_EINVAL;
     }
@@ -15,21 +15,21 @@ int64_t sys_rt_sigaction(uint64_t sig, uintptr_t user_act, uintptr_t user_oldact
 
     const auto sig_num = static_cast<uint32_t>(sig);
     if (user_oldact != 0U) {
-        const auto& cur = proc->signals.action(sig_num);
+        const auto& cur = proc->signals().action(sig_num);
         const linux_sigaction out{
             .sa_handler = cur.handler,
             .sa_flags = cur.flags,
             .sa_restorer = cur.restorer,
             .sa_mask = cur.mask,
         };
-        if (Kernel::MM::copy_to_user(proc->address_space, user_oldact, &out, sizeof(out)) < 0) {
+        if (Kernel::MM::copy_to_user(proc->address_space(), user_oldact, &out, sizeof(out)) < 0) {
             return ERR_EFAULT;
         }
     }
 
     if (user_act != 0U) {
         linux_sigaction dest{};
-        if (Kernel::MM::copy_from_user(proc->address_space, &dest, user_act, sizeof(dest)) < 0) {
+        if (Kernel::MM::copy_from_user(proc->address_space(), &dest, user_act, sizeof(dest)) < 0) {
             return ERR_EFAULT;
         }
         const Kernel::Process::SigAction act{
@@ -38,7 +38,7 @@ int64_t sys_rt_sigaction(uint64_t sig, uintptr_t user_act, uintptr_t user_oldact
             .restorer = dest.sa_restorer,
             .mask = dest.sa_mask,
         };
-        if (!proc->signals.set_action(sig_num, act)) {
+        if (!proc->signals().set_action(sig_num, act)) {
             return ERR_EINVAL;
         }
     }
@@ -48,14 +48,14 @@ int64_t sys_rt_sigaction(uint64_t sig, uintptr_t user_act, uintptr_t user_oldact
 
 int64_t sys_rt_sigprocmask(uint64_t how, uintptr_t user_set, uintptr_t user_oldset,
                            uint64_t sigsetsize) noexcept {
-    auto* const proc = Kernel::Process::current_process();
+    auto* const proc = Kernel::Process::Process::current();
     if (proc == nullptr || sigsetsize != sizeof(uint64_t)) {
         return ERR_EINVAL;
     }
 
     if (user_oldset != 0U) {
-        const uint64_t old_mask = proc->signals.blocked();
-        if (Kernel::MM::copy_to_user(proc->address_space, user_oldset, &old_mask,
+        const uint64_t old_mask = proc->signals().blocked();
+        if (Kernel::MM::copy_to_user(proc->address_space(), user_oldset, &old_mask,
                                      sizeof(old_mask)) < 0) {
             return ERR_EFAULT;
         }
@@ -63,17 +63,17 @@ int64_t sys_rt_sigprocmask(uint64_t how, uintptr_t user_set, uintptr_t user_olds
 
     if (user_set != 0U) {
         uint64_t set_val = 0ULL;
-        if (Kernel::MM::copy_from_user(proc->address_space, &set_val, user_set, sizeof(set_val)) <
+        if (Kernel::MM::copy_from_user(proc->address_space(), &set_val, user_set, sizeof(set_val)) <
             0) {
             return ERR_EFAULT;
         }
 
         if (how == SIG_BLOCK) {
-            proc->signals.block(set_val);
+            proc->signals().block(set_val);
         } else if (how == SIG_UNBLOCK) {
-            proc->signals.unblock(set_val);
+            proc->signals().unblock(set_val);
         } else if (how == SIG_SETMASK) {
-            proc->signals.set_blocked(set_val);
+            proc->signals().set_blocked(set_val);
         } else {
             return ERR_EINVAL;
         }
@@ -87,7 +87,7 @@ int64_t sys_rt_sigreturn(HAL::CpuContext& ctx) noexcept {
 }
 
 int64_t sys_kill(int32_t pid, uint64_t sig) noexcept {
-    auto* const caller = Kernel::Process::current_process();
+    auto* const caller = Kernel::Process::Process::current();
     if (caller == nullptr) {
         return ERR_EINVAL;
     }
@@ -97,8 +97,8 @@ int64_t sys_kill(int32_t pid, uint64_t sig) noexcept {
 
     bool delivered_any = false;
     if (pid > 0) {
-        auto* const target = Kernel::Process::find_process_by_pid(static_cast<uint32_t>(pid));
-        if (target == nullptr || target->state == Kernel::Process::ProcessState::Zombie) {
+        auto* const target = Kernel::Process::Process::find_by_pid(static_cast<uint32_t>(pid));
+        if (target == nullptr || target->state() == Kernel::Process::ProcessState::Zombie) {
             return ERR_ESRCH;
         }
         if (sig > 0U) {
@@ -107,21 +107,21 @@ int64_t sys_kill(int32_t pid, uint64_t sig) noexcept {
         return 0;
     }
 
-    const uint32_t target_pgid = (pid == 0) ? caller->pgid : static_cast<uint32_t>(-pid);
-    for (auto* proc = Kernel::Process::process_list_head(); proc != nullptr;
-         proc = proc->global_next) {
-        if (proc->state == Kernel::Process::ProcessState::Unused ||
-            proc->state == Kernel::Process::ProcessState::Zombie) {
+    const uint32_t target_pgid = (pid == 0) ? caller->pgid() : static_cast<uint32_t>(-pid);
+    for (auto* proc = Kernel::Process::Process::list_head(); proc != nullptr;
+         proc = proc->next_global()) {
+        if (proc->state() == Kernel::Process::ProcessState::Unused ||
+            proc->state() == Kernel::Process::ProcessState::Zombie) {
             continue;
         }
         if (pid == -1) {
-            if (proc->pid > 1U && proc != caller) {
+            if (proc->pid() > 1U && proc != caller) {
                 if (sig > 0U) {
                     Kernel::Process::send_signal(*proc, static_cast<uint32_t>(sig));
                 }
                 delivered_any = true;
             }
-        } else if (proc->pgid == target_pgid) {
+        } else if (proc->pgid() == target_pgid) {
             if (sig > 0U) {
                 Kernel::Process::send_signal(*proc, static_cast<uint32_t>(sig));
             }

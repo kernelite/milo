@@ -85,7 +85,7 @@ HOST_KERNEL_SRCS := \
     kernel/mm/AddressSpace.cpp \
     kernel/process/FdTable.cpp \
     kernel/process/Signal.cpp \
-    kernel/process/process.cpp \
+    kernel/process/Process.cpp \
     kernel/process/resource.cpp \
     kernel/process/scheduler.cpp \
     kernel/process/stack_builder.cpp \

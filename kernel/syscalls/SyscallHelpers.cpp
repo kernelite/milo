@@ -145,7 +145,7 @@ Kernel::FS::File* get_proc_file(Kernel::Process::Process* proc, uint64_t raw_fd)
     if (proc == nullptr) {
         return nullptr;
     }
-    return proc->fds.get_file(raw_fd);
+    return proc->fds().get_file(raw_fd);
 }
 
 linux_stat inode_to_linux_stat(const Kernel::FS::Inode& inode) noexcept {
@@ -321,7 +321,7 @@ int64_t stage_user_string_array(uintptr_t root_paddr, uintptr_t user_array, cons
 int64_t resolve_dirfd_dentry(Kernel::Process::Process& proc, int32_t dirfd,
                              Kernel::FS::Dentry*& out_base) noexcept {
     if (dirfd == AT_FDCWD) {
-        return Kernel::FS::vfs_namei(Kernel::FS::StringView(proc.cwd), nullptr, &out_base);
+        return Kernel::FS::vfs_namei(Kernel::FS::StringView(proc.cwd()), nullptr, &out_base);
     }
     Kernel::FS::File* dir_file = get_proc_file(&proc, static_cast<uint64_t>(dirfd));
     if (dir_file == nullptr) {

@@ -538,15 +538,15 @@ bool run_concurrent_refcount_test() noexcept {
         return false;
     }
 
-    HAL::Test::init_kernel_thread_context(thread_a->kctx, thread_a->kstack_top,
+    HAL::Test::init_kernel_thread_context(thread_a->kctx(), thread_a->kstack_top(),
                                           &refcount_stress_worker_entry,
                                           reinterpret_cast<uintptr_t>(&worker_a_args));
-    thread_a->kctx_initialized = true;
+    thread_a->set_kctx_initialized(true);
 
-    HAL::Test::init_kernel_thread_context(thread_b->kctx, thread_b->kstack_top,
+    HAL::Test::init_kernel_thread_context(thread_b->kctx(), thread_b->kstack_top(),
                                           &refcount_stress_worker_entry,
                                           reinterpret_cast<uintptr_t>(&worker_b_args));
-    thread_b->kctx_initialized = true;
+    thread_b->set_kctx_initialized(true);
 
     Kernel::Scheduler::enqueue(thread_a);
     Kernel::Scheduler::enqueue(thread_b);

@@ -159,34 +159,33 @@ void SignalTable::clone_from(const SignalTable& src) noexcept {
 }
 
 void send_signal(Process& target, uint32_t sig) noexcept {
-    if (sig == 0U || sig > MAX_SIGNALS || target.state == ProcessState::Unused ||
-        target.state == ProcessState::Zombie) {
+    if (sig == 0U || sig > MAX_SIGNALS || target.state() == ProcessState::Unused ||
+        target.state() == ProcessState::Zombie) {
         return;
     }
 
     const Sync::IrqGuard irq_guard;
 
     if (sig == SIG_CONT) {
-        target.signals.clear_stop_signals();
-        if (target.state == ProcessState::Stopped) {
-            target.stop_signal = 0U;
-            target.stop_reported = false;
-            target.continued = true;
+        target.signals().clear_stop_signals();
+        if (target.state() == ProcessState::Stopped) {
+            target.mark_continued();
             Scheduler::enqueue(&target);
-            if (target.ppid != 0U) {
-                auto* const parent = find_process_by_pid(target.ppid);
+            if (target.ppid() != 0U) {
+                auto* const parent = Process::find_by_pid(target.ppid());
                 if (parent != nullptr) {
-                    parent->child_wait_queue.wake_all();
+                    parent->child_wait_queue().wake_all();
                 }
             }
         }
     }
 
-    target.signals.pend(sig);
+    target.signals().pend(sig);
 
-    if (target.state == ProcessState::Blocked && target.signals.is_deliverable_for_wakeup(sig)) {
-        if (target.active_wq != nullptr) {
-            target.active_wq->remove(&target);
+    if (target.state() == ProcessState::Blocked &&
+        target.signals().is_deliverable_for_wakeup(sig)) {
+        if (target.active_wait_queue() != nullptr) {
+            target.active_wait_queue()->remove(&target);
         }
         Scheduler::enqueue(&target);
     }
@@ -196,27 +195,27 @@ void signal_process_group(uint32_t pgid, uint32_t sig) noexcept {
     if (pgid == 0U || sig == 0U || sig > MAX_SIGNALS) {
         return;
     }
-    for (Process* proc = process_list_head(); proc != nullptr; proc = proc->global_next) {
-        if (proc->state != ProcessState::Unused && proc->state != ProcessState::Zombie &&
-            proc->pgid == pgid) {
+    for (Process* proc = Process::list_head(); proc != nullptr; proc = proc->next_global()) {
+        if (proc->state() != ProcessState::Unused && proc->state() != ProcessState::Zombie &&
+            proc->pgid() == pgid) {
             send_signal(*proc, sig);
         }
     }
 }
 
 bool has_unblocked_pending_signal(const Process& proc) noexcept {
-    return proc.signals.has_unblocked_pending();
+    return proc.signals().has_unblocked_pending();
 }
 
 void deliver_pending_signals(HAL::CpuContext& ctx) noexcept {
-    auto* const proc = current_process();
+    auto* const proc = Process::current();
     if (proc == nullptr) {
         return;
     }
 
     uint32_t sig = 0U;
-    if (!proc->signals.dequeue_next(sig)) {
-        proc->signals.restore_saved_mask_if_any();
+    if (!proc->signals().dequeue_next(sig)) {
+        proc->signals().restore_saved_mask_if_any();
         return;
     }
 
@@ -224,28 +223,26 @@ void deliver_pending_signals(HAL::CpuContext& ctx) noexcept {
         exit_current_process(128 + static_cast<int64_t>(sig));
     }
 
-    const SigAction& act = proc->signals.action(sig);
+    const SigAction& act = proc->signals().action(sig);
     if (act.handler == KERNEL_SIG_IGN) {
-        proc->signals.restore_saved_mask_if_any();
+        proc->signals().restore_saved_mask_if_any();
         return;
     }
 
     if (act.handler == KERNEL_SIG_DFL) {
         if (sig == SIG_CHLD || sig == SIG_CONT) {
-            proc->signals.restore_saved_mask_if_any();
+            proc->signals().restore_saved_mask_if_any();
             return;
         }
         if (is_stop_signal(sig)) {
-            proc->signals.restore_saved_mask_if_any();
+            proc->signals().restore_saved_mask_if_any();
             HAL::get_cpu().disable_interrupts();
-            proc->state = ProcessState::Stopped;
-            proc->stop_signal = sig;
-            proc->stop_reported = false;
-            if (proc->ppid != 0U) {
-                auto* const parent = find_process_by_pid(proc->ppid);
+            proc->mark_stopped(sig);
+            if (proc->ppid() != 0U) {
+                auto* const parent = Process::find_by_pid(proc->ppid());
                 if (parent != nullptr) {
                     send_signal(*parent, SIG_CHLD);
-                    parent->child_wait_queue.wake_all();
+                    parent->child_wait_queue().wake_all();
                 }
             }
             Scheduler::schedule();
@@ -265,7 +262,7 @@ void deliver_pending_signals(HAL::CpuContext& ctx) noexcept {
     const uintptr_t frame_vaddr = (old_sp - sizeof(linux_rt_sigframe)) & ~0xFULL;
     linux_rt_sigframe frame{};
     frame.magic = Kernel::UAPI::RT_SIGFRAME_MAGIC;
-    frame.saved_mask = proc->signals.consume_saved_or_blocked_mask();
+    frame.saved_mask = proc->signals().consume_saved_or_blocked_mask();
 
     for (size_t i = 0U; i < 31U; ++i) {
         frame.regs[i] = cpu.get_reg(ctx, i);
@@ -277,7 +274,7 @@ void deliver_pending_signals(HAL::CpuContext& ctx) noexcept {
     frame.trampoline[0] = 0xD2801168U; // mov x8, #139 (SYS_RT_SIGRETURN)
     frame.trampoline[1] = 0xD4000001U; // svc #0
 
-    if (MM::copy_to_user(proc->address_space, frame_vaddr, &frame, sizeof(frame)) < 0) {
+    if (MM::copy_to_user(proc->address_space(), frame_vaddr, &frame, sizeof(frame)) < 0) {
         exit_current_process(128 + static_cast<int64_t>(SIG_KILL));
     }
 
@@ -285,7 +282,7 @@ void deliver_pending_signals(HAL::CpuContext& ctx) noexcept {
     uintptr_t tramp_paddr = 0U;
     HAL::PageFlags tramp_flags = HAL::PageFlags::None;
     const uintptr_t tramp_vaddr = frame_vaddr + offsetof(linux_rt_sigframe, trampoline);
-    if (proc->address_space.query_user_page(tramp_vaddr, tramp_paddr, tramp_flags)) {
+    if (proc->address_space().query_user_page(tramp_vaddr, tramp_paddr, tramp_flags)) {
         cpu.flush_dcache_range(MM::phys_to_virt(tramp_paddr), sizeof(frame.trampoline));
         cpu.invalidate_icache();
     }
@@ -294,7 +291,7 @@ void deliver_pending_signals(HAL::CpuContext& ctx) noexcept {
                                       ? static_cast<uintptr_t>(act.restorer)
                                       : tramp_vaddr;
 
-    proc->signals.block(act.mask | (1ULL << (sig - 1U)));
+    proc->signals().block(act.mask | (1ULL << (sig - 1U)));
 
     cpu.set_user_stack_pointer(ctx, frame_vaddr);
     cpu.set_user_pc(ctx, static_cast<uintptr_t>(act.handler));
@@ -305,7 +302,7 @@ void deliver_pending_signals(HAL::CpuContext& ctx) noexcept {
 }
 
 int64_t restore_signal_frame(HAL::CpuContext& ctx) noexcept {
-    auto* const proc = current_process();
+    auto* const proc = Process::current();
     if (proc == nullptr) {
         return -1;
     }
@@ -313,7 +310,7 @@ int64_t restore_signal_frame(HAL::CpuContext& ctx) noexcept {
     auto& cpu = HAL::get_cpu();
     const uintptr_t frame_vaddr = cpu.get_user_stack_pointer(ctx);
     linux_rt_sigframe frame{};
-    if (MM::copy_from_user(proc->address_space, &frame, frame_vaddr, sizeof(frame)) < 0) {
+    if (MM::copy_from_user(proc->address_space(), &frame, frame_vaddr, sizeof(frame)) < 0) {
         exit_current_process(128 + static_cast<int64_t>(SIG_KILL));
     }
 
@@ -321,7 +318,7 @@ int64_t restore_signal_frame(HAL::CpuContext& ctx) noexcept {
         exit_current_process(128 + static_cast<int64_t>(SIG_KILL));
     }
 
-    proc->signals.set_blocked(frame.saved_mask);
+    proc->signals().set_blocked(frame.saved_mask);
 
     for (size_t i = 0U; i < 31U; ++i) {
         cpu.set_reg(ctx, i, frame.regs[i]);
