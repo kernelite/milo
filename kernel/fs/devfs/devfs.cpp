@@ -6,6 +6,7 @@
 #include "mm/AddressSpace.hpp"
 #include "process/Process.hpp"
 #include "process/scheduler.hpp"
+#include "sync/IrqGuard.hpp"
 #include "uapi/sys.hpp"
 #include "uapi/termios.hpp"
 
@@ -76,37 +77,21 @@ void tty_pump_uart_unlocked() noexcept {
 }
 
 size_t tty_rx_available() noexcept {
-    auto& cpu = HAL::get_cpu();
-    const bool irq_was_enabled = cpu.interrupts_enabled();
-    cpu.disable_interrupts();
-
+    const Kernel::Sync::IrqGuard irq_guard{};
     tty_pump_uart_unlocked();
-    const size_t avail = g_tty_rx_count;
-
-    if (irq_was_enabled) {
-        cpu.enable_interrupts();
-    }
-    return avail;
+    return g_tty_rx_count;
 }
 
 bool tty_try_pop_byte(uint8_t& out_byte) noexcept {
-    auto& cpu = HAL::get_cpu();
-    const bool irq_was_enabled = cpu.interrupts_enabled();
-    cpu.disable_interrupts();
-
+    const Kernel::Sync::IrqGuard irq_guard{};
     tty_pump_uart_unlocked();
-    bool got_byte = false;
-    if (g_tty_rx_count > 0U) {
-        out_byte = g_tty_rx_buf[g_tty_rx_head];
-        g_tty_rx_head = (g_tty_rx_head + 1U) % kTtyRxBufSize;
-        --g_tty_rx_count;
-        got_byte = true;
+    if (g_tty_rx_count == 0U) {
+        return false;
     }
-
-    if (irq_was_enabled) {
-        cpu.enable_interrupts();
-    }
-    return got_byte;
+    out_byte = g_tty_rx_buf[g_tty_rx_head];
+    g_tty_rx_head = (g_tty_rx_head + 1U) % kTtyRxBufSize;
+    --g_tty_rx_count;
+    return true;
 }
 
 void wait_for_tty_event() noexcept {
@@ -324,15 +309,12 @@ int32_t console_ioctl(File* /*file*/, uint64_t request, uint64_t arg) noexcept {
         if (copy_res < 0) {
             return kEfault;
         }
-        auto& cpu = HAL::get_cpu();
-        const bool irq_was_enabled = cpu.interrupts_enabled();
-        cpu.disable_interrupts();
-        g_console_termios = updated;
-        if (request == Kernel::UAPI::TCSETSF) {
-            tty_flush_rx_unlocked();
-        }
-        if (irq_was_enabled) {
-            cpu.enable_interrupts();
+        {
+            const Kernel::Sync::IrqGuard irq_guard{};
+            g_console_termios = updated;
+            if (request == Kernel::UAPI::TCSETSF) {
+                tty_flush_rx_unlocked();
+            }
         }
         return kOk;
     }
@@ -615,15 +597,8 @@ int32_t devfs_open_console(uint32_t flags, File** out_file) noexcept {
 }
 
 void console_poll_rx() noexcept {
-    auto& cpu = HAL::get_cpu();
-    const bool irq_was_enabled = cpu.interrupts_enabled();
-    cpu.disable_interrupts();
-
+    const Kernel::Sync::IrqGuard irq_guard{};
     tty_pump_uart_unlocked();
-
-    if (irq_was_enabled) {
-        cpu.enable_interrupts();
-    }
 }
 
 void console_set_foreground_pgid(uint32_t pgid) noexcept {

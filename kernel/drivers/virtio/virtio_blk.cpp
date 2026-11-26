@@ -5,6 +5,7 @@
 #include "mm/AddressSpace.hpp"
 #include "mm/pfa.hpp"
 #include "process/Process.hpp"
+#include "sync/IrqGuard.hpp"
 
 #include <cerrno>
 #include <cstring>
@@ -25,39 +26,6 @@
 namespace Kernel::Drivers::Virtio {
 
 namespace {
-
-class ScopedIrqDisable final {
-  public:
-    ScopedIrqDisable() noexcept {
-#if defined(__aarch64__) && !defined(HOST_TEST)
-        asm volatile("mrs %0, daif\n\t"
-                     "msr daifset, #2"
-                     : "=r"(m_saved_daif)
-                     :
-                     : "memory");
-#else
-        std::atomic_signal_fence(std::memory_order_seq_cst);
-#endif
-    }
-
-    ~ScopedIrqDisable() noexcept {
-#if defined(__aarch64__) && !defined(HOST_TEST)
-        asm volatile("msr daif, %0" : : "r"(m_saved_daif) : "memory");
-#else
-        std::atomic_signal_fence(std::memory_order_seq_cst);
-#endif
-    }
-
-    ScopedIrqDisable(const ScopedIrqDisable&) = delete;
-    ScopedIrqDisable& operator=(const ScopedIrqDisable&) = delete;
-    ScopedIrqDisable(ScopedIrqDisable&&) = delete;
-    ScopedIrqDisable& operator=(ScopedIrqDisable&&) = delete;
-
-  private:
-#if defined(__aarch64__) && !defined(HOST_TEST)
-    uint64_t m_saved_daif{0ULL};
-#endif
-};
 
 uint16_t select_queue_size(uint32_t device_max, uint16_t preferred) noexcept {
     if (device_max == 0U || preferred == 0U) {
@@ -251,7 +219,7 @@ int VirtioBlkDevice::submit_chunk(uint32_t type, uint64_t lba, void* buf,
         req.waiter_pid = proc->pid;
     }
 
-    ScopedIrqDisable irq_guard{};
+    const Sync::IrqGuard irq_guard{};
 
     while (m_dma_busy) {
         m_dma_waiters.sleep();

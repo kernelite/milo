@@ -2,6 +2,7 @@
 
 #include "hal/cpu.hpp"
 #include "process/Process.hpp"
+#include "sync/IrqGuard.hpp"
 
 #include <new>
 
@@ -22,16 +23,9 @@ void retain_pipe_reader(Pipe* pipe) noexcept {
     if (pipe == nullptr) {
         return;
     }
-    auto& cpu = HAL::get_cpu();
-    const bool irq_was_enabled = cpu.interrupts_enabled();
-    cpu.disable_interrupts();
-
+    const Kernel::Sync::IrqGuard irq_guard{};
     if (pipe->in_use) {
         ++pipe->readers;
-    }
-
-    if (irq_was_enabled) {
-        cpu.enable_interrupts();
     }
 }
 
@@ -39,16 +33,9 @@ void retain_pipe_writer(Pipe* pipe) noexcept {
     if (pipe == nullptr) {
         return;
     }
-    auto& cpu = HAL::get_cpu();
-    const bool irq_was_enabled = cpu.interrupts_enabled();
-    cpu.disable_interrupts();
-
+    const Kernel::Sync::IrqGuard irq_guard{};
     if (pipe->in_use) {
         ++pipe->writers;
-    }
-
-    if (irq_was_enabled) {
-        cpu.enable_interrupts();
     }
 }
 
@@ -56,37 +43,30 @@ void release_pipe_end(Pipe* pipe, bool release_reader, bool release_writer) noex
     if (pipe == nullptr || (!release_reader && !release_writer)) {
         return;
     }
-    auto& cpu = HAL::get_cpu();
-    const bool irq_was_enabled = cpu.interrupts_enabled();
-    cpu.disable_interrupts();
-
-    if (!pipe->in_use) {
-        if (irq_was_enabled) {
-            cpu.enable_interrupts();
+    bool should_delete = false;
+    {
+        const Kernel::Sync::IrqGuard irq_guard{};
+        if (!pipe->in_use) {
+            return;
         }
-        return;
-    }
 
-    if (release_reader) {
-        if (pipe->readers > 0U) {
-            --pipe->readers;
+        if (release_reader) {
+            if (pipe->readers > 0U) {
+                --pipe->readers;
+            }
+            pipe->write_wq.wake_all();
         }
-        pipe->write_wq.wake_all();
-    }
-    if (release_writer) {
-        if (pipe->writers > 0U) {
-            --pipe->writers;
+        if (release_writer) {
+            if (pipe->writers > 0U) {
+                --pipe->writers;
+            }
+            pipe->read_wq.wake_all();
         }
-        pipe->read_wq.wake_all();
-    }
 
-    const bool should_delete = (pipe->readers == 0U && pipe->writers == 0U);
-    if (should_delete) {
-        pipe->in_use = false;
-    }
-
-    if (irq_was_enabled) {
-        cpu.enable_interrupts();
+        should_delete = (pipe->readers == 0U && pipe->writers == 0U);
+        if (should_delete) {
+            pipe->in_use = false;
+        }
     }
 
     if (should_delete) {

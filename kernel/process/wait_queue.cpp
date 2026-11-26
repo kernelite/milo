@@ -3,6 +3,7 @@
 #include "hal/cpu.hpp"
 #include "process/Process.hpp"
 #include "process/scheduler.hpp"
+#include "sync/IrqGuard.hpp"
 
 namespace Kernel::Process {
 
@@ -67,51 +68,30 @@ void WaitQueue::remove(Process* proc) noexcept {
 }
 
 void WaitQueue::sleep() noexcept {
-    auto& cpu = HAL::get_cpu();
-    const bool irq_was_enabled = cpu.interrupts_enabled();
-    cpu.disable_interrupts();
-
+    const Sync::IrqGuard irq_guard{};
     auto* const current = current_process();
     if (current != nullptr) {
         enqueue(current);
         current->state = ProcessState::Blocked;
         Scheduler::schedule();
     }
-
-    if (irq_was_enabled) {
-        cpu.enable_interrupts();
-    }
 }
 
 void WaitQueue::wake_one() noexcept {
-    auto& cpu = HAL::get_cpu();
-    const bool irq_was_enabled = cpu.interrupts_enabled();
-    cpu.disable_interrupts();
-
+    const Sync::IrqGuard irq_guard{};
     Process* const proc = dequeue();
     if (proc != nullptr) {
         Scheduler::enqueue(proc);
     }
-
-    if (irq_was_enabled) {
-        cpu.enable_interrupts();
-    }
 }
 
 void WaitQueue::wake_all() noexcept {
-    auto& cpu = HAL::get_cpu();
-    const bool irq_was_enabled = cpu.interrupts_enabled();
-    cpu.disable_interrupts();
-
+    const Sync::IrqGuard irq_guard{};
     while (m_head != nullptr) {
         Process* const proc = dequeue();
         if (proc != nullptr) {
             Scheduler::enqueue(proc);
         }
-    }
-
-    if (irq_was_enabled) {
-        cpu.enable_interrupts();
     }
 }
 
