@@ -16,7 +16,7 @@ int64_t sys_rt_sigaction(uint64_t sig, uintptr_t user_act, uintptr_t user_oldact
     const size_t idx = static_cast<size_t>(sig - 1U);
     if (user_oldact != 0U) {
         const auto& cur = proc->sigactions[idx];
-        const LinuxSigAction out{
+        const linux_sigaction out{
             .sa_handler = cur.handler,
             .sa_flags = cur.flags,
             .sa_restorer = cur.restorer,
@@ -31,7 +31,7 @@ int64_t sys_rt_sigaction(uint64_t sig, uintptr_t user_act, uintptr_t user_oldact
         if (sig == Kernel::Process::SIG_KILL || sig == Kernel::Process::SIG_STOP) {
             return ERR_EINVAL;
         }
-        LinuxSigAction dest{};
+        linux_sigaction dest{};
         if (Kernel::MM::copy_from_user(proc->address_space, &dest, user_act, sizeof(dest)) < 0) {
             return ERR_EFAULT;
         }

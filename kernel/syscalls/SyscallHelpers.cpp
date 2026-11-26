@@ -14,25 +14,14 @@ void wait_for_event_or_tick() noexcept {
     cpu.disable_interrupts();
 }
 
-uint64_t timespec_to_timer_ticks(const LinuxTimespec& time_spec, uint64_t freq) noexcept {
-    if (freq == 0ULL || (time_spec.tv_sec == 0 && time_spec.tv_nsec == 0)) {
-        return 0ULL;
-    }
-    const uint64_t sec_ticks = static_cast<uint64_t>(time_spec.tv_sec) * freq;
-    const uint64_t nsec_ticks =
-        (static_cast<uint64_t>(time_spec.tv_nsec) * freq + 999999999ULL) / 1000000000ULL;
-    return sec_ticks + nsec_ticks;
+Kernel::Time::Duration monotonic_now() noexcept {
+    const uint64_t freq = HAL::QemuVirt::GenericTimer::frequency_hz();
+    const uint64_t ticks = HAL::QemuVirt::GenericTimer::counter_ticks();
+    return Kernel::Time::Duration::from_ticks(ticks, freq);
 }
 
 uint64_t monotonic_now_ns() noexcept {
-    const uint64_t freq = HAL::QemuVirt::GenericTimer::frequency_hz();
-    const uint64_t ticks = HAL::QemuVirt::GenericTimer::counter_ticks();
-    if (freq == 0ULL) {
-        return 0ULL;
-    }
-    const uint64_t secs = ticks / freq;
-    const uint64_t rem = ticks % freq;
-    return (secs * 1000000000ULL) + ((rem * 1000000000ULL) / freq);
+    return monotonic_now().nanoseconds();
 }
 
 size_t cstr_len(const char* str) noexcept {
@@ -160,8 +149,15 @@ Kernel::FS::File* get_proc_file(Kernel::Process::Process* proc, uint64_t raw_fd)
     return desc.is_open() ? desc.file : nullptr;
 }
 
-void fill_stat_from_inode(const Kernel::FS::Inode& inode, LinuxStat& stat_out) noexcept {
-    stat_out = LinuxStat{};
+linux_stat inode_to_linux_stat(const Kernel::FS::Inode& inode) noexcept {
+    const linux_timespec atime =
+        Kernel::Time::Duration::from_nanoseconds(inode.atime_ns).to_linux_timespec();
+    const linux_timespec mtime =
+        Kernel::Time::Duration::from_nanoseconds(inode.mtime_ns).to_linux_timespec();
+    const linux_timespec ctime =
+        Kernel::Time::Duration::from_nanoseconds(inode.ctime_ns).to_linux_timespec();
+
+    linux_stat stat_out{};
     stat_out.st_dev = 1ULL;
     stat_out.st_ino = (inode.ino != 0U) ? inode.ino : 1ULL;
     stat_out.st_mode = inode.mode;
@@ -172,12 +168,13 @@ void fill_stat_from_inode(const Kernel::FS::Inode& inode, LinuxStat& stat_out) n
     stat_out.st_size = static_cast<int64_t>(inode.size);
     stat_out.st_blksize = 4096;
     stat_out.st_blocks = static_cast<int64_t>((inode.size + 511U) / 512U);
-    stat_out.st_atime_sec = static_cast<int64_t>(inode.atime_ns / 1000000000ULL);
-    stat_out.st_atime_nsec = static_cast<int64_t>(inode.atime_ns % 1000000000ULL);
-    stat_out.st_mtime_sec = static_cast<int64_t>(inode.mtime_ns / 1000000000ULL);
-    stat_out.st_mtime_nsec = static_cast<int64_t>(inode.mtime_ns % 1000000000ULL);
-    stat_out.st_ctime_sec = static_cast<int64_t>(inode.ctime_ns / 1000000000ULL);
-    stat_out.st_ctime_nsec = static_cast<int64_t>(inode.ctime_ns % 1000000000ULL);
+    stat_out.st_atime_sec = atime.tv_sec;
+    stat_out.st_atime_nsec = atime.tv_nsec;
+    stat_out.st_mtime_sec = mtime.tv_sec;
+    stat_out.st_mtime_nsec = mtime.tv_nsec;
+    stat_out.st_ctime_sec = ctime.tv_sec;
+    stat_out.st_ctime_nsec = ctime.tv_nsec;
+    return stat_out;
 }
 
 void unmap_and_free_range(Kernel::MM::AddressSpace& adrsp, uintptr_t start_vaddr,

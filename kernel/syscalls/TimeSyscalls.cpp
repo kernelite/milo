@@ -18,14 +18,14 @@ int64_t sys_getrusage(int32_t who, uintptr_t user_usage) noexcept {
     const uint64_t uticks = (who == RUSAGE_CHILDREN) ? proc->cutime : proc->utime;
     const uint64_t sticks = (who == RUSAGE_CHILDREN) ? proc->cstime : proc->stime;
     // Timer runs at 100 Hz (10,000 microseconds per tick)
-    const uint64_t user_usec = uticks * 10000ULL;
-    const uint64_t sys_usec = sticks * 10000ULL;
+    const Kernel::Time::Duration user_time =
+        Kernel::Time::Duration::from_microseconds(uticks * 10000ULL);
+    const Kernel::Time::Duration sys_time =
+        Kernel::Time::Duration::from_microseconds(sticks * 10000ULL);
 
-    LinuxRusage usage{};
-    usage.ru_utime.tv_sec = static_cast<int64_t>(user_usec / 1000000ULL);
-    usage.ru_utime.tv_usec = static_cast<int64_t>(user_usec % 1000000ULL);
-    usage.ru_stime.tv_sec = static_cast<int64_t>(sys_usec / 1000000ULL);
-    usage.ru_stime.tv_usec = static_cast<int64_t>(sys_usec % 1000000ULL);
+    linux_rusage usage{};
+    usage.ru_utime = user_time.to_linux_timeval();
+    usage.ru_stime = sys_time.to_linux_timeval();
 
     return Kernel::MM::copy_to_user(proc->address_space, user_usage, &usage, sizeof(usage));
 }
@@ -90,17 +90,19 @@ int64_t sys_nanosleep(uintptr_t user_req, uintptr_t user_rem) noexcept {
         return ERR_EINVAL;
     }
 
-    LinuxTimespec req{};
-    if (Kernel::MM::copy_from_user(proc->address_space, &req, user_req, sizeof(req)) < 0) {
+    linux_timespec raw_req{};
+    if (Kernel::MM::copy_from_user(proc->address_space, &raw_req, user_req, sizeof(raw_req)) < 0) {
         return ERR_EFAULT;
     }
-    if (req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= 1000000000LL) {
+
+    Kernel::Time::Duration req_duration{};
+    if (!Kernel::Time::Duration::from_linux_timespec(raw_req, req_duration)) {
         return ERR_EINVAL;
     }
 
     const uint64_t freq = HAL::QemuVirt::GenericTimer::frequency_hz();
     const uint64_t start_ticks = HAL::QemuVirt::GenericTimer::counter_ticks();
-    const uint64_t wait_ticks = timespec_to_timer_ticks(req, freq);
+    const uint64_t wait_ticks = req_duration.to_timer_ticks(freq);
 
     while (true) {
         const uint64_t now_ticks = HAL::QemuVirt::GenericTimer::counter_ticks();
@@ -112,10 +114,8 @@ int64_t sys_nanosleep(uintptr_t user_req, uintptr_t user_rem) noexcept {
         if (Kernel::Process::has_unblocked_pending_signal(*proc)) {
             if (user_rem != 0U && freq > 0ULL) {
                 const uint64_t rem_ticks = wait_ticks - elapsed;
-                const LinuxTimespec rem{
-                    .tv_sec = static_cast<int64_t>(rem_ticks / freq),
-                    .tv_nsec = static_cast<int64_t>(((rem_ticks % freq) * 1000000000ULL) / freq),
-                };
+                const linux_timespec rem =
+                    Kernel::Time::Duration::from_ticks(rem_ticks, freq).to_linux_timespec();
                 if (Kernel::MM::copy_to_user(proc->address_space, user_rem, &rem, sizeof(rem)) <
                     0) {
                     return ERR_EFAULT;
@@ -128,7 +128,7 @@ int64_t sys_nanosleep(uintptr_t user_req, uintptr_t user_rem) noexcept {
     }
 
     if (user_rem != 0U) {
-        constexpr LinuxTimespec zero_rem{.tv_sec = 0, .tv_nsec = 0};
+        constexpr linux_timespec zero_rem = Kernel::Time::Duration::zero().to_linux_timespec();
         if (Kernel::MM::copy_to_user(proc->address_space, user_rem, &zero_rem, sizeof(zero_rem)) <
             0) {
             return ERR_EFAULT;
@@ -145,7 +145,7 @@ int64_t sys_times(uintptr_t user_buf) noexcept {
     }
 
     if (user_buf != 0U) {
-        const LinuxTms tms_val{
+        const linux_tms tms_val{
             .tms_utime = static_cast<int64_t>(proc->utime),
             .tms_stime = static_cast<int64_t>(proc->stime),
             .tms_cutime = static_cast<int64_t>(proc->cutime),
@@ -166,7 +166,7 @@ int64_t sys_uname(uintptr_t user_buf) noexcept {
         return ERR_EINVAL;
     }
 
-    LinuxUtsname uts{};
+    linux_utsname uts{};
     cstr_copy(uts.sysname, "Linux", sizeof(uts.sysname));
     cstr_copy(uts.nodename, "milo", sizeof(uts.nodename));
     cstr_copy(uts.release, "6.6.0-milo", sizeof(uts.release));
@@ -184,15 +184,7 @@ int64_t sys_clock_gettime(uint64_t clk_id, uintptr_t user_tp) noexcept {
         return ERR_EINVAL;
     }
 
-    const uint64_t freq = HAL::QemuVirt::GenericTimer::frequency_hz();
-    const uint64_t ticks = HAL::QemuVirt::GenericTimer::counter_ticks();
-    LinuxTimespec time_spec{};
-    if (freq > 0ULL) {
-        time_spec.tv_sec = static_cast<int64_t>(ticks / freq);
-        const uint64_t rem = ticks % freq;
-        time_spec.tv_nsec = static_cast<int64_t>((rem * 1000000000ULL) / freq);
-    }
-
+    const linux_timespec time_spec = monotonic_now().to_linux_timespec();
     return Kernel::MM::copy_to_user(proc->address_space, user_tp, &time_spec, sizeof(time_spec));
 }
 
@@ -202,12 +194,11 @@ int64_t sys_sysinfo(uintptr_t user_info) noexcept {
         return ERR_EINVAL;
     }
 
-    const uint64_t freq = HAL::QemuVirt::GenericTimer::frequency_hz();
-    const uint64_t ticks = HAL::QemuVirt::GenericTimer::counter_ticks();
     const auto platform = HAL::get_platform_info();
+    const linux_timespec uptime = monotonic_now().to_linux_timespec();
 
-    LinuxSysinfo info{};
-    info.uptime = (freq > 0ULL) ? static_cast<int64_t>(ticks / freq) : 0;
+    linux_sysinfo info{};
+    info.uptime = uptime.tv_sec;
     info.totalram = platform.ram_size;
     info.freeram = Kernel::MM::pfa_free_pages_count() * platform.page_size;
     info.procs = static_cast<uint16_t>(Kernel::Process::active_process_count());

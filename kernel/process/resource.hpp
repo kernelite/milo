@@ -1,5 +1,7 @@
 #pragma once
 
+#include "uapi/sys.hpp"
+
 #include <cstdint>
 
 namespace Kernel::Process {
@@ -29,6 +31,17 @@ constexpr uint64_t BYTES_PER_PROCESS_QUOTA = 1024ULL * 1024ULL;
 struct RLimit64 {
     uint64_t rlim_cur{RLIM64_INFINITY};
     uint64_t rlim_max{RLIM64_INFINITY};
+
+    [[nodiscard]] static constexpr RLimit64
+    from_linux_rlimit64(const linux_rlimit64& raw) noexcept {
+        return RLimit64{.rlim_cur = raw.rlim_cur, .rlim_max = raw.rlim_max};
+    }
+
+    [[nodiscard]] constexpr linux_rlimit64 to_linux_rlimit64() const noexcept {
+        return linux_rlimit64{.rlim_cur = rlim_cur, .rlim_max = rlim_max};
+    }
+
+    [[nodiscard]] constexpr bool is_valid() const noexcept { return rlim_cur <= rlim_max; }
 };
 
 void init_resource_limits() noexcept;
