@@ -13,7 +13,7 @@
 #include "ipc/pipe.hpp"
 #include "loader/elf64.hpp"
 #include "loader/elf_loader.hpp"
-#include "mm/address_space.hpp"
+#include "mm/AddressSpace.hpp"
 #include "mm/heap.hpp"
 #include "mm/pfa.hpp"
 #include "process/Process.hpp"

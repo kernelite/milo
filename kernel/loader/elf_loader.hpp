@@ -2,7 +2,7 @@
 
 #include "core/traits.hpp"
 #include "loader/elf64.hpp"
-#include "mm/address_space.hpp"
+#include "mm/AddressSpace.hpp"
 
 #include <cstddef>
 #include <cstdint>

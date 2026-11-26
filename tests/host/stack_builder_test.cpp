@@ -1,7 +1,7 @@
 #include "loader/elf64.hpp"
 #include "loader/elf_loader.hpp"
 #include "memory_config.hpp"
-#include "mm/address_space.hpp"
+#include "mm/AddressSpace.hpp"
 #include "mm/pfa.hpp"
 #include "mocks/host_hal.hpp"
 #include "process/stack_builder.hpp"

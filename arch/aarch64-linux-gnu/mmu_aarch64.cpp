@@ -4,7 +4,7 @@
 #include "hal/cpu.hpp"
 #include "hal/mmu.hpp"
 #include "memory_config.hpp"
-#include "mm/address_space.hpp"
+#include "mm/AddressSpace.hpp"
 #include "mm/pfa.hpp"
 
 #include <cstddef>

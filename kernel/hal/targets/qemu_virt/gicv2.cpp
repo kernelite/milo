@@ -1,6 +1,6 @@
 #include "hal/targets/qemu_virt/gicv2.hpp"
 
-#include "mm/address_space.hpp"
+#include "mm/AddressSpace.hpp"
 
 namespace HAL::QemuVirt {
 

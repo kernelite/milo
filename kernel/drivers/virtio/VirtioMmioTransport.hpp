@@ -1,6 +1,6 @@
 #pragma once
 
-#include "drivers/virtio/virtio_ring.hpp"
+#include "drivers/virtio/SplitVirtqueue.hpp"
 
 #include <cstddef>
 #include <cstdint>

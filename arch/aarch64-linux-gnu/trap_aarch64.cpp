@@ -6,7 +6,7 @@
 #include "hal/targets/qemu_virt/timer.hpp"
 #include "hal/trap.hpp"
 #include "memory_config.hpp"
-#include "mm/address_space.hpp"
+#include "mm/AddressSpace.hpp"
 #include "mm/pfa.hpp"
 #include "process/Process.hpp"
 #include "process/scheduler.hpp"

@@ -1,8 +1,8 @@
 #pragma once
 
 #include "drivers/block/block_device.hpp"
-#include "drivers/virtio/virtio_mmio.hpp"
-#include "drivers/virtio/virtio_ring.hpp"
+#include "drivers/virtio/SplitVirtqueue.hpp"
+#include "drivers/virtio/VirtioMmioTransport.hpp"
 #include "process/wait_queue.hpp"
 
 #include <atomic>

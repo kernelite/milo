@@ -1,4 +1,4 @@
-#include "drivers/virtio/virtio_ring.hpp"
+#include "drivers/virtio/SplitVirtqueue.hpp"
 #include "memory_config.hpp"
 #include "mm/pfa.hpp"
 #include "mocks/host_hal.hpp"

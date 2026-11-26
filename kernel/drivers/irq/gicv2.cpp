@@ -1,6 +1,6 @@
 #include "drivers/irq/gicv2.hpp"
 
-#include "mm/address_space.hpp"
+#include "mm/AddressSpace.hpp"
 
 namespace Kernel::Drivers::IRQ {
 

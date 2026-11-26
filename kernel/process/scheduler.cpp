@@ -2,7 +2,7 @@
 
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
-#include "mm/address_space.hpp"
+#include "mm/AddressSpace.hpp"
 
 namespace {
 
