@@ -108,20 +108,20 @@ TEST_CASE("rootfs populates VFS hierarchy from CPIO and enforces read-only seman
     SECTION("resolves nested paths, symlinks, and synthesized directories") {
         Dentry* resolved = nullptr;
         REQUIRE(vfs_namei("/init.txt", nullptr, &resolved) == kOk);
-        REQUIRE(resolved->inode->size == 15U);
-        dentry_put(resolved);
+        REQUIRE(resolved->get_inode()->get_size() == 15U);
+        resolved->release();
 
         REQUIRE(vfs_namei("/etc/nested/config.cfg", nullptr, &resolved) == kOk);
-        REQUIRE(resolved->inode->size == 9U);
-        dentry_put(resolved);
+        REQUIRE(resolved->get_inode()->get_size() == 9U);
+        resolved->release();
 
         REQUIRE(vfs_namei("/bin/sh", nullptr, &resolved, true) == kOk);
         REQUIRE(resolved->name_view() == "busybox");
-        dentry_put(resolved);
+        resolved->release();
 
         REQUIRE(vfs_namei("/bin/sh", nullptr, &resolved, false) == kOk);
-        REQUIRE(resolved->inode->is_symlink());
-        dentry_put(resolved);
+        REQUIRE(resolved->get_inode()->is_symlink());
+        resolved->release();
 
         char link_target[32]{};
         size_t link_len = 0U;
@@ -169,7 +169,8 @@ TEST_CASE("rootfs populates VFS hierarchy from CPIO and enforces read-only seman
         REQUIRE(vfs_rename("/init.txt", "/other.txt") == kErofs);
 
         REQUIRE(vfs_open("/init.txt", kOpenReadOnly, 0U, &file) == kOk);
-        REQUIRE(file->f_ops->write(file, "x", 1U, &file->offset) == kErofs);
+        uint64_t off = file->get_offset();
+        REQUIRE(file->get_f_ops()->write(file, "x", 1U, &off) == kErofs);
         REQUIRE(vfs_close(file) == kOk);
     }
 }
@@ -208,7 +209,7 @@ TEST_CASE("VFS-backed IPC pipes transfer ring buffer data and propagate EOF", "[
     REQUIRE(Kernel::IPC::create_pipe_files(&read_end, &write_end, kOpenNonBlock) == kOk);
     REQUIRE(read_end != nullptr);
     REQUIRE(write_end != nullptr);
-    REQUIRE(read_end->inode->is_fifo());
+    REQUIRE(read_end->get_inode()->is_fifo());
 
     char buf[32]{};
     REQUIRE(vfs_read(read_end, buf, sizeof(buf)) == kEagain);

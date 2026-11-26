@@ -30,7 +30,9 @@ struct File {
     void release() noexcept;
 
     [[nodiscard]] constexpr Inode* get_inode() const noexcept { return inode; }
+    constexpr void set_inode(Inode* new_inode) noexcept { inode = new_inode; }
     [[nodiscard]] constexpr Dentry* get_dentry() const noexcept { return dentry; }
+    constexpr void set_dentry(Dentry* new_dentry) noexcept { dentry = new_dentry; }
 
     [[nodiscard]] constexpr uint64_t get_offset() const noexcept { return offset; }
     constexpr void set_offset(uint64_t new_offset) noexcept { offset = new_offset; }
