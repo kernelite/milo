@@ -3,6 +3,7 @@
 #include "hal/console.hpp"
 #include "hal/cpu.hpp"
 #include "mm/AddressSpace.hpp"
+#include "sync/IrqGuard.hpp"
 
 namespace {
 
@@ -87,17 +88,10 @@ void Runqueue::remove(Process::Process* proc) noexcept {
 }
 
 void init() noexcept {
-    auto& cpu = HAL::get_cpu();
-    const bool irq_was_enabled = cpu.interrupts_enabled();
-    cpu.disable_interrupts();
-
+    const Sync::IrqGuard irq_guard{};
     g_runqueue = Runqueue{};
     g_timer_ticks = 0ULL;
     g_in_schedule = false;
-
-    if (irq_was_enabled) {
-        cpu.enable_interrupts();
-    }
 }
 
 void enqueue(Process::Process* proc) noexcept {
@@ -105,10 +99,7 @@ void enqueue(Process::Process* proc) noexcept {
         return;
     }
 
-    auto& cpu = HAL::get_cpu();
-    const bool irq_was_enabled = cpu.interrupts_enabled();
-    cpu.disable_interrupts();
-
+    const Sync::IrqGuard irq_guard{};
     if (proc->state != Process::ProcessState::Zombie &&
         proc->state != Process::ProcessState::Unused) {
         if (proc->active_wq != nullptr) {
@@ -120,10 +111,6 @@ void enqueue(Process::Process* proc) noexcept {
         }
         g_runqueue.enqueue(proc);
     }
-
-    if (irq_was_enabled) {
-        cpu.enable_interrupts();
-    }
 }
 
 void remove(Process::Process* proc) noexcept {
@@ -131,27 +118,13 @@ void remove(Process::Process* proc) noexcept {
         return;
     }
 
-    auto& cpu = HAL::get_cpu();
-    const bool irq_was_enabled = cpu.interrupts_enabled();
-    cpu.disable_interrupts();
-
+    const Sync::IrqGuard irq_guard{};
     g_runqueue.remove(proc);
-
-    if (irq_was_enabled) {
-        cpu.enable_interrupts();
-    }
 }
 
 void yield() noexcept {
-    auto& cpu = HAL::get_cpu();
-    const bool irq_was_enabled = cpu.interrupts_enabled();
-    cpu.disable_interrupts();
-
+    const Sync::IrqGuard irq_guard{};
     schedule();
-
-    if (irq_was_enabled) {
-        cpu.enable_interrupts();
-    }
 }
 
 bool is_in_atomic_context() noexcept {
@@ -229,10 +202,7 @@ void schedule() noexcept {
 }
 
 void on_timer_tick(bool from_user) noexcept {
-    auto& cpu = HAL::get_cpu();
-    const bool irq_was_enabled = cpu.interrupts_enabled();
-    cpu.disable_interrupts();
-
+    const Sync::IrqGuard irq_guard{};
     g_timer_ticks++;
 
     auto* const current = Process::current_process();
@@ -250,10 +220,6 @@ void on_timer_tick(bool from_user) noexcept {
             current->timeslice = DEFAULT_TIMESLICE_TICKS;
             schedule();
         }
-    }
-
-    if (irq_was_enabled) {
-        cpu.enable_interrupts();
     }
 }
 

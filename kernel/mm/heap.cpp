@@ -3,6 +3,7 @@
 #include "memory_config.hpp"
 #include "mm/AddressSpace.hpp"
 #include "mm/pfa.hpp"
+#include "sync/IrqGuard.hpp"
 
 #include <cstdint>
 
@@ -43,38 +44,21 @@ struct SlabCache {
 std::mutex g_host_heap_mutex;
 #endif
 
-class IrqLockGuard {
+class HeapLockGuard final {
   public:
-    IrqLockGuard() noexcept
-#ifdef HOST_TEST
-        : m_lock(g_host_heap_mutex)
-#else
-        : m_irq_was_enabled(HAL::get_cpu().interrupts_enabled())
-#endif
-    {
-#ifndef HOST_TEST
-        HAL::get_cpu().disable_interrupts();
-#endif
-    }
+    HeapLockGuard() noexcept = default;
+    ~HeapLockGuard() noexcept = default;
 
-    ~IrqLockGuard() noexcept {
-#ifndef HOST_TEST
-        if (m_irq_was_enabled) {
-            HAL::get_cpu().enable_interrupts();
-        }
-#endif
-    }
-
-    IrqLockGuard(const IrqLockGuard&) = delete;
-    IrqLockGuard& operator=(const IrqLockGuard&) = delete;
-    IrqLockGuard(IrqLockGuard&&) = delete;
-    IrqLockGuard& operator=(IrqLockGuard&&) = delete;
+    HeapLockGuard(const HeapLockGuard&) = delete;
+    HeapLockGuard& operator=(const HeapLockGuard&) = delete;
+    HeapLockGuard(HeapLockGuard&&) = delete;
+    HeapLockGuard& operator=(HeapLockGuard&&) = delete;
 
   private:
 #ifdef HOST_TEST
-    std::lock_guard<std::mutex> m_lock;
+    std::lock_guard<std::mutex> m_lock{g_host_heap_mutex};
 #else
-    bool m_irq_was_enabled{false};
+    Sync::IrqGuard m_irq_guard;
 #endif
 };
 
@@ -365,7 +349,7 @@ void refcount_stress_worker_entry(uintptr_t raw_arg) noexcept {
 } // namespace
 
 void heap_init() noexcept {
-    IrqLockGuard lock;
+    const HeapLockGuard lock;
 
     for (size_t i = 0U; i < NUM_SLAB_CLASSES; ++i) {
         const size_t slot_size = MIN_SLAB_SIZE << i;
@@ -394,7 +378,7 @@ void* kmalloc(size_t size, size_t align) noexcept {
     const size_t effective_size =
         (promoted_size < effective_align) ? effective_align : promoted_size;
 
-    IrqLockGuard lock;
+    const HeapLockGuard lock;
 
     if (effective_size <= MAX_SLAB_SIZE) {
         const uint16_t class_idx = size_to_class_index(effective_size);
@@ -432,7 +416,7 @@ void* krealloc(void* ptr, size_t new_size, size_t align) noexcept {
     bool alignment_compatible = false;
 
     {
-        IrqLockGuard lock;
+        const HeapLockGuard lock;
 
         const uintptr_t paddr = Kernel::MM::virt_to_phys(reinterpret_cast<uintptr_t>(ptr));
         Page* const page = page_from_paddr(paddr & ~(Arch::AArch64::PAGE_SIZE - 1U));
@@ -481,7 +465,7 @@ void kfree(void* ptr) noexcept {
         return;
     }
 
-    IrqLockGuard lock;
+    const HeapLockGuard lock;
 
     const uintptr_t paddr = Kernel::MM::virt_to_phys(reinterpret_cast<uintptr_t>(ptr));
     Page* const page = page_from_paddr(paddr & ~(Arch::AArch64::PAGE_SIZE - 1U));
@@ -499,7 +483,7 @@ void kfree(void* ptr) noexcept {
 }
 
 HeapStats heap_get_stats() noexcept {
-    IrqLockGuard lock;
+    const HeapLockGuard lock;
     return g_heap_stats;
 }
 
