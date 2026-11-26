@@ -12,6 +12,10 @@
 #include <cstddef>
 #include <cstdint>
 
+namespace Kernel::Scheduler {
+class Runqueue;
+} // namespace Kernel::Scheduler
+
 namespace Kernel::Process {
 
 constexpr size_t KERNEL_STACK_PAGES = 4U; // 16 KiB per-process kernel stack
@@ -19,7 +23,8 @@ constexpr size_t MAX_PATH_LEN = 256U;
 
 enum class ProcessState : uint8_t { Unused = 0, Ready, Running, Blocked, Stopped, Zombie };
 
-struct Process {
+class Process {
+  public:
     Process() = default;
     ~Process() noexcept;
 
@@ -155,7 +160,10 @@ struct Process {
     [[nodiscard]] Process* next_global() const noexcept { return m_global_next; }
     [[nodiscard]] WaitQueue* active_wait_queue() const noexcept { return m_active_wq; }
 
-    // Data members (sealed private: in Sub-Issue 3D)
+  private:
+    friend class Kernel::Scheduler::Runqueue;
+    friend class WaitQueue;
+
     HAL::KernelContext m_kctx{};
     HAL::CpuContext m_context{};
     int64_t m_exit_status{0};
@@ -213,32 +221,6 @@ struct Process {
 
 uint64_t last_cpu_ticks_for_pid(uint32_t pid) noexcept;
 
-// Transitional free-function wrappers (removed in Sub-Issue 3D)
-inline Process* allocate_process(uint32_t ppid = 0U) noexcept {
-    return Process::create(ppid);
-}
-inline void release_process(Process& proc) noexcept {
-    Process::destroy(proc);
-}
-inline Process* find_process_by_pid(uint32_t pid) noexcept {
-    return Process::find_by_pid(pid);
-}
-inline Process* process_list_head() noexcept {
-    return Process::list_head();
-}
-inline size_t active_process_count() noexcept {
-    return Process::active_count();
-}
-inline bool has_runnable_processes() noexcept {
-    return Process::has_runnable();
-}
-inline Process* current_process() noexcept {
-    return Process::current();
-}
-inline void set_current_process(Process* proc) noexcept {
-    Process::set_current(proc);
-}
-
 // Console TTY polling & foreground job-control group helpers
 void poll_console_tty() noexcept;
 void set_foreground_pgid(uint32_t pgid) noexcept;
@@ -247,10 +229,6 @@ void set_foreground_pgid(uint32_t pgid) noexcept;
 void init_user_cpu_context(HAL::CpuContext& ctx, uintptr_t entry_point, uintptr_t sp_el0,
                            uint64_t argc, uintptr_t argv_vaddr) noexcept;
 
-inline void prepare_process_kstack(Process& proc) noexcept {
-    proc.prepare_kstack();
-}
-
 inline int64_t enter_user_context(const HAL::CpuContext* ctx) noexcept {
     if (ctx == nullptr) {
         return -1;
@@ -258,15 +236,6 @@ inline int64_t enter_user_context(const HAL::CpuContext* ctx) noexcept {
     return HAL::get_cpu().enter_user_context(*ctx);
 }
 
-inline int64_t execute_process(Process& proc) noexcept {
-    return proc.execute();
-}
-
 [[noreturn]] void exit_current_process(int64_t exit_code) noexcept;
-
-// NOLINTNEXTLINE(cppcoreguidelines-rvalue-reference-param-not-moved)
-inline void attach_loaded_elf(Process& proc, Loader::LoadedElf&& loaded) noexcept {
-    proc.attach_elf(static_cast<Loader::LoadedElf&&>(loaded));
-}
 
 } // namespace Kernel::Process

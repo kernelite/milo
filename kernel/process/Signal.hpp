@@ -83,7 +83,7 @@ class SignalTable final {
     bool m_has_saved_mask{false};
 };
 
-struct Process;
+class Process;
 
 // Signal delivery & sigreturn unwinding
 void send_signal(Process& target, uint32_t sig) noexcept;

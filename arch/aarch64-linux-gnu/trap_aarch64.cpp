@@ -258,7 +258,7 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
 
         if (arch_ctx != nullptr && (arch_ctx->spsr_el1 & 0x0FU) == 0U) {
             print_str("[TRAP] Terminating faulting EL0 process.\r\n");
-            if (Kernel::Process::current_process() != nullptr) {
+            if (Kernel::Process::Process::current() != nullptr) {
                 Kernel::Process::exit_current_process(-1);
             }
             return_to_kernel(-1);
@@ -291,7 +291,7 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
 
         if (arch_ctx != nullptr && (arch_ctx->spsr_el1 & 0x0FU) == 0U) {
             print_str("[TRAP] Terminating faulting EL0 process.\r\n");
-            if (Kernel::Process::current_process() != nullptr) {
+            if (Kernel::Process::Process::current() != nullptr) {
                 Kernel::Process::exit_current_process(-1);
             }
             return_to_kernel(-1);
@@ -336,7 +336,7 @@ void aarch64_handle_invalid_exception(HAL::CpuContext* ctx, uint64_t type) noexc
 
     if (arch_ctx != nullptr && (arch_ctx->spsr_el1 & 0x0FU) == 0U) {
         print_str("[TRAP] Terminating faulting EL0 process.\r\n");
-        if (Kernel::Process::current_process() != nullptr) {
+        if (Kernel::Process::Process::current() != nullptr) {
             Kernel::Process::exit_current_process(-3);
         }
         return_to_kernel(-3);
