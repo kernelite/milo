@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-quality:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/milo-ci:latest
+      options: --user root
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build AArch64 kernel and initrd
+        run: make -j$(nproc) all
+
+      - name: Run quality gate (format, clang-tidy, host tests + coverage)
+        run: make -j$(nproc) quality
