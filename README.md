@@ -1,36 +1,47 @@
-# 🛡️ Bare-Metal C++ Microkernel
-[![Build & Test](https://github.com/kernelite/milo/actions/workflows/code-quality.yml/badge.svg)](https://github.com/kernelite/milo/actions)
+# 🛡️ Milo — Bare-Metal C++20 Microkernel
+
+[![Build & Test](https://github.com/kernelite/milo/actions/workflows/ci.yml/badge.svg)](https://github.com/kernelite/milo/actions)
 ![C++ Standard](https://img.shields.io/badge/C%2B%2B-20-00599C?style=flat-square&logo=cplusplus&logoColor=white)
 ![Architecture](https://img.shields.io/badge/Arch-AArch64%20%2F%20Arm64-0091BD?style=flat-square&logo=arm&logoColor=white)
 ![Target Platform](https://img.shields.io/badge/Target-QEMU%20virt%20(Cortex--A53)-FF6600?style=flat-square&logo=qemu&logoColor=white)
 ![Runtime Environment](https://img.shields.io/badge/Runtime-Freestanding-444444?style=flat-square)
 ![License](https://img.shields.io/badge/License-GPLv3-blue.svg?style=flat-square)
 
-A modular, freestanding C++20 microkernel designed with a portable Hardware Abstraction Layer (HAL) for multi-architecture support. **AArch64 (Arm64)** serves as the initial reference implementation (targeting QEMU `virt` / ARM Cortex-A53), with expansion planned for additional architectures in future releases.
+**Milo** is a modular, freestanding C++20 microkernel with a portable Hardware Abstraction Layer (HAL) and a Linux AArch64 syscall ABI compatibility layer. **AArch64 (Arm64)** on QEMU `virt` (Cortex-A53) serves as the primary reference target.
 
-The project demonstrates low-level hardware initialization, Exception Level drops (EL3 → EL2 → EL1), interactive user-mode (EL0) context switching via `eret` and `svc` trap handling, an abstract HAL interface, and an interactive kernel shell.
+The kernel enforces strict C++20 encapsulation, RAII resource ownership, and zero-exception/zero-RTTI freestanding discipline across physical/virtual memory management, preemptive multitasking, POSIX-style signals, VFS/IPC, and ELF64 user-space execution.
 
 ---
 
 ## ⚡ Features
 
-* **Multi-Architecture Ready Design:** Strict separation between architecture-agnostic kernel interfaces (`kernel/hal/`) and architecture-specific implementations (`arch/`), allowing seamless porting to new target architectures.
-  * **AArch64 Reference Target (Primary):**
-    * Multilevel Exception Level drop setup (EL3 → EL2 → EL1).
-    * `VBAR_EL1` vector table registration and exception trap dispatch.
-    * FP/SIMD coprocessor activation in `CPACR_EL1`.
-
-* **Freestanding C++20 Runtime:** Built with `-ffreestanding`, `-fno-exceptions`, and `-fno-rtti`. Includes custom freestanding ABI handlers (`cxx_abi.cpp`) and safe compile-time static driver initialization via `constinit`.
-  * **Hardware Abstraction Layer (HAL):**
-  * **Console HAL:** Trait-based console interface with PL011 MMIO UART driver implementation (`0x09000000`).
-  * **CPU HAL:** Target-agnostic CPU state queries, interrupt masking, low-power WFI state execution.
-  * **MMU HAL:** SCTLR_EL1 system register status inspection (MMU, I-Cache, D-Cache).
-
-* **EL0 User-Mode Context Switching:**
-  * Context save/restore routines for switching between EL1 kernel and EL0 user mode.
-  * Exception trap handling for Linux AArch64 `SVC #0` syscalls (`sys_write`, `sys_exit`).
-
-* **Interactive Kernel Shell & Verification Suite:** Built-in command line interface (`milo>`) featuring hardware diagnostics and runtime unit testing.
+* **AArch64 Reference Target & Portable HAL (`arch/`, `kernel/hal/`):**
+  * Exception Level drop sequence (`EL3 → EL2 → EL1`), `VBAR_EL1` vector table dispatch, and FP/SIMD enablement.
+  * 4-level AArch64 MMU page tables with per-process user address spaces and Copy-on-Write (CoW) page fault handling.
+  * ARM Generic Timer (100 Hz preemptive tick) and PL011 MMIO UART console driver.
+* **Freestanding C++20 & Synchronization (`kernel/runtime/`, `kernel/sync/`):**
+  * Compiled with `-std=c++20 -ffreestanding -fno-exceptions -fno-rtti` and strict warning/static-analysis gates (`clang-format`, `clang-tidy`).
+  * `Kernel::Sync::IrqGuard`: zero-overhead RAII interrupt-masking guard.
+* **Memory Management (`kernel/mm/`):**
+  * `MM::Page` & `MM::PageFrameAllocator`: FDT-driven physical memory discovery (with `/memreserve/` carveouts) and atomic reference counting for CoW sharing.
+  * `MM::KernelHeap`: 8-class slab allocator (16 B – 2048 B) paired with a compound multi-page allocator backing `kmalloc`/`kzalloc`/`krealloc`/`kfree` and `operator new`/`delete`.
+  * `MM::AddressSpace`: isolated user page tables, `clone()`, and validated `copy_from_user`/`copy_to_user` transfers.
+* **Processes, Scheduling & Signals (`kernel/process/`):**
+  * Encapsulated `Process` class with preemptive round-robin `Scheduler` and intrusive `WaitQueue`s.
+  * `FdTable` & `FileDescriptor`: RAII file descriptor table with geometric growth bounded by `RLIMIT_NOFILE` and `O_CLOEXEC` support.
+  * `SignalTable`: per-process signal masks, `SigAction` handlers, unmaskable `SIGKILL`/`SIGSTOP` invariant enforcement, and EL0 `rt_sigframe` delivery/unwinding (`rt_sigreturn`).
+  * `UserStackBuilder`: System V AArch64 ABI initial stack layout (`argc`, `argv`, `envp`, `auxv`).
+* **Linux AArch64 ABI & Syscall Layer (`kernel/uapi/`, `kernel/syscalls/`, `kernel/time/`):**
+  * Dedicated C-compatible `kernel/uapi/` headers verified at compile time with `sizeof`, `offsetof`, `std::is_trivial_v`, and `std::is_standard_layout_v` `static_assert`s.
+  * `Time::Duration` domain wrapper isolating internal timer/nanosecond logic from `linux_timespec`/`linux_timeval`.
+  * Modular syscall handlers covering process lifecycle (`clone`, `execve` with `#!` shebangs, `wait4`, `exit`, job control, `prlimit64`), memory (`brk`, `mmap`, `munmap`, `mprotect`), VFS/IO (`openat`, `read`, `write`, `writev`, `pipe2`, `dup`/`dup3`, `fcntl`, `ioctl`, `getdents64`, `ppoll`, `pselect6`), signals (`rt_sigaction`, `rt_sigprocmask`, `rt_sigreturn`, `kill`), and time/system info (`clock_gettime`, `nanosleep`, `times`, `getrusage`, `sysinfo`, `getrandom`, `uname`).
+* **VFS, IPC, ELF Loader & Drivers (`kernel/fs/`, `kernel/ipc/`, `kernel/loader/`, `kernel/drivers/`):**
+  * Virtual File System with `tmpfs`, `cpio` initrd loading, and `devfs` (interactive TTY with `termios`/`winsize` ioctls and foreground PGID job control).
+  * Encapsulated `Kernel::IPC::Pipe` ring buffer with blocking/non-blocking I/O and `poll()` support.
+  * Static ELF64 binary loader and VirtIO block device driver (`virtio_blk`).
+* **Dual-Target Testing (`tests/host/`, `kernel/shell/`):**
+  * Host-native Catch2 unit tests (`HOST_TEST`) for PFA, heap, stack builder, VFS/tmpfs/pipes, and VirtIO rings.
+  * Interactive in-kernel shell (`milo>`) with hardware diagnostics and EL0/syscall/scheduler verification suites.
 
 ---
 
@@ -39,90 +50,77 @@ The project demonstrates low-level hardware initialization, Exception Level drop
 ```text
 .
 ├── arch/
-│   └── aarch64-linux-gnu/       # Initial AArch64 target implementation
-│       ├── arch.mk              # Architecture-specific Makefile rules
-│       ├── boot.s               # Low-level boot code, vector tables, EL transitions
-│       ├── cpu_aarch64.cpp      # AArch64 HAL CPU control implementation
-│       ├── cpu_context.hpp      # Architectural register definitions & assembly helpers
-│       ├── linker.ld            # Linker script (entry point at 0x40000000)
-│       ├── mmu_aarch64.hpp      # AArch64 HAL MMU control implementation
-│       └── uart_console.cpp     # PL011 UART console driver
+│   └── aarch64-linux-gnu/       # AArch64 boot, vectors, MMU/CoW, trap handling, PL011 UART, linker script
 ├── kernel/
-│   ├── core/
-│   │   └── syscall_dispatcher.cpp  # Linux syscall trap dispatcher
-│   ├── hal/                     # Architecture-agnostic Hardware Abstraction Layer (Header-only implementation)
-│   │   ├── console.hpp          # Abstract console trait
-│   │   ├── cpu.hpp              # Abstract CPU state & context trait
-│   │   ├── mmu.hpp              # Abstract MMU & memory trait
-│   │   ├── platform.hpp         # Platform initialization headers
-│   │   └── trap.hpp             # Abstract trap frame and handler interfaces
-│   ├── runtime/
-│   │   └── cxx_abi.cpp          # C++ freestanding ABI stubs (__cxa_atexit, operator delete)
-│   ├── shell/
-│   │   ├── shell.hpp            # Interactive shell interface
-│   │   └── shell.cpp            # Kernel shell & integrated test suite implementation
-│   ├── kernel.mk                # Kernel module Makefile definitions
+│   ├── boot/                    # Flattened Device Tree (FDT) parser & memory map discovery
+│   ├── drivers/                 # In-tree hardware drivers (e.g., VirtIO block)
+│   ├── fs/                      # VFS core, tmpfs, devfs (TTY), and cpio initrd
+│   ├── hal/                     # Architecture-agnostic HAL traits (CPU, MMU, Console, Timer, Platform)
+│   ├── ipc/                     # Encapsulated Pipe implementation (Pipe.hpp / Pipe.cpp)
+│   ├── loader/                  # ELF64 executable loader
+│   ├── mm/                      # Page, PageFrameAllocator, KernelHeap, AddressSpace
+│   ├── process/                 # Process, FdTable, FileDescriptor, SignalTable, Scheduler, WaitQueue, StackBuilder
+│   ├── runtime/                 # Freestanding C++ ABI support (cxx_abi.cpp)
+│   ├── shell/                   # Interactive kernel shell (milo>) & runtime test suite
+│   ├── sync/                    # RAII synchronization primitives (IrqGuard.hpp)
+│   ├── syscalls/                # Modular Linux AArch64 syscall handlers & dispatcher
+│   ├── time/                    # Time::Duration domain wrapper
+│   ├── uapi/                    # Compile-time verified Linux AArch64 UAPI structs & constants
+│   ├── kernel.mk                # Kernel build rules
 │   └── main.cpp                 # Kernel entry point (kmain)
-├── concat_files.sh              # Project file consolidation utility
+├── tests/
+│   └── host/                    # Host-compiled Catch2 unit tests
 ├── LICENSE                      # GNU General Public License v3.0
-└── Makefile                     # Build system and QEMU workflow runner
+└── Makefile                     # Top-level build, QEMU runner, host tests, and quality gates
 ```
-
----
-
-## 🏗️ Architecture Portability & Expansion Plans
-
-The codebase enforces a clean boundary between high-level kernel logic and platform hardware via abstract C++ interfaces in `kernel/hal/`.
-
-* **Phase 1 (Current):** **AArch64 (Arm64)** reference implementation (`arch/aarch64-linux-gnu/`).
-* **Phase 2 (Planned):** Support for additional OS features: scheduler, multiuser, security, hardware drivers, etc...
-* **Phase 3 (Planned):** Support for additional CPU architectures (such as **x86_64** or **RISC-V**) by creating new subdirectories under `arch/` and implementing the required HAL traits (`HAL::CpuControl`, `HAL::MmuControl`, `HAL::Console`).
 
 ---
 
 ## 🛠️ Prerequisites & Toolchain
 
-To build and run the reference AArch64 kernel image locally:
+To build, test, and run Milo locally:
 
 * **Cross Compiler:** `aarch64-linux-gnu-g++`, `aarch64-linux-gnu-as`, `aarch64-linux-gnu-ld`
+* **Host Compiler (for `HOST_TEST`):** `g++` (C++20)
 * **Emulator:** `qemu-system-aarch64`
+* **Quality Tools (Optional):** `clang-format`, `clang-tidy`
 * **Debugger (Optional):** `gdb-multiarch`
 
-The `aarch64-linux-gnu` triplet is used specifically for Linux ABI/syscall compatibility, even if this is a bare metal OS.
+The `aarch64-linux-gnu` triplet is used to match the Linux AArch64 user-space ABI/syscall convention while compiling bare-metal freestanding code.
 
 ---
 
-## 🚀 Building and Running
+## 🚀 Building, Testing & Running
 
-### Build the Kernel Image
-
-To compile C++ and Assembly sources and generate `build/kernel.bin` (defaults to `ARCH=aarch64-linux-gnu`):
+### Build All Targets (Kernel + Host Tests)
 ```bash
-make
+make all
 ```
 
 ### Launch in QEMU
-
-Run the compiled image inside QEMU (`virt` machine, `cortex-a53` CPU):
+Boots `build/kernel.bin` on QEMU `virt` (`cortex-a53`):
 ```bash
 make run
 ```
-
 To exit QEMU, press `Ctrl+A` then `X`.
 
-### Debugging with GDB
+### Code Formatting & Static Analysis
+```bash
+make format    # Format codebase with clang-format
+make quality   # Verify formatting and run clang-tidy checks
+```
 
-1. Launch QEMU in listening mode (gdbserver on port `1234`):
+### Debugging with GDB
+1. Launch QEMU listening for GDB on port `1234`:
 ```bash
 make debug
 ```
-
-2. In a separate terminal, attach GDB:
+2. Attach GDB in another terminal:
 ```bash
 make gdb
 ```
 
-### Cleaning Build Artifacts
+### Clean Build Artifacts
 ```bash
 make clean
 ```
@@ -131,40 +129,24 @@ make clean
 
 ## 💻 Interactive Kernel Shell (`milo>`)
 
-Once booted, the shell provides the following built-in diagnostic and test commands:
+Once booted, the `milo>` shell provides built-in diagnostics and verification commands, including:
 
-| Command | Description |
-| --- | --- |
-| `help` | Display command usage menu |
-| `info` | Display current Exception Level (EL), hardware model, and UART driver info |
-| `clear` | Clear terminal using VT100 escape sequences |
-| `test cpu` | Test interrupt enable/disable masking via HAL |
-| `test mmu` | Inspect SCTLR_EL1 register to report MMU and Cache statuses |
-| `test el0` | Execute context switch into EL0 user space and verify `SVC #0` trap return |
-| `test cpp` | Verify `.bss` zero-initialization and C++ vtable dynamic dispatch |
-| `test svc` | Triggers an AArch64 Supervisor Call (svc #0) synchronous exception to test system call dispatching, console write handling, and exception return logic |
-| `test abort` | Triggers an intentional memory access fault (Data/Instruction Abort) to test exception trapping, register dumping, and kernel fault recovery |
-| `test all` | Run full integrated verification test suite |
-| `halt` | Issue `wfi` (Wait for Interrupt) to halt CPU |
+* `help` / `info` / `clear` / `halt` — System info (EL, platform, UART), terminal control, and CPU halt (`wfi`).
+* `test cpu`, `test mmu`, `test el0`, `test cpp`, `test svc`, `test abort` — Core HAL, exception vector, and EL0 trap checks.
+* Subsystem stress & verification suites for physical frame refcounting, slab/compound heap allocations, dynamic `FdTable`/pipe scaling, VFS, ELF loading, `clone`/`execve`/`wait4`, signals, and TTY `ioctl`s.
+* `test all` — Run the full integrated in-kernel verification suite.
 
 ---
 
-## ⌨️ AArch64 Execution Flow
+## 🗺️ Roadmap
 
-### Exception Level Sequence
-
-1. **Entry (`_start` in `boot.s`):** Queries `CurrentEL`.
-2. **EL3/EL2 Setup:** Configures `SCR_EL3`, `HCR_EL2`, and drops execution down to **EL1** via `eret`.
-3. **EL1 Core Setup:** Registers `vbar_el1` to point to `el1_vector_table`, initializes kernel boot stack (`_boot_stack_top`), enables SIMD/FP via `cpacr_el1`, and branches to `kmain()`.
-
-### EL0 User Space Transition
-
-* The kernel invokes `enter_user_mode()` to save kernel context (`kernel_ctx`) and transition to EL0 via `eret`.
-* Code running in EL0 executes instructions and triggers an exception using `svc #0`.
-* The vector table traps the exception in `el0_sync_handler`, evaluates `esr_el1`, routes the syscall through `return_to_kernel`, restores `kernel_ctx`, and cleanly returns control to the shell.
+* **Decoupled Driver Development Kit (DDK):** Introduce public `include/ddk/` interfaces (`Driver`, `PlatformServices`, and RAII `MmioRegion`/`DmaBuffer`/`IrqHandle`) and a top-level `drivers/` tree isolated from private `kernel/` headers, with out-of-tree build support.
+* **Additional Drivers & Storage:** Migrate `virtio_blk` to the DDK, add persistent filesystem support, and expand peripheral/networking drivers.
+* **Multi-Architecture Expansion:** Implement HAL backends for additional targets (e.g., `x86_64`, `riscv64`) under `arch/`.
 
 ---
 
 ## 📜 License
 
-Distributed under the **GNU General Public License v3.0 (GPL-3.0)**. See [`LICENSE`](https://www.google.com/search?q=LICENSE) for details.
+Distributed under the **GNU General Public License v3.0 (GPL-3.0)**. See [`LICENSE`](LICENSE) for details.
+````[cite: 1]
