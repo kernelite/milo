@@ -142,8 +142,8 @@ TEST_CASE("PFA single-frame, multi-frame, and recycling invariants", "[pfa][mm]"
         Kernel::MM::Page* const desc = Kernel::MM::page_from_paddr(frame);
         REQUIRE(desc != nullptr);
         CHECK(Kernel::MM::page_to_paddr(desc) == frame);
-        CHECK(desc->ref_count == 1U);
-        CHECK(desc->flags == Kernel::MM::PageFlags::Allocated);
+        CHECK(desc->ref_count() == 1U);
+        CHECK(desc->flags() == Kernel::MM::PageFlags::Allocated);
 
         Kernel::MM::free_frame(frame);
         CHECK_FALSE(Kernel::MM::pfa_is_page_allocated(frame));
