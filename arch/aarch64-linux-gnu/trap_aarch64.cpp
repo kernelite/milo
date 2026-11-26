@@ -207,7 +207,7 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
                         }
 
                         bool cow_resolved = false;
-                        if (__atomic_load_n(&page->ref_count, __ATOMIC_ACQUIRE) > 1U) {
+                        if (page->has_shared_refs()) {
                             const uintptr_t new_paddr = Kernel::MM::alloc_frame();
                             if (new_paddr != 0U) {
                                 auto* const dst_kva =

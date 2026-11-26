@@ -528,7 +528,7 @@ bool AddressSpaceBackend::resolve_cow_page(uintptr_t root_paddr, uintptr_t vaddr
     }
 
     const uintptr_t page_offset = vaddr & (Arch::AArch64::PAGE_SIZE - 1U);
-    if (__atomic_load_n(&page->ref_count, __ATOMIC_ACQUIRE) > 1U) {
+    if (page->has_shared_refs()) {
         const uintptr_t new_paddr = Kernel::MM::alloc_frame();
         if (new_paddr == 0U) {
             return false;
