@@ -2057,390 +2057,6 @@ int64_t sys_prlimit64(int32_t pid, uint32_t resource, uintptr_t user_new_rlim,
     return 0;
 }
 
-int64_t sys_getrusage(int32_t who, uintptr_t user_usage) noexcept {
-    auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr) {
-        return ERR_EINVAL;
-    }
-    if (who != RUSAGE_SELF && who != RUSAGE_CHILDREN && who != RUSAGE_THREAD) {
-        return ERR_EINVAL;
-    }
-
-    const uint64_t uticks = (who == RUSAGE_CHILDREN) ? proc->cutime : proc->utime;
-    const uint64_t sticks = (who == RUSAGE_CHILDREN) ? proc->cstime : proc->stime;
-    // Timer runs at 100 Hz (10,000 microseconds per tick)
-    const uint64_t user_usec = uticks * 10000ULL;
-    const uint64_t sys_usec = sticks * 10000ULL;
-
-    LinuxRusage usage{};
-    usage.ru_utime.tv_sec = static_cast<int64_t>(user_usec / 1000000ULL);
-    usage.ru_utime.tv_usec = static_cast<int64_t>(user_usec % 1000000ULL);
-    usage.ru_stime.tv_sec = static_cast<int64_t>(sys_usec / 1000000ULL);
-    usage.ru_stime.tv_usec = static_cast<int64_t>(sys_usec % 1000000ULL);
-
-    return Kernel::MM::copy_to_user(proc->address_space, user_usage, &usage, sizeof(usage));
-}
-
-int64_t sys_getrandom(uintptr_t user_buf, uint64_t raw_buflen, uint64_t flags) noexcept {
-    auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr) {
-        return ERR_EINVAL;
-    }
-    if ((flags & ~(GRND_NONBLOCK | GRND_RANDOM | GRND_INSECURE)) != 0ULL) {
-        return ERR_EINVAL;
-    }
-    if (raw_buflen > Kernel::MM::user_addr_space_limit()) {
-        return ERR_EFAULT;
-    }
-
-    const auto buflen = static_cast<size_t>(raw_buflen);
-    const uintptr_t root_paddr = proc->address_space.root_paddr();
-    if (!validate_user_write_range(root_paddr, user_buf, buflen)) {
-        return ERR_EFAULT;
-    }
-    if (buflen == 0U) {
-        return 0;
-    }
-
-    static uint64_t entropy_state = 0x243F6A8885A308D3ULL;
-    entropy_state ^= HAL::QemuVirt::GenericTimer::counter_ticks();
-    entropy_state ^= static_cast<uint64_t>(proc->pid) << 32U;
-
-    uint8_t kbuf[256]{};
-    size_t written = 0U;
-
-    while (written < buflen) {
-        const size_t chunk =
-            ((buflen - written) < sizeof(kbuf)) ? (buflen - written) : sizeof(kbuf);
-        for (size_t i = 0U; i < chunk; i += 8U) {
-            entropy_state += 0x9E3779B97F4A7C15ULL;
-            uint64_t mixed = entropy_state;
-            mixed = (mixed ^ (mixed >> 30U)) * 0xBF58476D1CE4E5B9ULL;
-            mixed = (mixed ^ (mixed >> 27U)) * 0x94D049BB133111EBULL;
-            mixed = mixed ^ (mixed >> 31U);
-
-            const size_t rem = chunk - i;
-            const size_t bytes = (rem < 8U) ? rem : 8U;
-            for (size_t byte_idx = 0U; byte_idx < bytes; ++byte_idx) {
-                kbuf[i + byte_idx] = static_cast<uint8_t>((mixed >> (byte_idx * 8U)) & 0xFFULL);
-            }
-        }
-
-        if (Kernel::MM::copy_to_user(root_paddr, user_buf + written, kbuf, chunk) < 0) {
-            return (written > 0U) ? static_cast<int64_t>(written) : ERR_EFAULT;
-        }
-        written += chunk;
-    }
-
-    return static_cast<int64_t>(written);
-}
-
-int64_t sys_nanosleep(uintptr_t user_req, uintptr_t user_rem) noexcept {
-    auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr) {
-        return ERR_EINVAL;
-    }
-
-    LinuxTimespec req{};
-    if (Kernel::MM::copy_from_user(proc->address_space, &req, user_req, sizeof(req)) < 0) {
-        return ERR_EFAULT;
-    }
-    if (req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= 1000000000LL) {
-        return ERR_EINVAL;
-    }
-
-    const uint64_t freq = HAL::QemuVirt::GenericTimer::frequency_hz();
-    const uint64_t start_ticks = HAL::QemuVirt::GenericTimer::counter_ticks();
-    const uint64_t wait_ticks = timespec_to_timer_ticks(req, freq);
-
-    while (true) {
-        const uint64_t now_ticks = HAL::QemuVirt::GenericTimer::counter_ticks();
-        const uint64_t elapsed = now_ticks - start_ticks;
-        if (elapsed >= wait_ticks) {
-            break;
-        }
-
-        if (Kernel::Process::has_unblocked_pending_signal(*proc)) {
-            if (user_rem != 0U && freq > 0ULL) {
-                const uint64_t rem_ticks = wait_ticks - elapsed;
-                const LinuxTimespec rem{
-                    .tv_sec = static_cast<int64_t>(rem_ticks / freq),
-                    .tv_nsec = static_cast<int64_t>(((rem_ticks % freq) * 1000000000ULL) / freq),
-                };
-                if (Kernel::MM::copy_to_user(proc->address_space, user_rem, &rem, sizeof(rem)) <
-                    0) {
-                    return ERR_EFAULT;
-                }
-            }
-            return ERR_EINTR;
-        }
-
-        wait_for_event_or_tick();
-    }
-
-    if (user_rem != 0U) {
-        constexpr LinuxTimespec zero_rem{.tv_sec = 0, .tv_nsec = 0};
-        if (Kernel::MM::copy_to_user(proc->address_space, user_rem, &zero_rem, sizeof(zero_rem)) <
-            0) {
-            return ERR_EFAULT;
-        }
-    }
-
-    return 0;
-}
-
-int64_t sys_brk(uintptr_t addr) noexcept {
-    auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr) {
-        return 0;
-    }
-
-    if (addr == 0U || addr < proc->brk_start) {
-        return static_cast<int64_t>(proc->brk_current);
-    }
-
-    const auto platform = HAL::get_platform_info();
-    const uintptr_t stack_floor =
-        platform.user_stack_top - Kernel::Process::DEFAULT_USER_STACK_SIZE;
-    uintptr_t brk_ceiling = (MMAP_ARENA_FLOOR < stack_floor) ? MMAP_ARENA_FLOOR : stack_floor;
-    if (proc->mmap_next_vaddr != 0U && proc->mmap_next_vaddr < brk_ceiling) {
-        brk_ceiling = proc->mmap_next_vaddr;
-    }
-
-    if (addr > brk_ceiling) {
-        return static_cast<int64_t>(proc->brk_current);
-    }
-
-    const size_t page_size = platform.page_size;
-    const uintptr_t page_mask = page_size - 1U;
-    const uintptr_t old_page_end = (proc->brk_current + page_mask) & ~page_mask;
-    const uintptr_t new_page_end = (addr + page_mask) & ~page_mask;
-
-    if (new_page_end > old_page_end) {
-        const HAL::PageFlags heap_flags =
-            HAL::PageFlags::User | HAL::PageFlags::Read | HAL::PageFlags::Write;
-
-        for (uintptr_t page_vaddr = old_page_end; page_vaddr < new_page_end;
-             page_vaddr += page_size) {
-            if (!proc->address_space.map_demand_zero(page_vaddr, heap_flags)) {
-                unmap_and_free_range(proc->address_space, old_page_end, page_vaddr, page_size);
-                return static_cast<int64_t>(proc->brk_current);
-            }
-        }
-    } else if (new_page_end < old_page_end) {
-        unmap_and_free_range(proc->address_space, new_page_end, old_page_end, page_size);
-    }
-
-    proc->brk_current = addr;
-    return static_cast<int64_t>(proc->brk_current);
-}
-
-int64_t sys_times(uintptr_t user_buf) noexcept {
-    auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr) {
-        return ERR_EINVAL;
-    }
-
-    if (user_buf != 0U) {
-        const LinuxTms tms_val{
-            .tms_utime = static_cast<int64_t>(proc->utime),
-            .tms_stime = static_cast<int64_t>(proc->stime),
-            .tms_cutime = static_cast<int64_t>(proc->cutime),
-            .tms_cstime = static_cast<int64_t>(proc->cstime),
-        };
-        if (Kernel::MM::copy_to_user(proc->address_space, user_buf, &tms_val, sizeof(tms_val)) <
-            0) {
-            return ERR_EFAULT;
-        }
-    }
-
-    return static_cast<int64_t>(Kernel::Scheduler::timer_ticks());
-}
-
-int64_t sys_mmap(uintptr_t addr, uint64_t length, uint64_t prot, uint64_t flags, uint64_t raw_fd,
-                 uint64_t offset) noexcept {
-    constexpr uintptr_t HIGH_MMAP_ARENA_FLOOR = 0x0000000080000000ULL;
-    constexpr uintptr_t HIGH_MMAP_SEARCH_STEP = 0x0000000000200000ULL; // 2 MiB L2 step
-
-    auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr) {
-        return ERR_EINVAL;
-    }
-
-    const auto platform = HAL::get_platform_info();
-    const size_t page_size = platform.page_size;
-    const uintptr_t page_mask = page_size - 1U;
-    const uintptr_t va_limit = Kernel::MM::user_addr_space_limit();
-    const uintptr_t stack_floor =
-        platform.user_stack_top - Kernel::Process::DEFAULT_USER_STACK_SIZE;
-
-    if (length == 0U || (length & page_mask) != 0U) {
-        return ERR_EINVAL;
-    }
-    if ((prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) != 0U) {
-        return ERR_EINVAL;
-    }
-    if ((flags & MAP_ANONYMOUS) == 0U || (flags & MAP_PRIVATE) == 0U) {
-        return ERR_EINVAL;
-    }
-    if ((flags & MAP_SHARED) != 0U) {
-        return ERR_EINVAL;
-    }
-    if (static_cast<int64_t>(raw_fd) != -1 || offset != 0U) {
-        return ERR_EINVAL;
-    }
-
-    const bool is_fixed = (flags & MAP_FIXED) != 0U;
-    uintptr_t map_start = 0U;
-    uintptr_t map_end = 0U;
-    bool used_arena_bump = false;
-
-    auto is_valid_mmap_span = [&](uintptr_t start, uintptr_t end) noexcept -> bool {
-        const bool in_lower = (start >= MMAP_ARENA_FLOOR && end <= stack_floor);
-        const bool in_high = (start >= HIGH_MMAP_ARENA_FLOOR && end <= va_limit);
-        return in_lower || in_high;
-    };
-
-    if (is_fixed) {
-        if (addr == 0U || (addr & page_mask) != 0U || addr >= va_limit ||
-            length > (va_limit - addr)) {
-            return ERR_EINVAL;
-        }
-        map_start = addr;
-        map_end = addr + static_cast<uintptr_t>(length);
-        if (!is_valid_mmap_span(map_start, map_end)) {
-            return ERR_ENOMEM;
-        }
-        unmap_and_free_range(proc->address_space, map_start, map_end, page_size);
-    } else if (addr != 0U && (addr & page_mask) == 0U && addr < va_limit &&
-               length <= (va_limit - addr) &&
-               is_valid_mmap_span(addr, addr + static_cast<uintptr_t>(length))) {
-        bool hint_free = true;
-        for (uintptr_t page = addr; page < addr + static_cast<uintptr_t>(length);
-             page += page_size) {
-            uintptr_t tmp_pa = 0U;
-            HAL::PageFlags tmp_fl = HAL::PageFlags::None;
-            uint64_t tmp_pte = 0ULL;
-            if (proc->address_space.query_user_page(page, tmp_pa, tmp_fl) ||
-                proc->address_space.query_pte_flags(page, tmp_pte)) {
-                hint_free = false;
-                break;
-            }
-        }
-        if (hint_free) {
-            map_start = addr;
-            map_end = addr + static_cast<uintptr_t>(length);
-        }
-    }
-
-    if (map_start == 0U) {
-        const uintptr_t arena_top = proc->mmap_next_vaddr;
-        if (length <= arena_top &&
-            (arena_top - static_cast<uintptr_t>(length)) >= MMAP_ARENA_FLOOR) {
-            const uintptr_t candidate_start = arena_top - static_cast<uintptr_t>(length);
-            if (candidate_start > proc->brk_current) {
-                map_start = candidate_start;
-                map_end = arena_top;
-                used_arena_bump = true;
-            }
-        }
-    }
-
-    if (map_start == 0U && va_limit > HIGH_MMAP_ARENA_FLOOR &&
-        length <= (va_limit - HIGH_MMAP_ARENA_FLOOR)) {
-        const uintptr_t max_start = va_limit - static_cast<uintptr_t>(length);
-        for (uintptr_t cand = HIGH_MMAP_ARENA_FLOOR; cand <= max_start;
-             cand += HIGH_MMAP_SEARCH_STEP) {
-            bool range_free = true;
-            for (uintptr_t probe = cand; probe < cand + static_cast<uintptr_t>(length);
-                 probe += page_size) {
-                uintptr_t tmp_pa = 0U;
-                HAL::PageFlags tmp_fl = HAL::PageFlags::None;
-                uint64_t tmp_pte = 0ULL;
-                if (proc->address_space.query_user_page(probe, tmp_pa, tmp_fl) ||
-                    proc->address_space.query_pte_flags(probe, tmp_pte)) {
-                    range_free = false;
-                    cand = probe & ~(HIGH_MMAP_SEARCH_STEP - 1U);
-                    break;
-                }
-            }
-            if (range_free) {
-                map_start = cand;
-                map_end = cand + static_cast<uintptr_t>(length);
-                break;
-            }
-        }
-    }
-
-    if (map_start == 0U) {
-        return ERR_ENOMEM;
-    }
-
-    HAL::PageFlags page_flags = HAL::PageFlags::None;
-    if (prot != PROT_NONE) {
-        page_flags = HAL::PageFlags::User;
-        if ((prot & PROT_READ) != 0U) {
-            page_flags |= HAL::PageFlags::Read;
-        }
-        if ((prot & PROT_WRITE) != 0U) {
-            page_flags |= HAL::PageFlags::Write;
-        }
-        if ((prot & PROT_EXEC) != 0U) {
-            page_flags |= HAL::PageFlags::Execute;
-        }
-    }
-
-    for (uintptr_t page_vaddr = map_start; page_vaddr < map_end; page_vaddr += page_size) {
-        if (!proc->address_space.map_demand_zero(page_vaddr, page_flags)) {
-            unmap_and_free_range(proc->address_space, map_start, page_vaddr, page_size);
-            return ERR_ENOMEM;
-        }
-    }
-
-    if (used_arena_bump) {
-        proc->mmap_next_vaddr = map_start;
-    }
-    return static_cast<int64_t>(map_start);
-}
-
-int64_t sys_munmap(uintptr_t addr, uint64_t length) noexcept {
-    constexpr uintptr_t HIGH_MMAP_ARENA_FLOOR = 0x0000000080000000ULL;
-
-    auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr) {
-        return ERR_EINVAL;
-    }
-
-    const auto platform = HAL::get_platform_info();
-    const size_t page_size = platform.page_size;
-    const uintptr_t page_mask = page_size - 1U;
-    const uintptr_t va_limit = Kernel::MM::user_addr_space_limit();
-    const uintptr_t stack_floor =
-        platform.user_stack_top - Kernel::Process::DEFAULT_USER_STACK_SIZE;
-
-    if ((addr & page_mask) != 0U || length == 0U || (length & page_mask) != 0U) {
-        return ERR_EINVAL;
-    }
-    if (addr >= va_limit || length > (va_limit - addr)) {
-        return ERR_EINVAL;
-    }
-
-    const uintptr_t end_addr = addr + static_cast<uintptr_t>(length);
-    const bool in_lower_arena = (addr >= MMAP_ARENA_FLOOR && end_addr <= stack_floor);
-    const bool in_high_arena = (addr >= HIGH_MMAP_ARENA_FLOOR && end_addr <= va_limit);
-    if (!in_lower_arena && !in_high_arena) {
-        return ERR_EINVAL;
-    }
-
-    unmap_and_free_range(proc->address_space, addr, end_addr, page_size);
-
-    if (in_lower_arena && addr == proc->mmap_next_vaddr) {
-        proc->mmap_next_vaddr = end_addr;
-    }
-
-    return 0;
-}
-
 int64_t sys_clone(HAL::CpuContext& parent_ctx, uint64_t flags, uintptr_t child_stack,
                   uintptr_t parent_tid, uint64_t tls, uintptr_t child_tid) noexcept {
     (void)tls;
@@ -2962,121 +2578,6 @@ int64_t sys_set_tid_address(uintptr_t tidptr) noexcept {
     return static_cast<int64_t>(proc->pid);
 }
 
-int64_t sys_mprotect(uintptr_t addr, uint64_t length, uint64_t prot) noexcept {
-    auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr) {
-        return ERR_EINVAL;
-    }
-
-    const size_t page_size = HAL::get_platform_info().page_size;
-    const uintptr_t page_mask = page_size - 1U;
-    const uintptr_t va_limit = Kernel::MM::user_addr_space_limit();
-
-    if ((addr & page_mask) != 0U) {
-        return ERR_EINVAL;
-    }
-    if ((prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) != 0U) {
-        return ERR_EINVAL;
-    }
-    if (addr >= va_limit) {
-        return ERR_ENOMEM;
-    }
-    if (length == 0U) {
-        return 0;
-    }
-    if (length > (UINT64_MAX - page_mask)) {
-        return ERR_ENOMEM;
-    }
-
-    const uint64_t aligned_len = (length + page_mask) & ~page_mask;
-    if (aligned_len > (va_limit - addr)) {
-        return ERR_ENOMEM;
-    }
-
-    HAL::PageFlags page_flags = HAL::PageFlags::None;
-    if (prot != PROT_NONE) {
-        page_flags = HAL::PageFlags::User;
-        if ((prot & PROT_READ) != 0U) {
-            page_flags |= HAL::PageFlags::Read;
-        }
-        if ((prot & PROT_WRITE) != 0U) {
-            page_flags |= HAL::PageFlags::Write;
-        }
-        if ((prot & PROT_EXEC) != 0U) {
-            page_flags |= HAL::PageFlags::Execute;
-        }
-    }
-
-    const uintptr_t end_addr = addr + static_cast<uintptr_t>(aligned_len);
-    for (uintptr_t page_vaddr = addr; page_vaddr < end_addr; page_vaddr += page_size) {
-        if (!proc->address_space.protect_user_page(page_vaddr, page_flags)) {
-            return ERR_ENOMEM;
-        }
-    }
-
-    if ((prot & PROT_EXEC) != 0U) {
-        HAL::get_cpu().invalidate_icache();
-    }
-
-    return 0;
-}
-
-int64_t sys_uname(uintptr_t user_buf) noexcept {
-    auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr) {
-        return ERR_EINVAL;
-    }
-
-    LinuxUtsname uts{};
-    cstr_copy(uts.sysname, "Linux", sizeof(uts.sysname));
-    cstr_copy(uts.nodename, "milo", sizeof(uts.nodename));
-    cstr_copy(uts.release, "6.6.0-milo", sizeof(uts.release));
-    cstr_copy(uts.version, "#1 SMP PREEMPT", sizeof(uts.version));
-    cstr_copy(uts.machine, "aarch64", sizeof(uts.machine));
-    cstr_copy(uts.domainname, "(none)", sizeof(uts.domainname));
-
-    return Kernel::MM::copy_to_user(proc->address_space, user_buf, &uts, sizeof(uts));
-}
-
-int64_t sys_clock_gettime(uint64_t clk_id, uintptr_t user_tp) noexcept {
-    (void)clk_id;
-    auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr) {
-        return ERR_EINVAL;
-    }
-
-    const uint64_t freq = HAL::QemuVirt::GenericTimer::frequency_hz();
-    const uint64_t ticks = HAL::QemuVirt::GenericTimer::counter_ticks();
-    LinuxTimespec time_spec{};
-    if (freq > 0ULL) {
-        time_spec.tv_sec = static_cast<int64_t>(ticks / freq);
-        const uint64_t rem = ticks % freq;
-        time_spec.tv_nsec = static_cast<int64_t>((rem * 1000000000ULL) / freq);
-    }
-
-    return Kernel::MM::copy_to_user(proc->address_space, user_tp, &time_spec, sizeof(time_spec));
-}
-
-int64_t sys_sysinfo(uintptr_t user_info) noexcept {
-    auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr) {
-        return ERR_EINVAL;
-    }
-
-    const uint64_t freq = HAL::QemuVirt::GenericTimer::frequency_hz();
-    const uint64_t ticks = HAL::QemuVirt::GenericTimer::counter_ticks();
-    const auto platform = HAL::get_platform_info();
-
-    LinuxSysinfo info{};
-    info.uptime = (freq > 0ULL) ? static_cast<int64_t>(ticks / freq) : 0;
-    info.totalram = platform.ram_size;
-    info.freeram = Kernel::MM::pfa_free_pages_count() * platform.page_size;
-    info.procs = static_cast<uint16_t>(Kernel::Process::active_process_count());
-    info.mem_unit = 1U;
-
-    return Kernel::MM::copy_to_user(proc->address_space, user_info, &info, sizeof(info));
-}
-
 } // namespace
 
 namespace Kernel::Process {
@@ -3318,13 +2819,14 @@ class SyscallDispatcher : public HAL::TrapHandler {
             break;
 
         case SYS_NANOSLEEP:
-            ret_val = sys_nanosleep(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)),
-                                    static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)));
+            ret_val = Kernel::Syscalls::sys_nanosleep(
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)),
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)));
             break;
 
         case SYS_CLOCK_GETTIME:
-            ret_val = sys_clock_gettime(cpu.get_syscall_arg(ctx, 0U),
-                                        static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)));
+            ret_val = Kernel::Syscalls::sys_clock_gettime(
+                cpu.get_syscall_arg(ctx, 0U), static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)));
             break;
 
         case SYS_SCHED_YIELD:
@@ -3355,7 +2857,8 @@ class SyscallDispatcher : public HAL::TrapHandler {
             break;
 
         case SYS_TIMES:
-            ret_val = sys_times(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)));
+            ret_val =
+                Kernel::Syscalls::sys_times(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)));
             break;
 
         case SYS_SETPGID:
@@ -3379,11 +2882,12 @@ class SyscallDispatcher : public HAL::TrapHandler {
             break;
 
         case SYS_UNAME:
-            ret_val = sys_uname(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)));
+            ret_val =
+                Kernel::Syscalls::sys_uname(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)));
             break;
 
         case SYS_GETRUSAGE:
-            ret_val = sys_getrusage(
+            ret_val = Kernel::Syscalls::sys_getrusage(
                 static_cast<int32_t>(static_cast<uint32_t>(cpu.get_syscall_arg(ctx, 0U))),
                 static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 1U)));
             break;
@@ -3408,28 +2912,31 @@ class SyscallDispatcher : public HAL::TrapHandler {
             break;
 
         case SYS_SYSINFO:
-            ret_val = sys_sysinfo(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)));
+            ret_val =
+                Kernel::Syscalls::sys_sysinfo(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)));
             break;
 
         case SYS_BRK:
-            ret_val = sys_brk(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)));
+            ret_val =
+                Kernel::Syscalls::sys_brk(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)));
             break;
 
         case SYS_MUNMAP:
-            ret_val = sys_munmap(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)),
-                                 cpu.get_syscall_arg(ctx, 1U));
+            ret_val = Kernel::Syscalls::sys_munmap(
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)), cpu.get_syscall_arg(ctx, 1U));
             break;
 
         case SYS_MMAP:
-            ret_val = sys_mmap(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)),
-                               cpu.get_syscall_arg(ctx, 1U), cpu.get_syscall_arg(ctx, 2U),
-                               cpu.get_syscall_arg(ctx, 3U), cpu.get_syscall_arg(ctx, 4U),
-                               cpu.get_syscall_arg(ctx, 5U));
+            ret_val = Kernel::Syscalls::sys_mmap(
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)), cpu.get_syscall_arg(ctx, 1U),
+                cpu.get_syscall_arg(ctx, 2U), cpu.get_syscall_arg(ctx, 3U),
+                cpu.get_syscall_arg(ctx, 4U), cpu.get_syscall_arg(ctx, 5U));
             break;
 
         case SYS_MPROTECT:
-            ret_val = sys_mprotect(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)),
-                                   cpu.get_syscall_arg(ctx, 1U), cpu.get_syscall_arg(ctx, 2U));
+            ret_val = Kernel::Syscalls::sys_mprotect(
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)), cpu.get_syscall_arg(ctx, 1U),
+                cpu.get_syscall_arg(ctx, 2U));
             break;
 
         case SYS_CLONE:
@@ -3465,8 +2972,9 @@ class SyscallDispatcher : public HAL::TrapHandler {
             break;
 
         case SYS_GETRANDOM:
-            ret_val = sys_getrandom(static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)),
-                                    cpu.get_syscall_arg(ctx, 1U), cpu.get_syscall_arg(ctx, 2U));
+            ret_val = Kernel::Syscalls::sys_getrandom(
+                static_cast<uintptr_t>(cpu.get_syscall_arg(ctx, 0U)), cpu.get_syscall_arg(ctx, 1U),
+                cpu.get_syscall_arg(ctx, 2U));
             break;
 
         default:

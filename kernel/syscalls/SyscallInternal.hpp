@@ -307,4 +307,21 @@ void unmap_and_free_range(Kernel::MM::AddressSpace& adrsp, uintptr_t start_vaddr
                                            Kernel::FS::Dentry*& out_base) noexcept;
 void build_dentry_path(const Kernel::FS::Dentry* target, char* out, size_t cap) noexcept;
 
+// Memory management syscalls (MemorySyscalls.cpp)
+[[nodiscard]] int64_t sys_brk(uintptr_t addr) noexcept;
+[[nodiscard]] int64_t sys_mmap(uintptr_t addr, uint64_t length, uint64_t prot, uint64_t flags,
+                               uint64_t raw_fd, uint64_t offset) noexcept;
+[[nodiscard]] int64_t sys_munmap(uintptr_t addr, uint64_t length) noexcept;
+[[nodiscard]] int64_t sys_mprotect(uintptr_t addr, uint64_t length, uint64_t prot) noexcept;
+
+// Time & system information syscalls (TimeSyscalls.cpp)
+[[nodiscard]] int64_t sys_clock_gettime(uint64_t clk_id, uintptr_t user_tp) noexcept;
+[[nodiscard]] int64_t sys_nanosleep(uintptr_t user_req, uintptr_t user_rem) noexcept;
+[[nodiscard]] int64_t sys_times(uintptr_t user_buf) noexcept;
+[[nodiscard]] int64_t sys_getrusage(int32_t who, uintptr_t user_usage) noexcept;
+[[nodiscard]] int64_t sys_sysinfo(uintptr_t user_info) noexcept;
+[[nodiscard]] int64_t sys_getrandom(uintptr_t user_buf, uint64_t raw_buflen,
+                                    uint64_t flags) noexcept;
+[[nodiscard]] int64_t sys_uname(uintptr_t user_buf) noexcept;
+
 } // namespace Kernel::Syscalls
