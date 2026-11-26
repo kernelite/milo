@@ -13,7 +13,7 @@
 
 namespace {
 
-using namespace kernel::fs;
+using namespace Kernel::FS;
 
 class CpioBuilder {
   public:

@@ -23,8 +23,8 @@ struct Pipe {
 };
 
 // Allocates a Pipe ring buffer backed by an anonymous VFS Inode and read/write File instances.
-[[nodiscard]] int32_t create_pipe_files(kernel::fs::File** out_read_file,
-                                        kernel::fs::File** out_write_file,
+[[nodiscard]] int32_t create_pipe_files(Kernel::FS::File** out_read_file,
+                                        Kernel::FS::File** out_write_file,
                                         uint32_t extra_flags = 0U) noexcept;
 
 } // namespace Kernel::IPC

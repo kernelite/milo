@@ -194,9 +194,9 @@ extern "C" void kmain(uintptr_t dtb_paddr) {
     print_str("[KERNEL] Kernel Heap Allocator initialized.\r\n");
 
     // Stage 6b: Mount read-only CPIO rootfs at `/` and devfs at `/dev`
-    if (kernel::fs::rootfs_mount_from_initrd(g_initrd_loc) == kernel::fs::kOk &&
-        kernel::fs::devfs_init_and_mount() == kernel::fs::kOk &&
-        kernel::fs::tmpfs_init_and_mount() == kernel::fs::kOk) {
+    if (Kernel::FS::rootfs_mount_from_initrd(g_initrd_loc) == Kernel::FS::kOk &&
+        Kernel::FS::devfs_init_and_mount() == Kernel::FS::kOk &&
+        Kernel::FS::tmpfs_init_and_mount() == Kernel::FS::kOk) {
         print_str("[KERNEL] VFS rootfs (/), devfs (/dev), and tmpfs (/tmp) mounted.\r\n");
     } else {
         print_str("[KERNEL] Warning: VFS initialization failed.\r\n");
@@ -212,7 +212,7 @@ extern "C" void kmain(uintptr_t dtb_paddr) {
     print_str("[KERNEL] Virtio-MMIO driver attached.");
     HAL::Platform::init_block_devices(dtb_paddr);
     if (auto* const blk = HAL::Platform::primary_block_device(); blk != nullptr) {
-        if (kernel::fs::ext2_mount(blk, "/mnt/disk") == kernel::fs::kOk) {
+        if (Kernel::FS::ext2_mount(blk, "/mnt/disk") == Kernel::FS::kOk) {
             print_str("[KERNEL] Mounted ext2 block device at /mnt/disk.\r\n");
         } else {
             print_str("[KERNEL] Warning: Primary block device is not a valid ext2 image.\r\n");

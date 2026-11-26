@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace kernel::fs {
+namespace Kernel::FS {
 
 // Lightweight freestanding string slice (avoids hosted libstdc++ <string_view> terminate hooks).
 class StringView {
@@ -333,4 +333,4 @@ void file_put(File* file) noexcept;
                                     StringView new_path) noexcept;
 [[nodiscard]] int32_t vfs_rename(StringView old_path, StringView new_path) noexcept;
 
-} // namespace kernel::fs
+} // namespace Kernel::FS

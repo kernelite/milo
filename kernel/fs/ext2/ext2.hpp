@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace kernel::fs {
+namespace Kernel::FS {
 
 inline constexpr uint16_t kExt2SuperMagic = 0xEF53U;
 inline constexpr uint32_t kExt2RootIno = 2U;
@@ -124,4 +124,4 @@ void ext2_reset() noexcept;
 // Flushes, unmounts `mount_path`, and releases ext2 superblock resources.
 [[nodiscard]] int32_t ext2_umount(StringView mount_path, Superblock* sb) noexcept;
 
-} // namespace kernel::fs
+} // namespace Kernel::FS

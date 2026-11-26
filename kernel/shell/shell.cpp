@@ -134,11 +134,11 @@ void launch_initrd_shell(const char* bin_path, const char* argv0, const char* sh
         return;
     }
 
-    CpioEntry entry{};
-    const CpioStatus cpio_st = cpio_lookup(
+    Kernel::FS::CpioEntry entry{};
+    const Kernel::FS::CpioStatus cpio_st = Kernel::FS::cpio_lookup(
         reinterpret_cast<const void*>(Kernel::MM::phys_to_virt(g_initrd_loc.start_paddr)),
         g_initrd_loc.size, bin_path, entry);
-    if (cpio_st != CpioStatus::Success || !entry.is_regular_file) {
+    if (cpio_st != Kernel::FS::CpioStatus::Success || !entry.is_regular_file) {
         print_str("[ERROR] ");
         print_str(bin_path);
         print_str(" not found in rootfs.cpio.\r\n");
@@ -461,8 +461,8 @@ void cmd_ls_initrd() noexcept {
         return;
     }
 
-    const CpioArchive archive(reinterpret_cast<const void*>(g_initrd_loc.start_paddr),
-                              g_initrd_loc.size);
+    const Kernel::FS::CpioArchive archive(reinterpret_cast<const void*>(g_initrd_loc.start_paddr),
+                                          g_initrd_loc.size);
     if (!archive.is_valid()) {
         print_str("[CPIO ERROR] Invalid CPIO archive signature.\r\n");
         return;
@@ -473,7 +473,7 @@ void cmd_ls_initrd() noexcept {
     print_str("  ------------------------------------\r\n");
 
     size_t entry_count = 0;
-    const CpioStatus status = archive.for_each([&](const CpioEntry& entry) {
+    const Kernel::FS::CpioStatus status = archive.for_each([&](const Kernel::FS::CpioEntry& entry) {
         print_str("  ");
         print_octal(entry.mode);
         print_str("       ");
@@ -487,9 +487,9 @@ void cmd_ls_initrd() noexcept {
         entry_count++;
     });
 
-    if (status != CpioStatus::Success) {
+    if (status != Kernel::FS::CpioStatus::Success) {
         print_str("[CPIO ERROR] Traversal failed: ");
-        print_str(cpio_status_str(status));
+        print_str(Kernel::FS::cpio_status_str(status));
         print_str("\r\n");
     } else {
         print_str("Total entries: ");
@@ -512,11 +512,11 @@ void cmd_cat_initrd(const char* path) noexcept {
         return;
     }
 
-    CpioEntry entry{};
-    const CpioStatus status = cpio_lookup(reinterpret_cast<const void*>(g_initrd_loc.start_paddr),
-                                          g_initrd_loc.size, path, entry);
+    Kernel::FS::CpioEntry entry{};
+    const Kernel::FS::CpioStatus status = Kernel::FS::cpio_lookup(
+        reinterpret_cast<const void*>(g_initrd_loc.start_paddr), g_initrd_loc.size, path, entry);
 
-    if (status == CpioStatus::Success) {
+    if (status == Kernel::FS::CpioStatus::Success) {
         print_str("[CPIO] Located '");
         print_str(path);
         print_str("' (");
@@ -530,13 +530,13 @@ void cmd_cat_initrd(const char* path) noexcept {
                 print_str("\r\n");
             }
         }
-    } else if (status == CpioStatus::FileNotFound) {
+    } else if (status == Kernel::FS::CpioStatus::FileNotFound) {
         print_str("[CPIO ERROR] File not found: '");
         print_str(path);
         print_str("'\r\n");
     } else {
         print_str("[CPIO ERROR] Lookup failed with status: ");
-        print_str(cpio_status_str(status));
+        print_str(Kernel::FS::cpio_status_str(status));
         print_str("\r\n");
     }
 }
@@ -556,15 +556,15 @@ void cmd_elf_initrd(const char* path) noexcept {
         return;
     }
 
-    CpioEntry entry{};
-    const CpioStatus cpio_st = cpio_lookup(reinterpret_cast<const void*>(g_initrd_loc.start_paddr),
-                                           g_initrd_loc.size, path, entry);
+    Kernel::FS::CpioEntry entry{};
+    const Kernel::FS::CpioStatus cpio_st = Kernel::FS::cpio_lookup(
+        reinterpret_cast<const void*>(g_initrd_loc.start_paddr), g_initrd_loc.size, path, entry);
 
-    if (cpio_st != CpioStatus::Success) {
+    if (cpio_st != Kernel::FS::CpioStatus::Success) {
         print_str("[ELF ERROR] Failed to locate '");
         print_str(path);
         print_str("' in initrd: ");
-        print_str(cpio_status_str(cpio_st));
+        print_str(Kernel::FS::cpio_status_str(cpio_st));
         print_str("\r\n");
         return;
     }
@@ -909,9 +909,9 @@ void cmd_test_dynamic_io() noexcept {
             break;
         }
 
-        kernel::fs::File* read_file = nullptr;
-        kernel::fs::File* write_file = nullptr;
-        if (Kernel::IPC::create_pipe_files(&read_file, &write_file) != kernel::fs::kOk) {
+        Kernel::FS::File* read_file = nullptr;
+        Kernel::FS::File* write_file = nullptr;
+        if (Kernel::IPC::create_pipe_files(&read_file, &write_file) != Kernel::FS::kOk) {
             pipes_ok = false;
             break;
         }
@@ -921,7 +921,7 @@ void cmd_test_dynamic_io() noexcept {
         const int wfd = Kernel::Process::allocate_fd(*proc, static_cast<size_t>(rfd) + 1U);
         if (wfd < 0) {
             Kernel::Process::close_fd(*proc, static_cast<size_t>(rfd));
-            (void)kernel::fs::vfs_close(write_file);
+            (void)Kernel::FS::vfs_close(write_file);
             pipes_ok = false;
             break;
         }
@@ -1088,20 +1088,23 @@ void cmd_test_sys() noexcept {
 
 void cmd_test_cpio() noexcept {
     print_str("\r\n[TEST] Running Read-Only CPIO Driver Verification Suite...\r\n");
-    assert_test(sizeof(CpioNewcHeader) == 110, "CpioNewcHeader size is exactly 110 bytes");
+    assert_test(sizeof(Kernel::FS::CpioNewcHeader) == 110,
+                "Kernel::FS::CpioNewcHeader size is exactly 110 bytes");
 
-    CpioEntry entry{};
-    assert_test(cpio_lookup(nullptr, 0, "init.txt", entry) == CpioStatus::ArchiveTooSmall,
+    Kernel::FS::CpioEntry entry{};
+    assert_test(Kernel::FS::cpio_lookup(nullptr, 0, "init.txt", entry) ==
+                    Kernel::FS::CpioStatus::ArchiveTooSmall,
                 "Lookup with nullptr base returns ArchiveTooSmall");
-    assert_test(cpio_lookup(nullptr, 100, "init.txt", entry) == CpioStatus::ArchiveTooSmall,
+    assert_test(Kernel::FS::cpio_lookup(nullptr, 100, "init.txt", entry) ==
+                    Kernel::FS::CpioStatus::ArchiveTooSmall,
                 "Lookup with size < 110 returns ArchiveTooSmall");
 
     if (g_initrd_loc.valid && g_initrd_loc.size > 0) {
-        CpioEntry init_entry{};
-        const CpioStatus init_st =
-            cpio_lookup(reinterpret_cast<const void*>(g_initrd_loc.start_paddr), g_initrd_loc.size,
-                        "/init.txt", init_entry);
-        assert_test(init_st == CpioStatus::Success && init_entry.size >= 14,
+        Kernel::FS::CpioEntry init_entry{};
+        const Kernel::FS::CpioStatus init_st =
+            Kernel::FS::cpio_lookup(reinterpret_cast<const void*>(g_initrd_loc.start_paddr),
+                                    g_initrd_loc.size, "/init.txt", init_entry);
+        assert_test(init_st == Kernel::FS::CpioStatus::Success && init_entry.size >= 14,
                     "Live QEMU initrd locates '/init.txt' successfully");
     }
 }
@@ -1356,29 +1359,29 @@ void cmd_test_syscall() noexcept {
     // 3. Execute EL0 TTY ioctl & non-blocking sys_read verification suite
     assert_test(Kernel::Process::init_fd_table(*proc, Kernel::Process::INITIAL_FD_CAPACITY),
                 "Re-initialized dynamic fd_table for TTY ioctl verification suite");
-    kernel::fs::File* tty_in = nullptr;
-    kernel::fs::File* tty_out = nullptr;
-    kernel::fs::File* tty_err = nullptr;
-    (void)kernel::fs::devfs_open_console(kernel::fs::kOpenReadOnly, &tty_in);
-    (void)kernel::fs::devfs_open_console(kernel::fs::kOpenWriteOnly, &tty_out);
-    (void)kernel::fs::devfs_open_console(kernel::fs::kOpenWriteOnly, &tty_err);
+    Kernel::FS::File* tty_in = nullptr;
+    Kernel::FS::File* tty_out = nullptr;
+    Kernel::FS::File* tty_err = nullptr;
+    (void)Kernel::FS::devfs_open_console(Kernel::FS::kOpenReadOnly, &tty_in);
+    (void)Kernel::FS::devfs_open_console(Kernel::FS::kOpenWriteOnly, &tty_out);
+    (void)Kernel::FS::devfs_open_console(Kernel::FS::kOpenWriteOnly, &tty_err);
     proc->fd_table[0] = Kernel::Process::FileDescriptor{.file = tty_in, .fd_flags = 0U};
     proc->fd_table[1] = Kernel::Process::FileDescriptor{.file = tty_out, .fd_flags = 0U};
     proc->fd_table[2] = Kernel::Process::FileDescriptor{.file = tty_err, .fd_flags = 0U};
 
     constexpr uint64_t NON_TTY_FD = 3ULL;
-    kernel::fs::File* non_tty_file = nullptr;
-    (void)kernel::fs::vfs_open("/init.txt", kernel::fs::kOpenReadOnly, 0U, &non_tty_file);
+    Kernel::FS::File* non_tty_file = nullptr;
+    (void)Kernel::FS::vfs_open("/init.txt", Kernel::FS::kOpenReadOnly, 0U, &non_tty_file);
     if (non_tty_file == nullptr) {
-        kernel::fs::Inode* dummy_ino = kernel::fs::vfs_alloc_inode(nullptr);
+        Kernel::FS::Inode* dummy_ino = Kernel::FS::vfs_alloc_inode(nullptr);
         if (dummy_ino != nullptr) {
-            dummy_ino->mode = kernel::fs::kModeReg | 0444U;
-            non_tty_file = kernel::fs::vfs_alloc_file();
+            dummy_ino->mode = Kernel::FS::kModeReg | 0444U;
+            non_tty_file = Kernel::FS::vfs_alloc_file();
             if (non_tty_file != nullptr) {
                 non_tty_file->inode = dummy_ino;
-                non_tty_file->flags = kernel::fs::kOpenReadOnly;
+                non_tty_file->flags = Kernel::FS::kOpenReadOnly;
             } else {
-                kernel::fs::inode_put(dummy_ino);
+                Kernel::FS::inode_put(dummy_ino);
             }
         }
     }
@@ -1852,13 +1855,13 @@ void cmd_test_musl() noexcept {
     const size_t pages_before = Kernel::MM::pfa_allocated_pages_count();
     const size_t procs_before = Kernel::Process::active_process_count();
 
-    CpioEntry entry{};
-    const CpioStatus cpio_st = cpio_lookup(
+    Kernel::FS::CpioEntry entry{};
+    const Kernel::FS::CpioStatus cpio_st = Kernel::FS::cpio_lookup(
         reinterpret_cast<const void*>(Kernel::MM::phys_to_virt(g_initrd_loc.start_paddr)),
         g_initrd_loc.size, "/bin/hello_musl", entry);
-    assert_test(cpio_st == CpioStatus::Success && entry.is_regular_file,
+    assert_test(cpio_st == Kernel::FS::CpioStatus::Success && entry.is_regular_file,
                 "Located /bin/hello_musl in rootfs.cpio");
-    if (cpio_st != CpioStatus::Success) {
+    if (cpio_st != Kernel::FS::CpioStatus::Success) {
         return;
     }
 
@@ -2318,10 +2321,10 @@ void run_lazy_memory_acceptance_suite() noexcept {
 
 void cmd_sh() noexcept {
     if (g_initrd_loc.valid && g_initrd_loc.start_paddr != 0U && g_initrd_loc.size > 0U) {
-        CpioEntry bash_entry{};
-        if (cpio_lookup(
+        Kernel::FS::CpioEntry bash_entry{};
+        if (Kernel::FS::cpio_lookup(
                 reinterpret_cast<const void*>(Kernel::MM::phys_to_virt(g_initrd_loc.start_paddr)),
-                g_initrd_loc.size, "/bin/bash", bash_entry) == CpioStatus::Success &&
+                g_initrd_loc.size, "/bin/bash", bash_entry) == Kernel::FS::CpioStatus::Success &&
             bash_entry.is_regular_file) {
             launch_initrd_shell("/bin/bash", "/bin/sh", "SHELL=/bin/sh", "PS1=milo-sh\\$ ");
             return;

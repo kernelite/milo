@@ -3,7 +3,7 @@
 #include "fs/cpio.hpp"
 #include "mm/address_space.hpp"
 
-namespace kernel::fs {
+namespace Kernel::FS {
 
 namespace {
 
@@ -441,4 +441,4 @@ int32_t rootfs_mount_from_initrd(const Kernel::Boot::InitrdLocation& initrd) noe
     return rootfs_mount_cpio(initrd_kva, initrd.size);
 }
 
-} // namespace kernel::fs
+} // namespace Kernel::FS

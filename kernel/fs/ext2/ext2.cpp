@@ -4,7 +4,7 @@
 
 #include <cstring>
 
-namespace kernel::fs {
+namespace Kernel::FS {
 
 namespace {
 
@@ -1837,4 +1837,4 @@ int32_t ext2_umount(StringView mount_path, Superblock* sb) noexcept {
     return kOk;
 }
 
-} // namespace kernel::fs
+} // namespace Kernel::FS

@@ -1,5 +1,7 @@
 #include "fs/cpio.hpp"
 
+namespace Kernel::FS {
+
 const char* cpio_status_str(CpioStatus status) noexcept {
     switch (status) {
     case CpioStatus::Success:
@@ -64,3 +66,4 @@ CpioStatus CpioArchive::lookup(const char* path, CpioEntry& out_entry) const noe
     }
     return status;
 }
+} // namespace Kernel::FS

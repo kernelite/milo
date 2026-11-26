@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace kernel::fs {
+namespace Kernel::FS {
 
 void rootfs_reset() noexcept;
 
@@ -20,4 +20,4 @@ void rootfs_reset() noexcept;
 // Convenience boot helper for mounting the DTB-discovered initrd at `/`.
 [[nodiscard]] int32_t rootfs_mount_from_initrd(const Kernel::Boot::InitrdLocation& initrd) noexcept;
 
-} // namespace kernel::fs
+} // namespace Kernel::FS

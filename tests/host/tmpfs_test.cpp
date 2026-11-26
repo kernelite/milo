@@ -14,7 +14,7 @@
 
 namespace {
 
-using namespace kernel::fs;
+using namespace Kernel::FS;
 
 void init_tmpfs_test_env() noexcept {
     HostTest::reset_host_hal();

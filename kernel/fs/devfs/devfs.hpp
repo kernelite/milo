@@ -5,7 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace kernel::fs {
+namespace Kernel::FS {
 
 void devfs_reset() noexcept;
 
@@ -25,4 +25,4 @@ void console_set_foreground_pgid(uint32_t pgid) noexcept;
 [[nodiscard]] uint32_t console_get_foreground_pgid() noexcept;
 void console_reset_tty() noexcept;
 
-} // namespace kernel::fs
+} // namespace Kernel::FS

@@ -62,7 +62,7 @@ void format_ext2_1k(RamBlockDevice& dev) {
     std::memset(img, 0, static_cast<size_t>(kTotalBlocks) * kBlockSizeSz);
 
     // 1. Superblock at byte offset 1024 (block 1)
-    kernel::fs::Ext2Superblock ext2_sb{};
+    Kernel::FS::Ext2Superblock ext2_sb{};
     ext2_sb.s_inodes_count = kTotalInodes;
     ext2_sb.s_blocks_count = kTotalBlocks;
     ext2_sb.s_free_blocks_count = kTotalBlocks - 1U - kUsedBlocks;
@@ -73,7 +73,7 @@ void format_ext2_1k(RamBlockDevice& dev) {
     ext2_sb.s_blocks_per_group = kTotalBlocks;
     ext2_sb.s_frags_per_group = kTotalBlocks;
     ext2_sb.s_inodes_per_group = kTotalInodes;
-    ext2_sb.s_magic = kernel::fs::kExt2SuperMagic;
+    ext2_sb.s_magic = Kernel::FS::kExt2SuperMagic;
     ext2_sb.s_state = 1U;
     ext2_sb.s_rev_level = 1U;
     ext2_sb.s_first_ino = 11U;
@@ -81,7 +81,7 @@ void format_ext2_1k(RamBlockDevice& dev) {
     std::memcpy(img + 1024U, &ext2_sb, sizeof(ext2_sb));
 
     // 2. BGDT at block 2 (offset 2048)
-    kernel::fs::Ext2BlockGroupDesc bgd{};
+    Kernel::FS::Ext2BlockGroupDesc bgd{};
     bgd.bg_block_bitmap = kBlockBitmapBlk;
     bgd.bg_inode_bitmap = kInodeBitmapBlk;
     bgd.bg_inode_table = kInodeTableBlk;
@@ -103,32 +103,32 @@ void format_ext2_1k(RamBlockDevice& dev) {
     }
 
     // 5. Root inode (#2 -> index 1 in inode table)
-    kernel::fs::Ext2DiskInode root_ino{};
-    root_ino.i_mode = static_cast<uint16_t>(kernel::fs::kModeDir | 0755U);
+    Kernel::FS::Ext2DiskInode root_ino{};
+    root_ino.i_mode = static_cast<uint16_t>(Kernel::FS::kModeDir | 0755U);
     root_ino.i_size = kBlockSize;
     root_ino.i_links_count = 2U;
     root_ino.i_blocks = kBlockSize / 512U;
     root_ino.i_block[0] = kRootDirBlk;
     std::memcpy(img + (static_cast<size_t>(kInodeTableBlk) * kBlockSizeSz) +
-                    sizeof(kernel::fs::Ext2DiskInode),
+                    sizeof(Kernel::FS::Ext2DiskInode),
                 &root_ino, sizeof(root_ino));
 
     // 6. Root directory block ('.' and '..')
     uint8_t* const rdir = img + (static_cast<size_t>(kRootDirBlk) * kBlockSizeSz);
-    kernel::fs::Ext2DirEntry2 dot{
-        .inode = kernel::fs::kExt2RootIno,
+    Kernel::FS::Ext2DirEntry2 dot{
+        .inode = Kernel::FS::kExt2RootIno,
         .rec_len = 12U,
         .name_len = 1U,
-        .file_type = kernel::fs::kExt2FtDir,
+        .file_type = Kernel::FS::kExt2FtDir,
     };
     std::memcpy(rdir, &dot, sizeof(dot));
     rdir[sizeof(dot)] = '.';
 
-    kernel::fs::Ext2DirEntry2 dotdot{
-        .inode = kernel::fs::kExt2RootIno,
+    Kernel::FS::Ext2DirEntry2 dotdot{
+        .inode = Kernel::FS::kExt2RootIno,
         .rec_len = static_cast<uint16_t>(kBlockSize - 12U),
         .name_len = 2U,
-        .file_type = kernel::fs::kExt2FtDir,
+        .file_type = Kernel::FS::kExt2FtDir,
     };
     std::memcpy(rdir + 12U, &dotdot, sizeof(dotdot));
     rdir[12U + sizeof(dotdot)] = '.';
@@ -136,10 +136,10 @@ void format_ext2_1k(RamBlockDevice& dev) {
 }
 
 void setup_vfs_with_rootfs() {
-    kernel::fs::vfs_reset();
-    kernel::fs::rootfs_reset();
-    kernel::fs::ext2_reset();
-    REQUIRE(kernel::fs::rootfs_mount_cpio(nullptr, 0U) == kernel::fs::kOk);
+    Kernel::FS::vfs_reset();
+    Kernel::FS::rootfs_reset();
+    Kernel::FS::ext2_reset();
+    REQUIRE(Kernel::FS::rootfs_mount_cpio(nullptr, 0U) == Kernel::FS::kOk);
 }
 
 constexpr size_t kTestDiskBytes = size_t{1024U} * size_t{1024U};
@@ -150,8 +150,8 @@ TEST_CASE("ext2 rejects invalid superblock magic", "[ext2]") {
     setup_vfs_with_rootfs();
     RamBlockDevice dev(kTestDiskBytes);
 
-    kernel::fs::Superblock* superblock = nullptr;
-    REQUIRE(kernel::fs::ext2_mount(&dev, "/mnt/disk", &superblock) == kernel::fs::kEinval);
+    Kernel::FS::Superblock* superblock = nullptr;
+    REQUIRE(Kernel::FS::ext2_mount(&dev, "/mnt/disk", &superblock) == Kernel::FS::kEinval);
     REQUIRE(superblock == nullptr);
 }
 
@@ -161,8 +161,8 @@ TEST_CASE("ext2 multi-block write across direct-to-singly-indirect and remount p
     RamBlockDevice dev(kTestDiskBytes);
     format_ext2_1k(dev);
 
-    kernel::fs::Superblock* superblock = nullptr;
-    REQUIRE(kernel::fs::ext2_mount(&dev, "/mnt/disk", &superblock) == kernel::fs::kOk);
+    Kernel::FS::Superblock* superblock = nullptr;
+    REQUIRE(Kernel::FS::ext2_mount(&dev, "/mnt/disk", &superblock) == Kernel::FS::kOk);
 
     // Write 16 KiB (16 x 1 KiB blocks -> crosses 12-block direct boundary into singly indirect)
     constexpr size_t kPayloadSize = size_t{16U} * size_t{1024U};
@@ -171,28 +171,28 @@ TEST_CASE("ext2 multi-block write across direct-to-singly-indirect and remount p
         tx_buf[i] = static_cast<uint8_t>((i * 13U) ^ 0x5AU);
     }
 
-    kernel::fs::File* file = nullptr;
-    REQUIRE(kernel::fs::vfs_open("/mnt/disk/big.bin",
-                                 kernel::fs::kOpenReadWrite | kernel::fs::kOpenCreate, 0644U,
-                                 &file) == kernel::fs::kOk);
-    REQUIRE(kernel::fs::vfs_write(file, tx_buf.data(), tx_buf.size()) ==
+    Kernel::FS::File* file = nullptr;
+    REQUIRE(Kernel::FS::vfs_open("/mnt/disk/big.bin",
+                                 Kernel::FS::kOpenReadWrite | Kernel::FS::kOpenCreate, 0644U,
+                                 &file) == Kernel::FS::kOk);
+    REQUIRE(Kernel::FS::vfs_write(file, tx_buf.data(), tx_buf.size()) ==
             static_cast<int64_t>(tx_buf.size()));
-    REQUIRE(kernel::fs::vfs_close(file) == kernel::fs::kOk);
+    REQUIRE(Kernel::FS::vfs_close(file) == Kernel::FS::kOk);
 
     // Unmount and remount over the exact same RamBlockDevice buffer
-    REQUIRE(kernel::fs::ext2_umount("/mnt/disk", superblock) == kernel::fs::kOk);
+    REQUIRE(Kernel::FS::ext2_umount("/mnt/disk", superblock) == Kernel::FS::kOk);
     superblock = nullptr;
-    REQUIRE(kernel::fs::ext2_mount(&dev, "/mnt/disk", &superblock) == kernel::fs::kOk);
+    REQUIRE(Kernel::FS::ext2_mount(&dev, "/mnt/disk", &superblock) == Kernel::FS::kOk);
 
     std::vector<uint8_t> rx_buf(kPayloadSize, 0U);
-    REQUIRE(kernel::fs::vfs_open("/mnt/disk/big.bin", kernel::fs::kOpenReadOnly, 0U, &file) ==
-            kernel::fs::kOk);
-    REQUIRE(kernel::fs::vfs_read(file, rx_buf.data(), rx_buf.size()) ==
+    REQUIRE(Kernel::FS::vfs_open("/mnt/disk/big.bin", Kernel::FS::kOpenReadOnly, 0U, &file) ==
+            Kernel::FS::kOk);
+    REQUIRE(Kernel::FS::vfs_read(file, rx_buf.data(), rx_buf.size()) ==
             static_cast<int64_t>(rx_buf.size()));
-    REQUIRE(kernel::fs::vfs_close(file) == kernel::fs::kOk);
+    REQUIRE(Kernel::FS::vfs_close(file) == Kernel::FS::kOk);
     REQUIRE(std::memcmp(tx_buf.data(), rx_buf.data(), kPayloadSize) == 0);
 
-    REQUIRE(kernel::fs::ext2_umount("/mnt/disk", superblock) == kernel::fs::kOk);
+    REQUIRE(Kernel::FS::ext2_umount("/mnt/disk", superblock) == Kernel::FS::kOk);
 }
 
 TEST_CASE("ext2 mkdir, dirent insertion, rec_len coalescing on unlink, rename, and rmdir",
@@ -201,44 +201,44 @@ TEST_CASE("ext2 mkdir, dirent insertion, rec_len coalescing on unlink, rename, a
     RamBlockDevice dev(kTestDiskBytes);
     format_ext2_1k(dev);
 
-    kernel::fs::Superblock* superblock = nullptr;
-    REQUIRE(kernel::fs::ext2_mount(&dev, "/mnt/disk", &superblock) == kernel::fs::kOk);
+    Kernel::FS::Superblock* superblock = nullptr;
+    REQUIRE(Kernel::FS::ext2_mount(&dev, "/mnt/disk", &superblock) == Kernel::FS::kOk);
 
-    REQUIRE(kernel::fs::vfs_mkdir("/mnt/disk/sub", 0755U) == kernel::fs::kOk);
+    REQUIRE(Kernel::FS::vfs_mkdir("/mnt/disk/sub", 0755U) == Kernel::FS::kOk);
 
-    kernel::fs::File* file_a = nullptr;
-    kernel::fs::File* file_b = nullptr;
-    REQUIRE(kernel::fs::vfs_open("/mnt/disk/sub/a.txt",
-                                 kernel::fs::kOpenReadWrite | kernel::fs::kOpenCreate, 0644U,
-                                 &file_a) == kernel::fs::kOk);
-    REQUIRE(kernel::fs::vfs_write(file_a, "hello", 5U) == 5);
-    REQUIRE(kernel::fs::vfs_close(file_a) == kernel::fs::kOk);
+    Kernel::FS::File* file_a = nullptr;
+    Kernel::FS::File* file_b = nullptr;
+    REQUIRE(Kernel::FS::vfs_open("/mnt/disk/sub/a.txt",
+                                 Kernel::FS::kOpenReadWrite | Kernel::FS::kOpenCreate, 0644U,
+                                 &file_a) == Kernel::FS::kOk);
+    REQUIRE(Kernel::FS::vfs_write(file_a, "hello", 5U) == 5);
+    REQUIRE(Kernel::FS::vfs_close(file_a) == Kernel::FS::kOk);
 
-    REQUIRE(kernel::fs::vfs_open("/mnt/disk/sub/b.txt",
-                                 kernel::fs::kOpenReadWrite | kernel::fs::kOpenCreate, 0644U,
-                                 &file_b) == kernel::fs::kOk);
-    REQUIRE(kernel::fs::vfs_write(file_b, "world", 5U) == 5);
-    REQUIRE(kernel::fs::vfs_close(file_b) == kernel::fs::kOk);
+    REQUIRE(Kernel::FS::vfs_open("/mnt/disk/sub/b.txt",
+                                 Kernel::FS::kOpenReadWrite | Kernel::FS::kOpenCreate, 0644U,
+                                 &file_b) == Kernel::FS::kOk);
+    REQUIRE(Kernel::FS::vfs_write(file_b, "world", 5U) == 5);
+    REQUIRE(Kernel::FS::vfs_close(file_b) == Kernel::FS::kOk);
 
     // Rename b.txt -> c.txt and unlink a.txt (coalesces rec_len with "..")
-    REQUIRE(kernel::fs::vfs_rename("/mnt/disk/sub/b.txt", "/mnt/disk/sub/c.txt") ==
-            kernel::fs::kOk);
-    REQUIRE(kernel::fs::vfs_unlink("/mnt/disk/sub/a.txt") == kernel::fs::kOk);
+    REQUIRE(Kernel::FS::vfs_rename("/mnt/disk/sub/b.txt", "/mnt/disk/sub/c.txt") ==
+            Kernel::FS::kOk);
+    REQUIRE(Kernel::FS::vfs_unlink("/mnt/disk/sub/a.txt") == Kernel::FS::kOk);
 
     // Non-empty rmdir must fail with -ENOTEMPTY
-    REQUIRE(kernel::fs::vfs_rmdir("/mnt/disk/sub") == kernel::fs::kEnotempty);
+    REQUIRE(Kernel::FS::vfs_rmdir("/mnt/disk/sub") == Kernel::FS::kEnotempty);
 
     // Remove remaining file and rmdir
-    REQUIRE(kernel::fs::vfs_unlink("/mnt/disk/sub/c.txt") == kernel::fs::kOk);
-    REQUIRE(kernel::fs::vfs_rmdir("/mnt/disk/sub") == kernel::fs::kOk);
+    REQUIRE(Kernel::FS::vfs_unlink("/mnt/disk/sub/c.txt") == Kernel::FS::kOk);
+    REQUIRE(Kernel::FS::vfs_rmdir("/mnt/disk/sub") == Kernel::FS::kOk);
 
     // Unmount and remount to verify directory removal persisted on disk
-    REQUIRE(kernel::fs::ext2_umount("/mnt/disk", superblock) == kernel::fs::kOk);
+    REQUIRE(Kernel::FS::ext2_umount("/mnt/disk", superblock) == Kernel::FS::kOk);
     superblock = nullptr;
-    REQUIRE(kernel::fs::ext2_mount(&dev, "/mnt/disk", &superblock) == kernel::fs::kOk);
+    REQUIRE(Kernel::FS::ext2_mount(&dev, "/mnt/disk", &superblock) == Kernel::FS::kOk);
 
-    kernel::fs::Dentry* dentry = nullptr;
-    REQUIRE(kernel::fs::vfs_namei("/mnt/disk/sub", nullptr, &dentry) == kernel::fs::kEnoent);
+    Kernel::FS::Dentry* dentry = nullptr;
+    REQUIRE(Kernel::FS::vfs_namei("/mnt/disk/sub", nullptr, &dentry) == Kernel::FS::kEnoent);
 
-    REQUIRE(kernel::fs::ext2_umount("/mnt/disk", superblock) == kernel::fs::kOk);
+    REQUIRE(Kernel::FS::ext2_umount("/mnt/disk", superblock) == Kernel::FS::kOk);
 }

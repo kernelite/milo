@@ -94,23 +94,23 @@ void release_pipe_end(Pipe* pipe, bool release_reader, bool release_writer) noex
     }
 }
 
-int64_t pipe_vfs_read(kernel::fs::File* file, void* buf, size_t count,
+int64_t pipe_vfs_read(Kernel::FS::File* file, void* buf, size_t count,
                       uint64_t* /*offset*/) noexcept {
     if (file == nullptr || file->inode == nullptr) {
-        return kernel::fs::kEinval;
+        return Kernel::FS::kEinval;
     }
     auto* const pipe = static_cast<Pipe*>(file->inode->fs_private);
     if (pipe == nullptr || !pipe->in_use) {
-        return kernel::fs::kEinval;
+        return Kernel::FS::kEinval;
     }
     if (count == 0U) {
         return 0;
     }
     if (buf == nullptr) {
-        return kernel::fs::kEinval;
+        return Kernel::FS::kEinval;
     }
 
-    const bool nonblock = (file->flags & kernel::fs::kOpenNonBlock) != 0U;
+    const bool nonblock = (file->flags & Kernel::FS::kOpenNonBlock) != 0U;
     auto& cpu = HAL::get_cpu();
     const bool irq_was_enabled = cpu.interrupts_enabled();
     cpu.disable_interrupts();
@@ -126,14 +126,14 @@ int64_t pipe_vfs_read(kernel::fs::File* file, void* buf, size_t count,
             if (irq_was_enabled) {
                 cpu.enable_interrupts();
             }
-            return kernel::fs::kEagain;
+            return Kernel::FS::kEagain;
         }
         const auto* const cur = Kernel::Process::current_process();
         if (cur != nullptr && Kernel::Process::has_unblocked_pending_signal(*cur)) {
             if (irq_was_enabled) {
                 cpu.enable_interrupts();
             }
-            return kernel::fs::kEintr;
+            return Kernel::FS::kEintr;
         }
         pipe->read_wq.sleep();
         cpu.disable_interrupts();
@@ -154,23 +154,23 @@ int64_t pipe_vfs_read(kernel::fs::File* file, void* buf, size_t count,
     return static_cast<int64_t>(to_read);
 }
 
-int64_t pipe_vfs_write(kernel::fs::File* file, const void* buf, size_t count,
+int64_t pipe_vfs_write(Kernel::FS::File* file, const void* buf, size_t count,
                        uint64_t* /*offset*/) noexcept {
     if (file == nullptr || file->inode == nullptr) {
-        return kernel::fs::kEinval;
+        return Kernel::FS::kEinval;
     }
     auto* const pipe = static_cast<Pipe*>(file->inode->fs_private);
     if (pipe == nullptr || !pipe->in_use) {
-        return kernel::fs::kEinval;
+        return Kernel::FS::kEinval;
     }
     if (count == 0U) {
         return 0;
     }
     if (buf == nullptr) {
-        return kernel::fs::kEinval;
+        return Kernel::FS::kEinval;
     }
 
-    const bool nonblock = (file->flags & kernel::fs::kOpenNonBlock) != 0U;
+    const bool nonblock = (file->flags & Kernel::FS::kOpenNonBlock) != 0U;
     auto& cpu = HAL::get_cpu();
     const bool irq_was_enabled = cpu.interrupts_enabled();
     cpu.disable_interrupts();
@@ -188,7 +188,7 @@ int64_t pipe_vfs_write(kernel::fs::File* file, const void* buf, size_t count,
             if (cur != nullptr) {
                 Kernel::Process::send_signal(*cur, Kernel::Process::SIG_PIPE);
             }
-            return (total_written > 0U) ? static_cast<int64_t>(total_written) : kernel::fs::kEpipe;
+            return (total_written > 0U) ? static_cast<int64_t>(total_written) : Kernel::FS::kEpipe;
         }
 
         while (pipe->count == PIPE_BUF_SIZE) {
@@ -201,7 +201,7 @@ int64_t pipe_vfs_write(kernel::fs::File* file, const void* buf, size_t count,
                     Kernel::Process::send_signal(*cur, Kernel::Process::SIG_PIPE);
                 }
                 return (total_written > 0U) ? static_cast<int64_t>(total_written)
-                                            : kernel::fs::kEpipe;
+                                            : Kernel::FS::kEpipe;
             }
             if (nonblock) {
                 pipe->read_wq.wake_all();
@@ -209,7 +209,7 @@ int64_t pipe_vfs_write(kernel::fs::File* file, const void* buf, size_t count,
                     cpu.enable_interrupts();
                 }
                 return (total_written > 0U) ? static_cast<int64_t>(total_written)
-                                            : kernel::fs::kEagain;
+                                            : Kernel::FS::kEagain;
             }
             const auto* const cur = Kernel::Process::current_process();
             if (cur != nullptr && Kernel::Process::has_unblocked_pending_signal(*cur)) {
@@ -217,7 +217,7 @@ int64_t pipe_vfs_write(kernel::fs::File* file, const void* buf, size_t count,
                     cpu.enable_interrupts();
                 }
                 return (total_written > 0U) ? static_cast<int64_t>(total_written)
-                                            : kernel::fs::kEintr;
+                                            : Kernel::FS::kEintr;
             }
             pipe->write_wq.sleep();
             cpu.disable_interrupts();
@@ -242,39 +242,39 @@ int64_t pipe_vfs_write(kernel::fs::File* file, const void* buf, size_t count,
     return static_cast<int64_t>(total_written);
 }
 
-int32_t pipe_vfs_open(kernel::fs::Inode* inode, kernel::fs::File* file) noexcept {
+int32_t pipe_vfs_open(Kernel::FS::Inode* inode, Kernel::FS::File* file) noexcept {
     if (inode == nullptr || file == nullptr) {
-        return kernel::fs::kEinval;
+        return Kernel::FS::kEinval;
     }
     auto* const pipe = static_cast<Pipe*>(inode->fs_private);
-    const uint32_t acc = file->flags & kernel::fs::kOpenAccessMask;
-    if (acc == kernel::fs::kOpenReadOnly || acc == kernel::fs::kOpenReadWrite) {
+    const uint32_t acc = file->flags & Kernel::FS::kOpenAccessMask;
+    if (acc == Kernel::FS::kOpenReadOnly || acc == Kernel::FS::kOpenReadWrite) {
         retain_pipe_reader(pipe);
     }
-    if (acc == kernel::fs::kOpenWriteOnly || acc == kernel::fs::kOpenReadWrite) {
+    if (acc == Kernel::FS::kOpenWriteOnly || acc == Kernel::FS::kOpenReadWrite) {
         retain_pipe_writer(pipe);
     }
-    return kernel::fs::kOk;
+    return Kernel::FS::kOk;
 }
 
-int32_t pipe_vfs_release(kernel::fs::Inode* inode, kernel::fs::File* file) noexcept {
+int32_t pipe_vfs_release(Kernel::FS::Inode* inode, Kernel::FS::File* file) noexcept {
     if (inode == nullptr || file == nullptr) {
-        return kernel::fs::kEinval;
+        return Kernel::FS::kEinval;
     }
     auto* const pipe = static_cast<Pipe*>(inode->fs_private);
-    const uint32_t acc = file->flags & kernel::fs::kOpenAccessMask;
-    const bool is_reader = (acc == kernel::fs::kOpenReadOnly || acc == kernel::fs::kOpenReadWrite);
-    const bool is_writer = (acc == kernel::fs::kOpenWriteOnly || acc == kernel::fs::kOpenReadWrite);
+    const uint32_t acc = file->flags & Kernel::FS::kOpenAccessMask;
+    const bool is_reader = (acc == Kernel::FS::kOpenReadOnly || acc == Kernel::FS::kOpenReadWrite);
+    const bool is_writer = (acc == Kernel::FS::kOpenWriteOnly || acc == Kernel::FS::kOpenReadWrite);
     release_pipe_end(pipe, is_reader, is_writer);
-    return kernel::fs::kOk;
+    return Kernel::FS::kOk;
 }
 
-int64_t pipe_vfs_lseek(kernel::fs::File* /*file*/, int64_t /*offset*/,
-                       kernel::fs::SeekWhence /*whence*/) noexcept {
-    return kernel::fs::kEspipe;
+int64_t pipe_vfs_lseek(Kernel::FS::File* /*file*/, int64_t /*offset*/,
+                       Kernel::FS::SeekWhence /*whence*/) noexcept {
+    return Kernel::FS::kEspipe;
 }
 
-int16_t pipe_vfs_poll(kernel::fs::File* file, int16_t events) noexcept {
+int16_t pipe_vfs_poll(Kernel::FS::File* file, int16_t events) noexcept {
     if (file == nullptr || file->inode == nullptr) {
         return kPollNval;
     }
@@ -283,7 +283,7 @@ int16_t pipe_vfs_poll(kernel::fs::File* file, int16_t events) noexcept {
         return kPollNval;
     }
 
-    const uint32_t acc = file->flags & kernel::fs::kOpenAccessMask;
+    const uint32_t acc = file->flags & Kernel::FS::kOpenAccessMask;
     const auto event_mask = static_cast<uint16_t>(events);
     constexpr auto kInMask =
         static_cast<uint16_t>(static_cast<uint16_t>(kPollIn) | static_cast<uint16_t>(kPollRdNorm));
@@ -291,14 +291,14 @@ int16_t pipe_vfs_poll(kernel::fs::File* file, int16_t events) noexcept {
         static_cast<uint16_t>(static_cast<uint16_t>(kPollOut) | static_cast<uint16_t>(kPollWrNorm));
 
     uint16_t revents = 0U;
-    if (acc == kernel::fs::kOpenReadOnly) {
+    if (acc == Kernel::FS::kOpenReadOnly) {
         if (pipe->count > 0U) {
             revents |= static_cast<uint16_t>(event_mask & kInMask);
         }
         if (pipe->writers == 0U) {
             revents |= static_cast<uint16_t>(kPollHup);
         }
-    } else if (acc == kernel::fs::kOpenWriteOnly) {
+    } else if (acc == Kernel::FS::kOpenWriteOnly) {
         if (pipe->readers == 0U) {
             revents |= static_cast<uint16_t>(kPollErr);
         } else if (pipe->count < PIPE_BUF_SIZE) {
@@ -308,7 +308,7 @@ int16_t pipe_vfs_poll(kernel::fs::File* file, int16_t events) noexcept {
     return static_cast<int16_t>(revents);
 }
 
-const kernel::fs::FileOperations kPipeFileOps{
+const Kernel::FS::FileOperations kPipeFileOps{
     .read = pipe_vfs_read,
     .write = pipe_vfs_write,
     .open = pipe_vfs_open,
@@ -324,60 +324,60 @@ const kernel::fs::FileOperations kPipeFileOps{
 
 namespace Kernel::IPC {
 
-int32_t create_pipe_files(kernel::fs::File** out_read_file, kernel::fs::File** out_write_file,
+int32_t create_pipe_files(Kernel::FS::File** out_read_file, Kernel::FS::File** out_write_file,
                           uint32_t extra_flags) noexcept {
     if (out_read_file == nullptr || out_write_file == nullptr) {
-        return kernel::fs::kEinval;
+        return Kernel::FS::kEinval;
     }
     *out_read_file = nullptr;
     *out_write_file = nullptr;
 
     auto* const pipe = new (std::nothrow) Pipe{};
     if (pipe == nullptr) {
-        return kernel::fs::kEnomem;
+        return Kernel::FS::kEnomem;
     }
     pipe->in_use = true;
     pipe->readers = 1U;
     pipe->writers = 1U;
 
-    kernel::fs::Inode* inode = kernel::fs::vfs_alloc_inode(nullptr);
+    Kernel::FS::Inode* inode = Kernel::FS::vfs_alloc_inode(nullptr);
     if (inode == nullptr) {
         delete pipe;
-        return kernel::fs::kEnomem;
+        return Kernel::FS::kEnomem;
     }
     inode->ino = 3ULL;
-    inode->mode = kernel::fs::kModeFifo | 0600U;
+    inode->mode = Kernel::FS::kModeFifo | 0600U;
     inode->fs_private = pipe;
     inode->f_ops = &kPipeFileOps;
 
-    kernel::fs::File* read_file = kernel::fs::vfs_alloc_file();
+    Kernel::FS::File* read_file = Kernel::FS::vfs_alloc_file();
     if (read_file == nullptr) {
-        kernel::fs::inode_put(inode);
+        Kernel::FS::inode_put(inode);
         delete pipe;
-        return kernel::fs::kEnfile;
+        return Kernel::FS::kEnfile;
     }
-    kernel::fs::inode_get(inode);
+    Kernel::FS::inode_get(inode);
     read_file->inode = inode;
-    read_file->flags = kernel::fs::kOpenReadOnly | extra_flags;
+    read_file->flags = Kernel::FS::kOpenReadOnly | extra_flags;
     read_file->f_ops = &kPipeFileOps;
 
-    kernel::fs::File* write_file = kernel::fs::vfs_alloc_file();
+    Kernel::FS::File* write_file = Kernel::FS::vfs_alloc_file();
     if (write_file == nullptr) {
         pipe->writers = 0U;
-        kernel::fs::file_put(read_file);
-        kernel::fs::inode_put(inode);
-        return kernel::fs::kEnfile;
+        Kernel::FS::file_put(read_file);
+        Kernel::FS::inode_put(inode);
+        return Kernel::FS::kEnfile;
     }
-    kernel::fs::inode_get(inode);
+    Kernel::FS::inode_get(inode);
     write_file->inode = inode;
-    write_file->flags = kernel::fs::kOpenWriteOnly | extra_flags;
+    write_file->flags = Kernel::FS::kOpenWriteOnly | extra_flags;
     write_file->f_ops = &kPipeFileOps;
 
-    kernel::fs::inode_put(inode);
+    Kernel::FS::inode_put(inode);
 
     *out_read_file = read_file;
     *out_write_file = write_file;
-    return kernel::fs::kOk;
+    return Kernel::FS::kOk;
 }
 
 } // namespace Kernel::IPC

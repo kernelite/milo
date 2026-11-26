@@ -7,7 +7,7 @@
 
 namespace {
 
-using namespace kernel::fs;
+using namespace Kernel::FS;
 
 // Static, zero-allocation mock filesystem backing for host VFS tests.
 struct MockFileData {
@@ -301,7 +301,7 @@ TEST_CASE("vfs namei path resolution and dot-dot clamping", "[vfs][namei]") {
         REQUIRE(vfs_namei("/does_not_exist", nullptr, &dentry) == kEnoent);
         REQUIRE(vfs_namei("/dir/subdir/hello.txt/child", nullptr, &dentry) == kEnotdir);
 
-        kernel::fs::StringView long_name =
+        Kernel::FS::StringView long_name =
             "/012345678901234567890123456789012345678901234567890123456789012345";
         REQUIRE(vfs_namei(long_name, nullptr, &dentry) == kEnametoolong);
     }
@@ -393,7 +393,7 @@ TEST_CASE("vfs file I/O, directory mutations, and refcount lifecycle", "[vfs][op
 
     char buf[8]{};
     REQUIRE(vfs_read(file, buf, 4) == 4);
-    REQUIRE(kernel::fs::StringView(buf, 4) == "cdef");
+    REQUIRE(Kernel::FS::StringView(buf, 4) == "cdef");
     REQUIRE(vfs_close(file) == kOk);
 
     REQUIRE(vfs_open("/notes.txt", kOpenWriteOnly | kOpenTrunc, 0644U, &file) == kOk);
@@ -411,7 +411,7 @@ TEST_CASE("vfs file I/O, directory mutations, and refcount lifecycle", "[vfs][op
     REQUIRE(vfs_open("/work", kOpenReadOnly | kOpenDirectory, 0, &dir_file) == kOk);
     DirEntryInfo entry{};
     REQUIRE(vfs_readdir(dir_file, &entry) == kOk);
-    REQUIRE(kernel::fs::StringView(entry.name) == "moved.txt");
+    REQUIRE(Kernel::FS::StringView(entry.name) == "moved.txt");
     REQUIRE(vfs_readdir(dir_file, &entry) == kEnoent);
     REQUIRE(vfs_close(dir_file) == kOk);
 
@@ -423,7 +423,7 @@ TEST_CASE("vfs file I/O, directory mutations, and refcount lifecycle", "[vfs][op
 
     char still_readable[4]{};
     REQUIRE(vfs_read(open_unlinked, still_readable, 2) == 2);
-    REQUIRE(kernel::fs::StringView(still_readable, 2) == "xy");
+    REQUIRE(Kernel::FS::StringView(still_readable, 2) == "xy");
     REQUIRE(vfs_close(open_unlinked) == kOk);
 
     REQUIRE(vfs_rmdir("/work") == kOk);
