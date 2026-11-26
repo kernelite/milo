@@ -5,6 +5,7 @@
 #include "mm/heap.hpp"
 #include "mm/pfa.hpp"
 #include "process/scheduler.hpp"
+#include "uapi/signal.hpp"
 
 #include <new>
 
@@ -40,23 +41,6 @@ void record_reaped_ticks(uint32_t pid, uint64_t ticks) noexcept {
     g_reaped_ticks_cache[g_reaped_ticks_cursor] = ReapedTickRecord{.pid = pid, .ticks = ticks};
     g_reaped_ticks_cursor = (g_reaped_ticks_cursor + 1U) % REAPED_TICKS_CACHE_SIZE;
 }
-
-// Linux AArch64 rt_sigframe layout pushed onto EL0 stack
-struct alignas(16) RtSigFrame {
-    uint64_t magic;
-    uint64_t saved_mask;
-    uint64_t regs[31];
-    uint64_t sp_el0;
-    uint64_t elr_el1;
-    uint64_t spsr_el1;
-    uint64_t tpidr_el0;
-    // 2-instruction return trampoline: mov x8, #139 (SYS_RT_SIGRETURN); svc #0
-    uint32_t trampoline[2];
-    uint64_t _pad;
-};
-static_assert((sizeof(RtSigFrame) % 16U) == 0U, "RtSigFrame must be 16-byte aligned");
-
-constexpr uint64_t RT_SIGFRAME_MAGIC = 0x5349474652414D45ULL;
 
 bool is_stop_signal(uint32_t sig) noexcept {
     return sig == Kernel::Process::SIG_STOP || sig == Kernel::Process::SIG_TSTP ||
@@ -594,16 +578,16 @@ void deliver_pending_signals(HAL::CpuContext& ctx) noexcept {
         exit_current_process(128 + static_cast<int64_t>(sig));
     }
 
-    // Custom EL0 signal handler: build RtSigFrame on user stack
+    // Custom EL0 signal handler: build linux_rt_sigframe on user stack
     auto& cpu = HAL::get_cpu();
     const uintptr_t old_sp = cpu.get_user_stack_pointer(ctx);
-    if (old_sp <= sizeof(RtSigFrame) + 64U) {
+    if (old_sp <= sizeof(linux_rt_sigframe) + 64U) {
         exit_current_process(128 + static_cast<int64_t>(SIG_KILL));
     }
 
-    const uintptr_t frame_vaddr = (old_sp - sizeof(RtSigFrame)) & ~0xFULL;
-    RtSigFrame frame{};
-    frame.magic = RT_SIGFRAME_MAGIC;
+    const uintptr_t frame_vaddr = (old_sp - sizeof(linux_rt_sigframe)) & ~0xFULL;
+    linux_rt_sigframe frame{};
+    frame.magic = Kernel::UAPI::RT_SIGFRAME_MAGIC;
     frame.saved_mask = proc->has_saved_sigmask ? proc->saved_sigmask : proc->blocked_signals;
     proc->has_saved_sigmask = false;
 
@@ -624,7 +608,7 @@ void deliver_pending_signals(HAL::CpuContext& ctx) noexcept {
     // Flush instruction cache if fallback stack trampoline is used
     uintptr_t tramp_paddr = 0U;
     HAL::PageFlags tramp_flags = HAL::PageFlags::None;
-    const uintptr_t tramp_vaddr = frame_vaddr + offsetof(RtSigFrame, trampoline);
+    const uintptr_t tramp_vaddr = frame_vaddr + offsetof(linux_rt_sigframe, trampoline);
     if (proc->address_space.query_user_page(tramp_vaddr, tramp_paddr, tramp_flags)) {
         cpu.flush_dcache_range(MM::phys_to_virt(tramp_paddr), sizeof(frame.trampoline));
         cpu.invalidate_icache();
@@ -653,12 +637,12 @@ int64_t restore_signal_frame(HAL::CpuContext& ctx) noexcept {
 
     auto& cpu = HAL::get_cpu();
     const uintptr_t frame_vaddr = cpu.get_user_stack_pointer(ctx);
-    RtSigFrame frame{};
+    linux_rt_sigframe frame{};
     if (MM::copy_from_user(proc->address_space, &frame, frame_vaddr, sizeof(frame)) < 0) {
         exit_current_process(128 + static_cast<int64_t>(SIG_KILL));
     }
 
-    if (frame.magic != RT_SIGFRAME_MAGIC) {
+    if (frame.magic != Kernel::UAPI::RT_SIGFRAME_MAGIC) {
         exit_current_process(128 + static_cast<int64_t>(SIG_KILL));
     }
 

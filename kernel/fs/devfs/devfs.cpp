@@ -6,78 +6,24 @@
 #include "mm/AddressSpace.hpp"
 #include "process/Process.hpp"
 #include "process/scheduler.hpp"
+#include "uapi/sys.hpp"
+#include "uapi/termios.hpp"
 
 namespace Kernel::FS {
 
 namespace {
 
-// Terminal ioctl request codes (Linux asm-generic).
-constexpr uint64_t kIoctlTcgets = 0x5401U;
-constexpr uint64_t kIoctlTcsets = 0x5402U;
-constexpr uint64_t kIoctlTcsetsw = 0x5403U;
-constexpr uint64_t kIoctlTcsetsf = 0x5404U;
-constexpr uint64_t kIoctlTiocgpgrp = 0x540FU;
-constexpr uint64_t kIoctlTiocspgrp = 0x5410U;
-constexpr uint64_t kIoctlTiocgwinsz = 0x5413U;
-
-// termios flag bits.
-constexpr uint32_t kTermiosInlcr = 0x0040U;
-constexpr uint32_t kTermiosIgncr = 0x0080U;
-constexpr uint32_t kTermiosIcrnl = 0x0100U;
-constexpr uint32_t kTermiosOpost = 0x0001U;
-constexpr uint32_t kTermiosOnlcr = 0x0004U;
-constexpr uint32_t kTermiosCs8 = 0x0030U;
-constexpr uint32_t kTermiosCread = 0x0080U;
-constexpr uint32_t kTermiosClocal = 0x0800U;
-constexpr uint32_t kTermiosIsig = 0x0001U;
-constexpr uint32_t kTermiosIcanon = 0x0002U;
-constexpr uint32_t kTermiosEcho = 0x0008U;
-constexpr uint32_t kTermiosEchoe = 0x0010U;
-constexpr uint32_t kTermiosEchok = 0x0020U;
-
-// termios c_cc indices.
-constexpr size_t kCcVintr = 0U;
-constexpr size_t kCcVquit = 1U;
-constexpr size_t kCcVerase = 2U;
-constexpr size_t kCcVkill = 3U;
-constexpr size_t kCcVeof = 4U;
-constexpr size_t kCcVtime = 5U;
-constexpr size_t kCcVmin = 6U;
-
-constexpr size_t kTermiosNccs = 19U;
 constexpr uint16_t kDefaultTtyRows = 24U;
 constexpr uint16_t kDefaultTtyCols = 80U;
 constexpr size_t kTtyRxBufSize = 256U;
 
-constexpr int16_t kPollIn = 0x0001;
-constexpr int16_t kPollOut = 0x0004;
-constexpr int16_t kPollRdNorm = 0x0040;
-constexpr int16_t kPollWrNorm = 0x0100;
-
-struct Ktermios {
-    uint32_t c_iflag;
-    uint32_t c_oflag;
-    uint32_t c_cflag;
-    uint32_t c_lflag;
-    uint8_t c_line;
-    uint8_t c_cc[kTermiosNccs];
-};
-static_assert(sizeof(Ktermios) == 36U, "Ktermios must match Linux asm-generic ABI (36 bytes)");
-
-struct Winsize {
-    uint16_t ws_row;
-    uint16_t ws_col;
-    uint16_t ws_xpixel;
-    uint16_t ws_ypixel;
-};
-static_assert(sizeof(Winsize) == 8U, "Winsize must be 8 bytes");
-
-Ktermios default_termios() noexcept {
-    return Ktermios{
-        .c_iflag = kTermiosIcrnl,
-        .c_oflag = kTermiosOpost | kTermiosOnlcr,
-        .c_cflag = kTermiosCs8 | kTermiosCread | kTermiosClocal,
-        .c_lflag = kTermiosIsig | kTermiosIcanon | kTermiosEcho | kTermiosEchoe | kTermiosEchok,
+linux_ktermios default_termios() noexcept {
+    return linux_ktermios{
+        .c_iflag = Kernel::UAPI::ICRNL,
+        .c_oflag = Kernel::UAPI::OPOST | Kernel::UAPI::ONLCR,
+        .c_cflag = Kernel::UAPI::CS8 | Kernel::UAPI::CREAD | Kernel::UAPI::CLOCAL,
+        .c_lflag = Kernel::UAPI::ISIG | Kernel::UAPI::ICANON | Kernel::UAPI::ECHO |
+                   Kernel::UAPI::ECHOE | Kernel::UAPI::ECHOK,
         .c_line = 0U,
         .c_cc = {0x03U, 0x1CU, 0x7FU, 0x15U, 0x04U, 0x00U, 0x01U, 0x00U, 0x11U, 0x13U, 0x1AU, 0x00U,
                  0x12U, 0x0FU, 0x17U, 0x16U, 0x00U, 0x00U, 0x00U},
@@ -88,7 +34,7 @@ Superblock* g_devfs_sb = nullptr;
 Inode* g_console_inode = nullptr;
 uint64_t g_next_devfs_ino = 10ULL;
 
-Ktermios g_console_termios = default_termios();
+linux_ktermios g_console_termios = default_termios();
 uint32_t g_foreground_pgid = 1U;
 uint8_t g_tty_rx_buf[kTtyRxBufSize]{};
 size_t g_tty_rx_head = 0U;
@@ -105,17 +51,17 @@ void tty_pump_uart_unlocked() noexcept {
     auto& console = HAL::get_console();
     while (console.has_input() && g_tty_rx_count < kTtyRxBufSize) {
         const uint8_t chr = console.getc();
-        if ((g_console_termios.c_lflag & kTermiosIsig) != 0U) {
-            if (chr == g_console_termios.c_cc[kCcVintr]) {
-                if ((g_console_termios.c_lflag & kTermiosEcho) != 0U) {
+        if ((g_console_termios.c_lflag & Kernel::UAPI::ISIG) != 0U) {
+            if (chr == g_console_termios.c_cc[Kernel::UAPI::VINTR]) {
+                if ((g_console_termios.c_lflag & Kernel::UAPI::ECHO) != 0U) {
                     console.write("^C\r\n", 4U);
                 }
                 tty_flush_rx_unlocked();
                 Kernel::Process::signal_process_group(g_foreground_pgid, Kernel::Process::SIG_INT);
                 continue;
             }
-            if (chr == g_console_termios.c_cc[kCcVquit]) {
-                if ((g_console_termios.c_lflag & kTermiosEcho) != 0U) {
+            if (chr == g_console_termios.c_cc[Kernel::UAPI::VQUIT]) {
+                if ((g_console_termios.c_lflag & Kernel::UAPI::ECHO) != 0U) {
                     console.write("^\\\r\n", 4U);
                 }
                 tty_flush_rx_unlocked();
@@ -174,14 +120,14 @@ void wait_for_tty_event() noexcept {
 char translate_input_char(char chr, bool& skip_char) noexcept {
     skip_char = false;
     if (chr == '\r') {
-        if ((g_console_termios.c_iflag & kTermiosIgncr) != 0U) {
+        if ((g_console_termios.c_iflag & Kernel::UAPI::IGNCR) != 0U) {
             skip_char = true;
             return chr;
         }
-        if ((g_console_termios.c_iflag & kTermiosIcrnl) != 0U) {
+        if ((g_console_termios.c_iflag & Kernel::UAPI::ICRNL) != 0U) {
             return '\n';
         }
-    } else if (chr == '\n' && (g_console_termios.c_iflag & kTermiosInlcr) != 0U) {
+    } else if (chr == '\n' && (g_console_termios.c_iflag & Kernel::UAPI::INLCR) != 0U) {
         return '\r';
     }
     return chr;
@@ -197,17 +143,17 @@ int64_t console_read(File* file, void* buf, size_t count, uint64_t* /*offset*/) 
 
     auto* const proc = Kernel::Process::current_process();
     const bool nonblock = (file->flags & kOpenNonBlock) != 0U;
-    const bool canonical = (g_console_termios.c_lflag & kTermiosIcanon) != 0U;
-    const bool echo = (g_console_termios.c_lflag & kTermiosEcho) != 0U;
-    const bool echoe = (g_console_termios.c_lflag & kTermiosEchoe) != 0U;
-    const bool echok = (g_console_termios.c_lflag & kTermiosEchok) != 0U;
+    const bool canonical = (g_console_termios.c_lflag & Kernel::UAPI::ICANON) != 0U;
+    const bool echo = (g_console_termios.c_lflag & Kernel::UAPI::ECHO) != 0U;
+    const bool echoe = (g_console_termios.c_lflag & Kernel::UAPI::ECHOE) != 0U;
+    const bool echok = (g_console_termios.c_lflag & Kernel::UAPI::ECHOK) != 0U;
 
     auto* const out_buf = static_cast<char*>(buf);
     size_t total_read = 0U;
 
     if (!canonical) {
-        const uint8_t vmin = g_console_termios.c_cc[kCcVmin];
-        const uint8_t vtime = g_console_termios.c_cc[kCcVtime];
+        const uint8_t vmin = g_console_termios.c_cc[Kernel::UAPI::VMIN];
+        const uint8_t vtime = g_console_termios.c_cc[Kernel::UAPI::VTIME];
         const size_t target_min = (vmin < count) ? vmin : count;
         const uint64_t freq = HAL::QemuVirt::GenericTimer::frequency_hz();
         const uint64_t timeout_ticks =
@@ -287,11 +233,11 @@ int64_t console_read(File* file, void* buf, size_t count, uint64_t* /*offset*/) 
             continue;
         }
 
-        if (raw_byte == g_console_termios.c_cc[kCcVeof]) {
+        if (raw_byte == g_console_termios.c_cc[Kernel::UAPI::VEOF]) {
             break;
         }
 
-        if (raw_byte == g_console_termios.c_cc[kCcVkill]) {
+        if (raw_byte == g_console_termios.c_cc[Kernel::UAPI::VKILL]) {
             while (total_read > 0U) {
                 --total_read;
                 if (echo && echok) {
@@ -302,7 +248,7 @@ int64_t console_read(File* file, void* buf, size_t count, uint64_t* /*offset*/) 
         }
 
         if (raw_byte == '\b' || raw_byte == 0x7FU ||
-            raw_byte == g_console_termios.c_cc[kCcVerase]) {
+            raw_byte == g_console_termios.c_cc[Kernel::UAPI::VERASE]) {
             if (total_read > 0U) {
                 --total_read;
                 if (echo) {
@@ -363,16 +309,16 @@ int32_t console_ioctl(File* /*file*/, uint64_t request, uint64_t arg) noexcept {
     const auto user_arg = static_cast<uintptr_t>(arg);
 
     switch (request) {
-    case kIoctlTcgets: {
+    case Kernel::UAPI::TCGETS: {
         const int64_t res = Kernel::MM::copy_to_user(root_paddr, user_arg, &g_console_termios,
                                                      sizeof(g_console_termios));
         return (res < 0) ? kEfault : kOk;
     }
 
-    case kIoctlTcsets:
-    case kIoctlTcsetsw:
-    case kIoctlTcsetsf: {
-        Ktermios updated{};
+    case Kernel::UAPI::TCSETS:
+    case Kernel::UAPI::TCSETSW:
+    case Kernel::UAPI::TCSETSF: {
+        linux_ktermios updated{};
         const int64_t copy_res =
             Kernel::MM::copy_from_user(root_paddr, &updated, user_arg, sizeof(updated));
         if (copy_res < 0) {
@@ -382,7 +328,7 @@ int32_t console_ioctl(File* /*file*/, uint64_t request, uint64_t arg) noexcept {
         const bool irq_was_enabled = cpu.interrupts_enabled();
         cpu.disable_interrupts();
         g_console_termios = updated;
-        if (request == kIoctlTcsetsf) {
+        if (request == Kernel::UAPI::TCSETSF) {
             tty_flush_rx_unlocked();
         }
         if (irq_was_enabled) {
@@ -391,8 +337,8 @@ int32_t console_ioctl(File* /*file*/, uint64_t request, uint64_t arg) noexcept {
         return kOk;
     }
 
-    case kIoctlTiocgwinsz: {
-        constexpr Winsize default_ws{
+    case Kernel::UAPI::TIOCGWINSZ: {
+        constexpr linux_winsize default_ws{
             .ws_row = kDefaultTtyRows,
             .ws_col = kDefaultTtyCols,
             .ws_xpixel = 0U,
@@ -403,13 +349,13 @@ int32_t console_ioctl(File* /*file*/, uint64_t request, uint64_t arg) noexcept {
         return (res < 0) ? kEfault : kOk;
     }
 
-    case kIoctlTiocgpgrp: {
+    case Kernel::UAPI::TIOCGPGRP: {
         const auto pgrp = static_cast<int32_t>(g_foreground_pgid);
         const int64_t res = Kernel::MM::copy_to_user(root_paddr, user_arg, &pgrp, sizeof(pgrp));
         return (res < 0) ? kEfault : kOk;
     }
 
-    case kIoctlTiocspgrp: {
+    case Kernel::UAPI::TIOCSPGRP: {
         int32_t new_pgrp = 0;
         const int64_t copy_res =
             Kernel::MM::copy_from_user(root_paddr, &new_pgrp, user_arg, sizeof(new_pgrp));
@@ -437,10 +383,11 @@ int16_t console_poll(File* file, int16_t events) noexcept {
     const bool writable = (acc == kOpenWriteOnly || acc == kOpenReadWrite);
 
     const auto event_mask = static_cast<uint16_t>(events);
-    constexpr auto kInMask =
-        static_cast<uint16_t>(static_cast<uint16_t>(kPollIn) | static_cast<uint16_t>(kPollRdNorm));
+    constexpr auto kInMask = static_cast<uint16_t>(static_cast<uint16_t>(Kernel::UAPI::POLLIN) |
+                                                   static_cast<uint16_t>(Kernel::UAPI::POLLRDNORM));
     constexpr auto kOutMask =
-        static_cast<uint16_t>(static_cast<uint16_t>(kPollOut) | static_cast<uint16_t>(kPollWrNorm));
+        static_cast<uint16_t>(static_cast<uint16_t>(Kernel::UAPI::POLLOUT) |
+                              static_cast<uint16_t>(Kernel::UAPI::POLLWRNORM));
 
     uint16_t revents = 0U;
     if (readable && tty_rx_available() > 0U) {
