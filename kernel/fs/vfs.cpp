@@ -1,6 +1,6 @@
 #include "fs/vfs.hpp"
 
-namespace kernel::fs {
+namespace Kernel::FS {
 
 namespace {
 
@@ -1304,4 +1304,4 @@ int32_t vfs_rename(StringView old_path, StringView new_path) noexcept {
     return vfs_rename_at(nullptr, old_path, nullptr, new_path);
 }
 
-} // namespace kernel::fs
+} // namespace Kernel::FS

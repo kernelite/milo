@@ -7,6 +7,8 @@
 #include <cstddef>
 #include <cstdint>
 
+namespace Kernel::FS {
+
 // Packed 110-byte ASCII header conforming to POSIX / SVR4 portable CPIO
 struct [[gnu::packed]] CpioNewcHeader {
     char c_magic[6];    // "070701" (no CRC) or "070702" (CRC)
@@ -276,3 +278,4 @@ inline CpioStatus cpio_lookup(const void* base, size_t size, const char* path,
                               CpioEntry& out_entry) noexcept {
     return CpioArchive(base, size).lookup(path, out_entry);
 }
+} // namespace Kernel::FS

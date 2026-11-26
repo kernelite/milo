@@ -7,7 +7,7 @@
 #include "process/process.hpp"
 #include "process/scheduler.hpp"
 
-namespace kernel::fs {
+namespace Kernel::FS {
 
 namespace {
 
@@ -689,4 +689,4 @@ uint32_t console_get_foreground_pgid() noexcept {
     return g_foreground_pgid;
 }
 
-} // namespace kernel::fs
+} // namespace Kernel::FS

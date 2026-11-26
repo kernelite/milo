@@ -485,7 +485,7 @@ bool normalize_vfs_path(const char* base_dir, const char* input, char* out,
     return true;
 }
 
-kernel::fs::File* get_proc_file(Kernel::Process::Process* proc, uint64_t raw_fd) noexcept {
+Kernel::FS::File* get_proc_file(Kernel::Process::Process* proc, uint64_t raw_fd) noexcept {
     if (proc == nullptr || proc->fd_table == nullptr || raw_fd >= proc->fd_capacity) {
         return nullptr;
     }
@@ -493,7 +493,7 @@ kernel::fs::File* get_proc_file(Kernel::Process::Process* proc, uint64_t raw_fd)
     return desc.is_open() ? desc.file : nullptr;
 }
 
-void fill_stat_from_inode(const kernel::fs::Inode& inode, LinuxStat& stat_out) noexcept {
+void fill_stat_from_inode(const Kernel::FS::Inode& inode, LinuxStat& stat_out) noexcept {
     stat_out = LinuxStat{};
     stat_out.st_dev = 1ULL;
     stat_out.st_ino = (inode.ino != 0U) ? inode.ino : 1ULL;
@@ -656,23 +656,23 @@ int64_t stage_user_string_array(uintptr_t root_paddr, uintptr_t user_array, cons
 }
 
 int64_t resolve_dirfd_dentry(Kernel::Process::Process& proc, int32_t dirfd,
-                             kernel::fs::Dentry*& out_base) noexcept {
+                             Kernel::FS::Dentry*& out_base) noexcept {
     if (dirfd == AT_FDCWD) {
-        return kernel::fs::vfs_namei(kernel::fs::StringView(proc.cwd), nullptr, &out_base);
+        return Kernel::FS::vfs_namei(Kernel::FS::StringView(proc.cwd), nullptr, &out_base);
     }
-    kernel::fs::File* dir_file = get_proc_file(&proc, static_cast<uint64_t>(dirfd));
+    Kernel::FS::File* dir_file = get_proc_file(&proc, static_cast<uint64_t>(dirfd));
     if (dir_file == nullptr) {
         return ERR_EBADF;
     }
     if (dir_file->inode == nullptr || !dir_file->inode->is_dir() || dir_file->dentry == nullptr) {
         return ERR_ENOTDIR;
     }
-    kernel::fs::dentry_get(dir_file->dentry);
+    Kernel::FS::dentry_get(dir_file->dentry);
     out_base = dir_file->dentry;
     return 0;
 }
 
-void build_dentry_path(const kernel::fs::Dentry* target, char* out, size_t cap) noexcept {
+void build_dentry_path(const Kernel::FS::Dentry* target, char* out, size_t cap) noexcept {
     if (out == nullptr || cap < 2U) {
         return;
     }
@@ -681,9 +681,9 @@ void build_dentry_path(const kernel::fs::Dentry* target, char* out, size_t cap) 
         out[1] = '\0';
         return;
     }
-    const kernel::fs::Dentry* chain[32]{};
+    const Kernel::FS::Dentry* chain[32]{};
     size_t depth = 0U;
-    for (const kernel::fs::Dentry* cur = target;
+    for (const Kernel::FS::Dentry* cur = target;
          cur != nullptr && cur->parent != nullptr && depth < 32U; cur = cur->parent) {
         chain[depth++] = cur;
     }
@@ -741,27 +741,27 @@ int64_t sys_chdir(uintptr_t user_path) noexcept {
         return copy_res;
     }
 
-    kernel::fs::Dentry* cwd_dentry = nullptr;
+    Kernel::FS::Dentry* cwd_dentry = nullptr;
     if (raw_path[0] != '/') {
-        (void)kernel::fs::vfs_namei(kernel::fs::StringView(proc->cwd), nullptr, &cwd_dentry);
+        (void)Kernel::FS::vfs_namei(Kernel::FS::StringView(proc->cwd), nullptr, &cwd_dentry);
     }
 
-    kernel::fs::Dentry* target = nullptr;
+    Kernel::FS::Dentry* target = nullptr;
     const int32_t vfs_res =
-        kernel::fs::vfs_namei(kernel::fs::StringView(raw_path, len), cwd_dentry, &target);
+        Kernel::FS::vfs_namei(Kernel::FS::StringView(raw_path, len), cwd_dentry, &target);
     if (cwd_dentry != nullptr) {
-        kernel::fs::dentry_put(cwd_dentry);
+        Kernel::FS::dentry_put(cwd_dentry);
     }
-    if (vfs_res != kernel::fs::kOk) {
+    if (vfs_res != Kernel::FS::kOk) {
         return vfs_res;
     }
     if (target->inode == nullptr || !target->inode->is_dir()) {
-        kernel::fs::dentry_put(target);
+        Kernel::FS::dentry_put(target);
         return ERR_ENOTDIR;
     }
 
     build_dentry_path(target, proc->cwd, sizeof(proc->cwd));
-    kernel::fs::dentry_put(target);
+    Kernel::FS::dentry_put(target);
     return 0;
 }
 
@@ -779,7 +779,7 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
         return copy_res;
     }
 
-    kernel::fs::Dentry* base_dentry = nullptr;
+    Kernel::FS::Dentry* base_dentry = nullptr;
     if (raw_path[0] != '/') {
         const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
         if (dir_res < 0) {
@@ -790,53 +790,53 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
     const uint64_t accmode = flags & O_ACCMODE;
     uint32_t vfs_flags = 0U;
     if (accmode == O_RDONLY) {
-        vfs_flags = kernel::fs::kOpenReadOnly;
+        vfs_flags = Kernel::FS::kOpenReadOnly;
     } else if (accmode == O_WRONLY) {
-        vfs_flags = kernel::fs::kOpenWriteOnly;
+        vfs_flags = Kernel::FS::kOpenWriteOnly;
     } else if (accmode == O_RDWR) {
-        vfs_flags = kernel::fs::kOpenReadWrite;
+        vfs_flags = Kernel::FS::kOpenReadWrite;
     } else {
         if (base_dentry != nullptr) {
-            kernel::fs::dentry_put(base_dentry);
+            Kernel::FS::dentry_put(base_dentry);
         }
         return ERR_EINVAL;
     }
 
     if ((flags & O_CREAT) != 0ULL) {
-        vfs_flags |= kernel::fs::kOpenCreate;
+        vfs_flags |= Kernel::FS::kOpenCreate;
     }
     if ((flags & O_EXCL) != 0ULL) {
-        vfs_flags |= kernel::fs::kOpenExcl;
+        vfs_flags |= Kernel::FS::kOpenExcl;
     }
     if ((flags & O_TRUNC) != 0ULL) {
-        vfs_flags |= kernel::fs::kOpenTrunc;
+        vfs_flags |= Kernel::FS::kOpenTrunc;
     }
     if ((flags & O_APPEND) != 0ULL) {
-        vfs_flags |= kernel::fs::kOpenAppend;
+        vfs_flags |= Kernel::FS::kOpenAppend;
     }
     if ((flags & O_DIRECTORY) != 0ULL) {
-        vfs_flags |= kernel::fs::kOpenDirectory;
+        vfs_flags |= Kernel::FS::kOpenDirectory;
     }
     if ((flags & O_NONBLOCK) != 0ULL) {
-        vfs_flags |= kernel::fs::kOpenNonBlock;
+        vfs_flags |= Kernel::FS::kOpenNonBlock;
     }
 
     const int slot = Kernel::Process::allocate_fd(*proc);
     if (slot < 0) {
         if (base_dentry != nullptr) {
-            kernel::fs::dentry_put(base_dentry);
+            Kernel::FS::dentry_put(base_dentry);
         }
         return slot;
     }
 
     const uint32_t effective_mode = static_cast<uint32_t>(mode) & ~proc->umask;
-    kernel::fs::File* file = nullptr;
-    const int32_t open_rc = kernel::fs::vfs_open_at(
-        base_dentry, kernel::fs::StringView(raw_path, path_len), vfs_flags, effective_mode, &file);
+    Kernel::FS::File* file = nullptr;
+    const int32_t open_rc = Kernel::FS::vfs_open_at(
+        base_dentry, Kernel::FS::StringView(raw_path, path_len), vfs_flags, effective_mode, &file);
     if (base_dentry != nullptr) {
-        kernel::fs::dentry_put(base_dentry);
+        Kernel::FS::dentry_put(base_dentry);
     }
-    if (open_rc != kernel::fs::kOk) {
+    if (open_rc != Kernel::FS::kOk) {
         return open_rc;
     }
 
@@ -873,7 +873,7 @@ int64_t sys_mkdirat(int32_t dirfd, uintptr_t user_pathname, uint64_t mode) noexc
         return copy_res;
     }
 
-    kernel::fs::Dentry* base_dentry = nullptr;
+    Kernel::FS::Dentry* base_dentry = nullptr;
     if (raw_path[0] != '/') {
         const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
         if (dir_res < 0) {
@@ -882,10 +882,10 @@ int64_t sys_mkdirat(int32_t dirfd, uintptr_t user_pathname, uint64_t mode) noexc
     }
 
     const uint32_t effective_mode = static_cast<uint32_t>(mode) & ~proc->umask;
-    const int32_t vfs_res = kernel::fs::vfs_mkdir_at(
-        base_dentry, kernel::fs::StringView(raw_path, path_len), effective_mode);
+    const int32_t vfs_res = Kernel::FS::vfs_mkdir_at(
+        base_dentry, Kernel::FS::StringView(raw_path, path_len), effective_mode);
     if (base_dentry != nullptr) {
-        kernel::fs::dentry_put(base_dentry);
+        Kernel::FS::dentry_put(base_dentry);
     }
     return vfs_res;
 }
@@ -907,7 +907,7 @@ int64_t sys_unlinkat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags) noe
         return copy_res;
     }
 
-    kernel::fs::Dentry* base_dentry = nullptr;
+    Kernel::FS::Dentry* base_dentry = nullptr;
     if (raw_path[0] != '/') {
         const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
         if (dir_res < 0) {
@@ -915,12 +915,12 @@ int64_t sys_unlinkat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags) noe
         }
     }
 
-    const kernel::fs::StringView path_view(raw_path, path_len);
+    const Kernel::FS::StringView path_view(raw_path, path_len);
     const int32_t vfs_res = ((flags & AT_REMOVEDIR) != 0ULL)
-                                ? kernel::fs::vfs_rmdir_at(base_dentry, path_view)
-                                : kernel::fs::vfs_unlink_at(base_dentry, path_view);
+                                ? Kernel::FS::vfs_rmdir_at(base_dentry, path_view)
+                                : Kernel::FS::vfs_unlink_at(base_dentry, path_view);
     if (base_dentry != nullptr) {
-        kernel::fs::dentry_put(base_dentry);
+        Kernel::FS::dentry_put(base_dentry);
     }
     return vfs_res;
 }
@@ -951,7 +951,7 @@ int64_t sys_renameat2(int32_t olddirfd, uintptr_t user_oldpath, int32_t newdirfd
         return new_copy;
     }
 
-    kernel::fs::Dentry* old_base = nullptr;
+    Kernel::FS::Dentry* old_base = nullptr;
     if (old_path[0] != '/') {
         const int64_t dir_res = resolve_dirfd_dentry(*proc, olddirfd, old_base);
         if (dir_res < 0) {
@@ -959,40 +959,40 @@ int64_t sys_renameat2(int32_t olddirfd, uintptr_t user_oldpath, int32_t newdirfd
         }
     }
 
-    kernel::fs::Dentry* new_base = nullptr;
+    Kernel::FS::Dentry* new_base = nullptr;
     if (new_path[0] != '/') {
         const int64_t dir_res = resolve_dirfd_dentry(*proc, newdirfd, new_base);
         if (dir_res < 0) {
             if (old_base != nullptr) {
-                kernel::fs::dentry_put(old_base);
+                Kernel::FS::dentry_put(old_base);
             }
             return dir_res;
         }
     }
 
     if ((flags & RENAME_NOREPLACE) != 0ULL) {
-        kernel::fs::Dentry* existing = nullptr;
-        if (kernel::fs::vfs_namei(kernel::fs::StringView(new_path, new_len), new_base, &existing,
-                                  false) == kernel::fs::kOk) {
-            kernel::fs::dentry_put(existing);
+        Kernel::FS::Dentry* existing = nullptr;
+        if (Kernel::FS::vfs_namei(Kernel::FS::StringView(new_path, new_len), new_base, &existing,
+                                  false) == Kernel::FS::kOk) {
+            Kernel::FS::dentry_put(existing);
             if (new_base != nullptr) {
-                kernel::fs::dentry_put(new_base);
+                Kernel::FS::dentry_put(new_base);
             }
             if (old_base != nullptr) {
-                kernel::fs::dentry_put(old_base);
+                Kernel::FS::dentry_put(old_base);
             }
             return ERR_EEXIST;
         }
     }
 
     const int32_t vfs_res =
-        kernel::fs::vfs_rename_at(old_base, kernel::fs::StringView(old_path, old_len), new_base,
-                                  kernel::fs::StringView(new_path, new_len));
+        Kernel::FS::vfs_rename_at(old_base, Kernel::FS::StringView(old_path, old_len), new_base,
+                                  Kernel::FS::StringView(new_path, new_len));
     if (new_base != nullptr) {
-        kernel::fs::dentry_put(new_base);
+        Kernel::FS::dentry_put(new_base);
     }
     if (old_base != nullptr) {
-        kernel::fs::dentry_put(old_base);
+        Kernel::FS::dentry_put(old_base);
     }
     return vfs_res;
 }
@@ -1014,7 +1014,7 @@ int64_t sys_ftruncate(uint64_t raw_fd, int64_t length) noexcept {
     if (!desc.is_open() || !desc.is_writable() || desc.file->inode == nullptr) {
         return ERR_EBADF;
     }
-    kernel::fs::Inode* inode = desc.file->inode;
+    Kernel::FS::Inode* inode = desc.file->inode;
     if (inode->sb != nullptr && inode->sb->is_read_only()) {
         return ERR_EROFS;
     }
@@ -1041,7 +1041,7 @@ int64_t sys_truncate(uintptr_t user_pathname, int64_t length) noexcept {
         return copy_res;
     }
 
-    kernel::fs::Dentry* base_dentry = nullptr;
+    Kernel::FS::Dentry* base_dentry = nullptr;
     if (raw_path[0] != '/') {
         const int64_t dir_res = resolve_dirfd_dentry(*proc, AT_FDCWD, base_dentry);
         if (dir_res < 0) {
@@ -1049,20 +1049,20 @@ int64_t sys_truncate(uintptr_t user_pathname, int64_t length) noexcept {
         }
     }
 
-    kernel::fs::Dentry* target = nullptr;
-    const int32_t vfs_res = kernel::fs::vfs_namei(kernel::fs::StringView(raw_path, path_len),
+    Kernel::FS::Dentry* target = nullptr;
+    const int32_t vfs_res = Kernel::FS::vfs_namei(Kernel::FS::StringView(raw_path, path_len),
                                                   base_dentry, &target, true);
     if (base_dentry != nullptr) {
-        kernel::fs::dentry_put(base_dentry);
+        Kernel::FS::dentry_put(base_dentry);
     }
-    if (vfs_res != kernel::fs::kOk || target == nullptr || target->inode == nullptr) {
+    if (vfs_res != Kernel::FS::kOk || target == nullptr || target->inode == nullptr) {
         if (target != nullptr) {
-            kernel::fs::dentry_put(target);
+            Kernel::FS::dentry_put(target);
         }
-        return (vfs_res != kernel::fs::kOk) ? vfs_res : ERR_ENOENT;
+        return (vfs_res != Kernel::FS::kOk) ? vfs_res : ERR_ENOENT;
     }
 
-    kernel::fs::Inode* inode = target->inode;
+    Kernel::FS::Inode* inode = target->inode;
     int64_t res = 0;
     if (inode->sb != nullptr && inode->sb->is_read_only()) {
         res = ERR_EROFS;
@@ -1071,7 +1071,7 @@ int64_t sys_truncate(uintptr_t user_pathname, int64_t length) noexcept {
     } else {
         res = inode->i_ops->truncate(inode, static_cast<uint64_t>(length));
     }
-    kernel::fs::dentry_put(target);
+    Kernel::FS::dentry_put(target);
     return res;
 }
 
@@ -1101,11 +1101,11 @@ int64_t sys_utimensat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_tim
         }
     }
 
-    kernel::fs::Inode* inode = nullptr;
-    kernel::fs::Dentry* target = nullptr;
+    Kernel::FS::Inode* inode = nullptr;
+    Kernel::FS::Dentry* target = nullptr;
 
     if (user_pathname == 0U) {
-        kernel::fs::File* file = get_proc_file(proc, static_cast<uint64_t>(dirfd));
+        Kernel::FS::File* file = get_proc_file(proc, static_cast<uint64_t>(dirfd));
         if (file == nullptr || file->inode == nullptr) {
             return ERR_EBADF;
         }
@@ -1120,13 +1120,13 @@ int64_t sys_utimensat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_tim
         }
 
         if (path_len == 0U && (flags & AT_EMPTY_PATH) != 0ULL) {
-            kernel::fs::File* file = get_proc_file(proc, static_cast<uint64_t>(dirfd));
+            Kernel::FS::File* file = get_proc_file(proc, static_cast<uint64_t>(dirfd));
             if (file == nullptr || file->inode == nullptr) {
                 return ERR_EBADF;
             }
             inode = file->inode;
         } else {
-            kernel::fs::Dentry* base_dentry = nullptr;
+            Kernel::FS::Dentry* base_dentry = nullptr;
             if (raw_path[0] != '/') {
                 const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
                 if (dir_res < 0) {
@@ -1134,16 +1134,16 @@ int64_t sys_utimensat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_tim
                 }
             }
             const bool follow = (flags & AT_SYMLINK_NOFOLLOW) == 0ULL;
-            const int32_t vfs_res = kernel::fs::vfs_namei(
-                kernel::fs::StringView(raw_path, path_len), base_dentry, &target, follow);
+            const int32_t vfs_res = Kernel::FS::vfs_namei(
+                Kernel::FS::StringView(raw_path, path_len), base_dentry, &target, follow);
             if (base_dentry != nullptr) {
-                kernel::fs::dentry_put(base_dentry);
+                Kernel::FS::dentry_put(base_dentry);
             }
-            if (vfs_res != kernel::fs::kOk || target == nullptr || target->inode == nullptr) {
+            if (vfs_res != Kernel::FS::kOk || target == nullptr || target->inode == nullptr) {
                 if (target != nullptr) {
-                    kernel::fs::dentry_put(target);
+                    Kernel::FS::dentry_put(target);
                 }
-                return (vfs_res != kernel::fs::kOk) ? vfs_res : ERR_ENOENT;
+                return (vfs_res != Kernel::FS::kOk) ? vfs_res : ERR_ENOENT;
             }
             inode = target->inode;
         }
@@ -1170,14 +1170,14 @@ int64_t sys_utimensat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_tim
     }
 
     if (target != nullptr) {
-        kernel::fs::dentry_put(target);
+        Kernel::FS::dentry_put(target);
     }
     return res;
 }
 
 int64_t sys_fsync(uint64_t raw_fd, int32_t datasync) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    kernel::fs::File* file = get_proc_file(proc, raw_fd);
+    Kernel::FS::File* file = get_proc_file(proc, raw_fd);
     if (file == nullptr) {
         return ERR_EBADF;
     }
@@ -1189,7 +1189,7 @@ int64_t sys_fsync(uint64_t raw_fd, int32_t datasync) noexcept {
 
 int64_t sys_fchmod(uint64_t raw_fd, uint64_t mode) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    kernel::fs::File* file = get_proc_file(proc, raw_fd);
+    Kernel::FS::File* file = get_proc_file(proc, raw_fd);
     if (file == nullptr || file->inode == nullptr) {
         return ERR_EBADF;
     }
@@ -1197,7 +1197,7 @@ int64_t sys_fchmod(uint64_t raw_fd, uint64_t mode) noexcept {
         return ERR_EROFS;
     }
     file->inode->mode =
-        (file->inode->mode & kernel::fs::kModeTypeMask) | (static_cast<uint32_t>(mode) & 07777U);
+        (file->inode->mode & Kernel::FS::kModeTypeMask) | (static_cast<uint32_t>(mode) & 07777U);
     file->inode->ctime_ns = monotonic_now_ns();
     return 0;
 }
@@ -1220,7 +1220,7 @@ int64_t sys_fchmodat(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
         return copy_res;
     }
 
-    kernel::fs::Dentry* base_dentry = nullptr;
+    Kernel::FS::Dentry* base_dentry = nullptr;
     if (raw_path[0] != '/') {
         const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
         if (dir_res < 0) {
@@ -1229,34 +1229,34 @@ int64_t sys_fchmodat(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
     }
 
     const bool follow = (flags & AT_SYMLINK_NOFOLLOW) == 0ULL;
-    kernel::fs::Dentry* target = nullptr;
-    const int32_t vfs_res = kernel::fs::vfs_namei(kernel::fs::StringView(raw_path, path_len),
+    Kernel::FS::Dentry* target = nullptr;
+    const int32_t vfs_res = Kernel::FS::vfs_namei(Kernel::FS::StringView(raw_path, path_len),
                                                   base_dentry, &target, follow);
     if (base_dentry != nullptr) {
-        kernel::fs::dentry_put(base_dentry);
+        Kernel::FS::dentry_put(base_dentry);
     }
-    if (vfs_res != kernel::fs::kOk || target == nullptr || target->inode == nullptr) {
+    if (vfs_res != Kernel::FS::kOk || target == nullptr || target->inode == nullptr) {
         if (target != nullptr) {
-            kernel::fs::dentry_put(target);
+            Kernel::FS::dentry_put(target);
         }
-        return (vfs_res != kernel::fs::kOk) ? vfs_res : ERR_ENOENT;
+        return (vfs_res != Kernel::FS::kOk) ? vfs_res : ERR_ENOENT;
     }
 
     int64_t res = 0;
     if (target->inode->sb != nullptr && target->inode->sb->is_read_only()) {
         res = ERR_EROFS;
     } else {
-        target->inode->mode = (target->inode->mode & kernel::fs::kModeTypeMask) |
+        target->inode->mode = (target->inode->mode & Kernel::FS::kModeTypeMask) |
                               (static_cast<uint32_t>(mode) & 07777U);
         target->inode->ctime_ns = monotonic_now_ns();
     }
-    kernel::fs::dentry_put(target);
+    Kernel::FS::dentry_put(target);
     return res;
 }
 
 int64_t sys_fchown(uint64_t raw_fd, uint32_t owner, uint32_t group) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    kernel::fs::File* file = get_proc_file(proc, raw_fd);
+    Kernel::FS::File* file = get_proc_file(proc, raw_fd);
     if (file == nullptr || file->inode == nullptr) {
         return ERR_EBADF;
     }
@@ -1295,7 +1295,7 @@ int64_t sys_fchownat(int32_t dirfd, uintptr_t user_pathname, uint32_t owner, uin
         return sys_fchown(static_cast<uint64_t>(dirfd), owner, group);
     }
 
-    kernel::fs::Dentry* base_dentry = nullptr;
+    Kernel::FS::Dentry* base_dentry = nullptr;
     if (raw_path[0] != '/') {
         const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
         if (dir_res < 0) {
@@ -1304,17 +1304,17 @@ int64_t sys_fchownat(int32_t dirfd, uintptr_t user_pathname, uint32_t owner, uin
     }
 
     const bool follow = (flags & AT_SYMLINK_NOFOLLOW) == 0ULL;
-    kernel::fs::Dentry* target = nullptr;
-    const int32_t vfs_res = kernel::fs::vfs_namei(kernel::fs::StringView(raw_path, path_len),
+    Kernel::FS::Dentry* target = nullptr;
+    const int32_t vfs_res = Kernel::FS::vfs_namei(Kernel::FS::StringView(raw_path, path_len),
                                                   base_dentry, &target, follow);
     if (base_dentry != nullptr) {
-        kernel::fs::dentry_put(base_dentry);
+        Kernel::FS::dentry_put(base_dentry);
     }
-    if (vfs_res != kernel::fs::kOk || target == nullptr || target->inode == nullptr) {
+    if (vfs_res != Kernel::FS::kOk || target == nullptr || target->inode == nullptr) {
         if (target != nullptr) {
-            kernel::fs::dentry_put(target);
+            Kernel::FS::dentry_put(target);
         }
-        return (vfs_res != kernel::fs::kOk) ? vfs_res : ERR_ENOENT;
+        return (vfs_res != Kernel::FS::kOk) ? vfs_res : ERR_ENOENT;
     }
 
     int64_t res = 0;
@@ -1329,7 +1329,7 @@ int64_t sys_fchownat(int32_t dirfd, uintptr_t user_pathname, uint32_t owner, uin
         }
         target->inode->ctime_ns = monotonic_now_ns();
     }
-    kernel::fs::dentry_put(target);
+    Kernel::FS::dentry_put(target);
     return res;
 }
 
@@ -1348,20 +1348,20 @@ int64_t sys_close(uint64_t raw_fd) noexcept {
 
 int64_t sys_lseek(uint64_t raw_fd, int64_t offset, uint64_t whence) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    kernel::fs::File* file = get_proc_file(proc, raw_fd);
+    Kernel::FS::File* file = get_proc_file(proc, raw_fd);
     if (file == nullptr) {
         return ERR_EBADF;
     }
     if (whence > SEEK_END) {
         return ERR_EINVAL;
     }
-    return kernel::fs::vfs_lseek(file, offset,
-                                 static_cast<kernel::fs::SeekWhence>(static_cast<int32_t>(whence)));
+    return Kernel::FS::vfs_lseek(file, offset,
+                                 static_cast<Kernel::FS::SeekWhence>(static_cast<int32_t>(whence)));
 }
 
 int64_t sys_fstat(uint64_t raw_fd, uintptr_t user_statbuf) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    kernel::fs::File* file = get_proc_file(proc, raw_fd);
+    Kernel::FS::File* file = get_proc_file(proc, raw_fd);
     if (file == nullptr || file->inode == nullptr) {
         return ERR_EBADF;
     }
@@ -1386,7 +1386,7 @@ int64_t sys_newfstatat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_st
     }
 
     if (path_len == 0U && (flags & AT_EMPTY_PATH) != 0ULL) {
-        kernel::fs::File* file = get_proc_file(proc, static_cast<uint64_t>(dirfd));
+        Kernel::FS::File* file = get_proc_file(proc, static_cast<uint64_t>(dirfd));
         if (file == nullptr || file->inode == nullptr) {
             return ERR_EBADF;
         }
@@ -1395,7 +1395,7 @@ int64_t sys_newfstatat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_st
         return Kernel::MM::copy_to_user(proc->address_space, user_statbuf, &stat, sizeof(stat));
     }
 
-    kernel::fs::Dentry* base_dentry = nullptr;
+    Kernel::FS::Dentry* base_dentry = nullptr;
     if (raw_path[0] != '/') {
         const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
         if (dir_res < 0) {
@@ -1404,22 +1404,22 @@ int64_t sys_newfstatat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_st
     }
 
     const bool follow = (flags & AT_SYMLINK_NOFOLLOW) == 0ULL;
-    kernel::fs::Dentry* target = nullptr;
-    const int32_t vfs_res = kernel::fs::vfs_namei(kernel::fs::StringView(raw_path, path_len),
+    Kernel::FS::Dentry* target = nullptr;
+    const int32_t vfs_res = Kernel::FS::vfs_namei(Kernel::FS::StringView(raw_path, path_len),
                                                   base_dentry, &target, follow);
     if (base_dentry != nullptr) {
-        kernel::fs::dentry_put(base_dentry);
+        Kernel::FS::dentry_put(base_dentry);
     }
-    if (vfs_res != kernel::fs::kOk || target->inode == nullptr) {
+    if (vfs_res != Kernel::FS::kOk || target->inode == nullptr) {
         if (target != nullptr) {
-            kernel::fs::dentry_put(target);
+            Kernel::FS::dentry_put(target);
         }
-        return (vfs_res != kernel::fs::kOk) ? vfs_res : ERR_ENOENT;
+        return (vfs_res != Kernel::FS::kOk) ? vfs_res : ERR_ENOENT;
     }
 
     LinuxStat stat{};
     fill_stat_from_inode(*target->inode, stat);
-    kernel::fs::dentry_put(target);
+    Kernel::FS::dentry_put(target);
     return Kernel::MM::copy_to_user(proc->address_space, user_statbuf, &stat, sizeof(stat));
 }
 
@@ -1442,17 +1442,17 @@ int64_t sys_faccessat2(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
         return copy_res;
     }
 
-    kernel::fs::Inode* inode = nullptr;
-    kernel::fs::Dentry* target = nullptr;
+    Kernel::FS::Inode* inode = nullptr;
+    Kernel::FS::Dentry* target = nullptr;
 
     if (path_len == 0U && (flags & AT_EMPTY_PATH) != 0ULL) {
-        kernel::fs::File* file = get_proc_file(proc, static_cast<uint64_t>(dirfd));
+        Kernel::FS::File* file = get_proc_file(proc, static_cast<uint64_t>(dirfd));
         if (file == nullptr || file->inode == nullptr) {
             return ERR_EBADF;
         }
         inode = file->inode;
     } else {
-        kernel::fs::Dentry* base_dentry = nullptr;
+        Kernel::FS::Dentry* base_dentry = nullptr;
         if (raw_path[0] != '/') {
             const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
             if (dir_res < 0) {
@@ -1460,16 +1460,16 @@ int64_t sys_faccessat2(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
             }
         }
         const bool follow = (flags & AT_SYMLINK_NOFOLLOW) == 0ULL;
-        const int32_t vfs_res = kernel::fs::vfs_namei(kernel::fs::StringView(raw_path, path_len),
+        const int32_t vfs_res = Kernel::FS::vfs_namei(Kernel::FS::StringView(raw_path, path_len),
                                                       base_dentry, &target, follow);
         if (base_dentry != nullptr) {
-            kernel::fs::dentry_put(base_dentry);
+            Kernel::FS::dentry_put(base_dentry);
         }
-        if (vfs_res != kernel::fs::kOk || target->inode == nullptr) {
+        if (vfs_res != Kernel::FS::kOk || target->inode == nullptr) {
             if (target != nullptr) {
-                kernel::fs::dentry_put(target);
+                Kernel::FS::dentry_put(target);
             }
-            return (vfs_res != kernel::fs::kOk) ? vfs_res : ERR_ENOENT;
+            return (vfs_res != Kernel::FS::kOk) ? vfs_res : ERR_ENOENT;
         }
         inode = target->inode;
     }
@@ -1482,7 +1482,7 @@ int64_t sys_faccessat2(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
     }
 
     if (target != nullptr) {
-        kernel::fs::dentry_put(target);
+        Kernel::FS::dentry_put(target);
     }
     return res;
 }
@@ -1517,7 +1517,7 @@ int64_t sys_readlinkat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_bu
         return static_cast<int64_t>(copy_len);
     }
 
-    kernel::fs::Dentry* base_dentry = nullptr;
+    Kernel::FS::Dentry* base_dentry = nullptr;
     if (raw_path[0] != '/') {
         const int64_t dir_res = resolve_dirfd_dentry(*proc, dirfd, base_dentry);
         if (dir_res < 0) {
@@ -1528,12 +1528,12 @@ int64_t sys_readlinkat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_bu
     char link_buf[Kernel::Process::MAX_PATH_LEN]{};
     size_t out_len = 0U;
     const int32_t vfs_res =
-        kernel::fs::vfs_readlink(kernel::fs::StringView(raw_path, path_len), base_dentry, link_buf,
+        Kernel::FS::vfs_readlink(Kernel::FS::StringView(raw_path, path_len), base_dentry, link_buf,
                                  sizeof(link_buf), &out_len);
     if (base_dentry != nullptr) {
-        kernel::fs::dentry_put(base_dentry);
+        Kernel::FS::dentry_put(base_dentry);
     }
-    if (vfs_res != kernel::fs::kOk) {
+    if (vfs_res != Kernel::FS::kOk) {
         return vfs_res;
     }
 
@@ -1547,7 +1547,7 @@ int64_t sys_readlinkat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_bu
 
 int64_t sys_getdents64(uint64_t raw_fd, uintptr_t user_dirp, uint64_t count) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    kernel::fs::File* file = get_proc_file(proc, raw_fd);
+    Kernel::FS::File* file = get_proc_file(proc, raw_fd);
     if (file == nullptr || file->inode == nullptr) {
         return ERR_EBADF;
     }
@@ -1606,17 +1606,17 @@ int64_t sys_getdents64(uint64_t raw_fd, uintptr_t user_dirp, uint64_t count) noe
     while (bytes_written < count) {
         const uint64_t child_idx = file->offset - 2U;
         file->offset = child_idx;
-        kernel::fs::DirEntryInfo info{};
-        const int32_t vfs_res = kernel::fs::vfs_readdir(file, &info);
+        Kernel::FS::DirEntryInfo info{};
+        const int32_t vfs_res = Kernel::FS::vfs_readdir(file, &info);
         file->offset = child_idx + 2U;
-        if (vfs_res != kernel::fs::kOk) {
+        if (vfs_res != Kernel::FS::kOk) {
             break;
         }
 
         uint8_t dtype = DT_REG;
-        if (info.type == kernel::fs::kModeDir) {
+        if (info.type == Kernel::FS::kModeDir) {
             dtype = DT_DIR;
-        } else if (info.type == kernel::fs::kModeLnk) {
+        } else if (info.type == Kernel::FS::kModeLnk) {
             dtype = DT_LNK;
         }
 
@@ -1735,10 +1735,10 @@ int64_t sys_fcntl(uint64_t raw_fd, uint64_t cmd, uint64_t arg) noexcept {
         } else if (desc.is_writable()) {
             flags = O_WRONLY;
         }
-        if ((desc.file->flags & kernel::fs::kOpenNonBlock) != 0U) {
+        if ((desc.file->flags & Kernel::FS::kOpenNonBlock) != 0U) {
             flags |= O_NONBLOCK;
         }
-        if ((desc.file->flags & kernel::fs::kOpenAppend) != 0U) {
+        if ((desc.file->flags & Kernel::FS::kOpenAppend) != 0U) {
             flags |= O_APPEND;
         }
         return static_cast<int64_t>(flags);
@@ -1746,14 +1746,14 @@ int64_t sys_fcntl(uint64_t raw_fd, uint64_t cmd, uint64_t arg) noexcept {
 
     case F_SETFL:
         if ((arg & O_NONBLOCK) != 0ULL) {
-            proc->fd_table[fd_idx].file->flags |= kernel::fs::kOpenNonBlock;
+            proc->fd_table[fd_idx].file->flags |= Kernel::FS::kOpenNonBlock;
         } else {
-            proc->fd_table[fd_idx].file->flags &= ~kernel::fs::kOpenNonBlock;
+            proc->fd_table[fd_idx].file->flags &= ~Kernel::FS::kOpenNonBlock;
         }
         if ((arg & O_APPEND) != 0ULL) {
-            proc->fd_table[fd_idx].file->flags |= kernel::fs::kOpenAppend;
+            proc->fd_table[fd_idx].file->flags |= Kernel::FS::kOpenAppend;
         } else {
-            proc->fd_table[fd_idx].file->flags &= ~kernel::fs::kOpenAppend;
+            proc->fd_table[fd_idx].file->flags &= ~Kernel::FS::kOpenAppend;
         }
         return 0;
 
@@ -1776,13 +1776,13 @@ int64_t sys_pipe2(uintptr_t user_pipefd, uint64_t flags) noexcept {
         return read_fd;
     }
 
-    const uint32_t open_extra = ((flags & O_NONBLOCK) != 0ULL) ? kernel::fs::kOpenNonBlock : 0U;
+    const uint32_t open_extra = ((flags & O_NONBLOCK) != 0ULL) ? Kernel::FS::kOpenNonBlock : 0U;
     const uint32_t fd_extra = ((flags & O_CLOEXEC) != 0ULL) ? Kernel::Process::FD_FLAG_CLOEXEC : 0U;
 
-    kernel::fs::File* read_file = nullptr;
-    kernel::fs::File* write_file = nullptr;
+    Kernel::FS::File* read_file = nullptr;
+    Kernel::FS::File* write_file = nullptr;
     const int32_t prc = Kernel::IPC::create_pipe_files(&read_file, &write_file, open_extra);
-    if (prc != kernel::fs::kOk) {
+    if (prc != Kernel::FS::kOk) {
         return prc;
     }
 
@@ -1794,7 +1794,7 @@ int64_t sys_pipe2(uintptr_t user_pipefd, uint64_t flags) noexcept {
     const int write_fd = Kernel::Process::allocate_fd(*proc, static_cast<size_t>(read_fd) + 1U);
     if (write_fd < 0) {
         Kernel::Process::close_fd(*proc, static_cast<size_t>(read_fd));
-        (void)kernel::fs::vfs_close(write_file);
+        (void)Kernel::FS::vfs_close(write_file);
         return write_fd;
     }
 
@@ -1820,23 +1820,23 @@ int64_t sys_pipe2(uintptr_t user_pipefd, uint64_t flags) noexcept {
 int64_t sys_ioctl(uint64_t raw_fd, uint64_t request, uintptr_t arg) noexcept {
     auto* const proc = Kernel::Process::current_process();
     if (proc != nullptr) {
-        kernel::fs::File* file = get_proc_file(proc, raw_fd);
+        Kernel::FS::File* file = get_proc_file(proc, raw_fd);
         if (file == nullptr) {
             return ERR_EBADF;
         }
-        return kernel::fs::vfs_ioctl(file, request, static_cast<uint64_t>(arg));
+        return Kernel::FS::vfs_ioctl(file, request, static_cast<uint64_t>(arg));
     }
 
     if (raw_fd > 2U) {
         return ERR_EBADF;
     }
-    kernel::fs::File* console_file = nullptr;
-    const int32_t orc = kernel::fs::devfs_open_console(kernel::fs::kOpenReadWrite, &console_file);
-    if (orc != kernel::fs::kOk) {
+    Kernel::FS::File* console_file = nullptr;
+    const int32_t orc = Kernel::FS::devfs_open_console(Kernel::FS::kOpenReadWrite, &console_file);
+    if (orc != Kernel::FS::kOk) {
         return orc;
     }
-    const int32_t res = kernel::fs::vfs_ioctl(console_file, request, static_cast<uint64_t>(arg));
-    (void)kernel::fs::vfs_close(console_file);
+    const int32_t res = Kernel::FS::vfs_ioctl(console_file, request, static_cast<uint64_t>(arg));
+    (void)Kernel::FS::vfs_close(console_file);
     return res;
 }
 
@@ -1847,7 +1847,7 @@ int64_t sys_read(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexce
     const auto count = static_cast<size_t>(raw_count);
     auto* const proc = Kernel::Process::current_process();
 
-    kernel::fs::File* file = nullptr;
+    Kernel::FS::File* file = nullptr;
     bool temp_console = false;
     uintptr_t root_paddr = 0U;
 
@@ -1862,7 +1862,7 @@ int64_t sys_read(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexce
             return ERR_EBADF;
         }
         root_paddr = Kernel::MM::AddressSpace::current_root_paddr();
-        if (kernel::fs::devfs_open_console(kernel::fs::kOpenReadOnly, &file) != kernel::fs::kOk) {
+        if (Kernel::FS::devfs_open_console(Kernel::FS::kOpenReadOnly, &file) != Kernel::FS::kOk) {
             return ERR_EBADF;
         }
         temp_console = true;
@@ -1870,14 +1870,14 @@ int64_t sys_read(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexce
 
     if (!validate_user_write_range(root_paddr, user_buf, count)) {
         if (temp_console) {
-            (void)kernel::fs::vfs_close(file);
+            (void)Kernel::FS::vfs_close(file);
         }
         return ERR_EFAULT;
     }
     if (count == 0U) {
-        const int64_t zero_res = kernel::fs::vfs_read(file, nullptr, 0U);
+        const int64_t zero_res = Kernel::FS::vfs_read(file, nullptr, 0U);
         if (temp_console) {
-            (void)kernel::fs::vfs_close(file);
+            (void)Kernel::FS::vfs_close(file);
         }
         return (zero_res < 0) ? zero_res : 0;
     }
@@ -1888,10 +1888,10 @@ int64_t sys_read(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexce
     while (total_read < count) {
         const size_t remaining = count - total_read;
         const size_t chunk = (remaining < READ_CHUNK_SIZE) ? remaining : READ_CHUNK_SIZE;
-        const int64_t nread = kernel::fs::vfs_read(file, kbuf, chunk);
+        const int64_t nread = Kernel::FS::vfs_read(file, kbuf, chunk);
         if (nread < 0) {
             if (temp_console) {
-                (void)kernel::fs::vfs_close(file);
+                (void)Kernel::FS::vfs_close(file);
             }
             return (total_read > 0U) ? static_cast<int64_t>(total_read) : nread;
         }
@@ -1901,7 +1901,7 @@ int64_t sys_read(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexce
         if (Kernel::MM::copy_to_user(root_paddr, user_buf + total_read, kbuf,
                                      static_cast<size_t>(nread)) < 0) {
             if (temp_console) {
-                (void)kernel::fs::vfs_close(file);
+                (void)Kernel::FS::vfs_close(file);
             }
             return (total_read > 0U) ? static_cast<int64_t>(total_read) : ERR_EFAULT;
         }
@@ -1912,7 +1912,7 @@ int64_t sys_read(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexce
     }
 
     if (temp_console) {
-        (void)kernel::fs::vfs_close(file);
+        (void)Kernel::FS::vfs_close(file);
     }
     return static_cast<int64_t>(total_read);
 }
@@ -1924,7 +1924,7 @@ int64_t sys_write(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexc
     const auto count = static_cast<size_t>(raw_count);
     auto* const proc = Kernel::Process::current_process();
 
-    kernel::fs::File* file = nullptr;
+    Kernel::FS::File* file = nullptr;
     bool temp_console = false;
     uintptr_t root_paddr = 0U;
 
@@ -1939,7 +1939,7 @@ int64_t sys_write(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexc
             return ERR_EBADF;
         }
         root_paddr = Kernel::MM::AddressSpace::current_root_paddr();
-        if (kernel::fs::devfs_open_console(kernel::fs::kOpenWriteOnly, &file) != kernel::fs::kOk) {
+        if (Kernel::FS::devfs_open_console(Kernel::FS::kOpenWriteOnly, &file) != Kernel::FS::kOk) {
             return ERR_EBADF;
         }
         temp_console = true;
@@ -1947,14 +1947,14 @@ int64_t sys_write(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexc
 
     if (!validate_user_read_range(root_paddr, user_buf, count)) {
         if (temp_console) {
-            (void)kernel::fs::vfs_close(file);
+            (void)Kernel::FS::vfs_close(file);
         }
         return ERR_EFAULT;
     }
     if (count == 0U) {
-        const int64_t zero_res = kernel::fs::vfs_write(file, nullptr, 0U);
+        const int64_t zero_res = Kernel::FS::vfs_write(file, nullptr, 0U);
         if (temp_console) {
-            (void)kernel::fs::vfs_close(file);
+            (void)Kernel::FS::vfs_close(file);
         }
         return (zero_res < 0) ? zero_res : 0;
     }
@@ -1967,14 +1967,14 @@ int64_t sys_write(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexc
         const size_t chunk = (remaining < WRITE_CHUNK_SIZE) ? remaining : WRITE_CHUNK_SIZE;
         if (Kernel::MM::copy_from_user(root_paddr, kbuf, user_buf + total_written, chunk) < 0) {
             if (temp_console) {
-                (void)kernel::fs::vfs_close(file);
+                (void)Kernel::FS::vfs_close(file);
             }
             return (total_written > 0U) ? static_cast<int64_t>(total_written) : ERR_EFAULT;
         }
-        const int64_t nwritten = kernel::fs::vfs_write(file, kbuf, chunk);
+        const int64_t nwritten = Kernel::FS::vfs_write(file, kbuf, chunk);
         if (nwritten < 0) {
             if (temp_console) {
-                (void)kernel::fs::vfs_close(file);
+                (void)Kernel::FS::vfs_close(file);
             }
             return (total_written > 0U) ? static_cast<int64_t>(total_written) : nwritten;
         }
@@ -1985,7 +1985,7 @@ int64_t sys_write(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexc
     }
 
     if (temp_console) {
-        (void)kernel::fs::vfs_close(file);
+        (void)Kernel::FS::vfs_close(file);
     }
     return static_cast<int64_t>(total_written);
 }
@@ -2055,7 +2055,7 @@ int16_t poll_fd_revents(const Kernel::Process::Process& proc, int32_t raw_fd,
     if (!desc.is_open()) {
         return POLLNVAL;
     }
-    return kernel::fs::vfs_poll(desc.file, events);
+    return Kernel::FS::vfs_poll(desc.file, events);
 }
 
 int64_t sys_ppoll(uintptr_t user_fds, uint64_t nfds, uintptr_t user_tmo, uintptr_t user_sigmask,
@@ -3232,15 +3232,15 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
         out_num_pages = 0U;
         out_file_size = 0U;
 
-        kernel::fs::File* exec_file = nullptr;
-        const int32_t orc = kernel::fs::vfs_open(kernel::fs::StringView(path),
-                                                 kernel::fs::kOpenReadOnly, 0U, &exec_file);
-        if (orc != kernel::fs::kOk) {
+        Kernel::FS::File* exec_file = nullptr;
+        const int32_t orc = Kernel::FS::vfs_open(Kernel::FS::StringView(path),
+                                                 Kernel::FS::kOpenReadOnly, 0U, &exec_file);
+        if (orc != Kernel::FS::kOk) {
             return orc;
         }
         if (exec_file->inode == nullptr || !exec_file->inode->is_reg() ||
             exec_file->inode->size == 0U) {
-            (void)kernel::fs::vfs_close(exec_file);
+            (void)Kernel::FS::vfs_close(exec_file);
             return ERR_ENOEXEC;
         }
 
@@ -3248,22 +3248,22 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
         const size_t num_pages = (file_size + page_size - 1U) / page_size;
         const uintptr_t buf_paddr = Kernel::MM::alloc_frames(num_pages);
         if (buf_paddr == 0U) {
-            (void)kernel::fs::vfs_close(exec_file);
+            (void)Kernel::FS::vfs_close(exec_file);
             return ERR_ENOMEM;
         }
 
         auto* const dst = reinterpret_cast<uint8_t*>(Kernel::MM::phys_to_virt(buf_paddr));
         size_t total = 0U;
         while (total < file_size) {
-            const int64_t nread = kernel::fs::vfs_read(exec_file, dst + total, file_size - total);
+            const int64_t nread = Kernel::FS::vfs_read(exec_file, dst + total, file_size - total);
             if (nread <= 0) {
                 Kernel::MM::free_frames(buf_paddr, num_pages);
-                (void)kernel::fs::vfs_close(exec_file);
+                (void)Kernel::FS::vfs_close(exec_file);
                 return (nread < 0) ? nread : ERR_ENOEXEC;
             }
             total += static_cast<size_t>(nread);
         }
-        (void)kernel::fs::vfs_close(exec_file);
+        (void)Kernel::FS::vfs_close(exec_file);
 
         out_buf_paddr = buf_paddr;
         out_num_pages = num_pages;
@@ -3705,11 +3705,11 @@ int64_t sys_sysinfo(uintptr_t user_info) noexcept {
 namespace Kernel::Process {
 
 void set_foreground_pgid(uint32_t pgid) noexcept {
-    kernel::fs::console_set_foreground_pgid(pgid);
+    Kernel::FS::console_set_foreground_pgid(pgid);
 }
 
 uint32_t get_foreground_pgid() noexcept {
-    return kernel::fs::console_get_foreground_pgid();
+    return Kernel::FS::console_get_foreground_pgid();
 }
 
 } // namespace Kernel::Process

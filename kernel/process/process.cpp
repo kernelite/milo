@@ -191,7 +191,7 @@ void close_fd(Process& proc, size_t fd_idx) noexcept {
         return;
     }
 
-    (void)kernel::fs::vfs_close(desc.file);
+    (void)Kernel::FS::vfs_close(desc.file);
     desc = FileDescriptor{};
 }
 
@@ -201,7 +201,7 @@ void copy_fd_slot(FileDescriptor& dst, const FileDescriptor& src, bool clear_clo
         dst.fd_flags &= ~FD_FLAG_CLOEXEC;
     }
     if (dst.is_open()) {
-        kernel::fs::file_get(dst.file);
+        Kernel::FS::file_get(dst.file);
     }
 }
 
@@ -279,22 +279,22 @@ Process* allocate_process(uint32_t ppid) noexcept {
     proc->rlim_nproc_cur = default_rlimit_nproc();
     proc->rlim_nproc_max = default_rlimit_nproc();
 
-    kernel::fs::File* stdin_file = nullptr;
-    kernel::fs::File* stdout_file = nullptr;
-    kernel::fs::File* stderr_file = nullptr;
-    if (kernel::fs::devfs_open_console(kernel::fs::kOpenReadOnly, &stdin_file) != kernel::fs::kOk ||
-        kernel::fs::devfs_open_console(kernel::fs::kOpenWriteOnly, &stdout_file) !=
-            kernel::fs::kOk ||
-        kernel::fs::devfs_open_console(kernel::fs::kOpenWriteOnly, &stderr_file) !=
-            kernel::fs::kOk) {
+    Kernel::FS::File* stdin_file = nullptr;
+    Kernel::FS::File* stdout_file = nullptr;
+    Kernel::FS::File* stderr_file = nullptr;
+    if (Kernel::FS::devfs_open_console(Kernel::FS::kOpenReadOnly, &stdin_file) != Kernel::FS::kOk ||
+        Kernel::FS::devfs_open_console(Kernel::FS::kOpenWriteOnly, &stdout_file) !=
+            Kernel::FS::kOk ||
+        Kernel::FS::devfs_open_console(Kernel::FS::kOpenWriteOnly, &stderr_file) !=
+            Kernel::FS::kOk) {
         if (stdin_file != nullptr) {
-            (void)kernel::fs::vfs_close(stdin_file);
+            (void)Kernel::FS::vfs_close(stdin_file);
         }
         if (stdout_file != nullptr) {
-            (void)kernel::fs::vfs_close(stdout_file);
+            (void)Kernel::FS::vfs_close(stdout_file);
         }
         if (stderr_file != nullptr) {
-            (void)kernel::fs::vfs_close(stderr_file);
+            (void)Kernel::FS::vfs_close(stderr_file);
         }
         destroy_fd_table(*proc);
         Kernel::MM::free_frames(kstack_pa, KERNEL_STACK_PAGES);

@@ -52,7 +52,7 @@ struct SigAction {
 enum class ProcessState : uint8_t { Unused = 0, Ready, Running, Blocked, Stopped, Zombie };
 
 struct FileDescriptor {
-    kernel::fs::File* file{nullptr};
+    Kernel::FS::File* file{nullptr};
     uint32_t fd_flags{0U};
 
     [[nodiscard]] bool is_open() const noexcept { return file != nullptr && file->active; }
@@ -61,16 +61,16 @@ struct FileDescriptor {
         if (!is_open()) {
             return false;
         }
-        const uint32_t acc = file->flags & kernel::fs::kOpenAccessMask;
-        return acc == kernel::fs::kOpenReadOnly || acc == kernel::fs::kOpenReadWrite;
+        const uint32_t acc = file->flags & Kernel::FS::kOpenAccessMask;
+        return acc == Kernel::FS::kOpenReadOnly || acc == Kernel::FS::kOpenReadWrite;
     }
 
     [[nodiscard]] bool is_writable() const noexcept {
         if (!is_open()) {
             return false;
         }
-        const uint32_t acc = file->flags & kernel::fs::kOpenAccessMask;
-        return acc == kernel::fs::kOpenWriteOnly || acc == kernel::fs::kOpenReadWrite;
+        const uint32_t acc = file->flags & Kernel::FS::kOpenAccessMask;
+        return acc == Kernel::FS::kOpenWriteOnly || acc == Kernel::FS::kOpenReadWrite;
     }
 
     [[nodiscard]] bool is_tty() const noexcept {

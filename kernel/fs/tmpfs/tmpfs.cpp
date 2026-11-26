@@ -7,7 +7,7 @@
 
 #include <cstring>
 
-namespace kernel::fs {
+namespace Kernel::FS {
 
 namespace {
 
@@ -496,4 +496,4 @@ int32_t tmpfs_init_and_mount() noexcept {
     return kOk;
 }
 
-} // namespace kernel::fs
+} // namespace Kernel::FS
