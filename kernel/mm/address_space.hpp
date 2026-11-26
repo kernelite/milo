@@ -9,6 +9,8 @@
 
 namespace Kernel::MM {
 
+using Kernel::Loader::Result;
+
 inline uintptr_t phys_to_virt(uintptr_t paddr) noexcept {
     return paddr + HAL::get_platform_info().higher_half_offset;
 }

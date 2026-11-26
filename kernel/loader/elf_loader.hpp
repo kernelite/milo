@@ -9,14 +9,6 @@
 
 namespace Kernel::Loader {
 
-// Auxiliary Vector Type Definition
-struct Elf64_auxv_t {
-    uint64_t a_type;
-    union {
-        uint64_t a_val;
-    } a_un;
-};
-
 enum class ElfLoaderError : uint8_t {
     Success = 0,
     InvalidElf,

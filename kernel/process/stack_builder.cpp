@@ -56,25 +56,26 @@ const char* stack_builder_error_str(StackBuilderError error) noexcept {
     }
 }
 
-size_t populate_standard_auxv(const Loader::LoadedElf& loaded, Elf64_auxv_t* out_auxv,
-                              size_t capacity) noexcept {
+size_t populate_standard_auxv(const Loader::LoadedElf& loaded,
+                              Kernel::Loader::Elf64_auxv_t* out_auxv, size_t capacity) noexcept {
     if (out_auxv == nullptr || capacity < STANDARD_AUXV_COUNT) {
         return 0U;
     }
 
     const uint64_t page_size = HAL::get_platform_info().page_size;
     size_t idx = 0U;
-    out_auxv[idx++] = Elf64_auxv_t{AT_PAGESZ, {page_size}};
-    out_auxv[idx++] = Elf64_auxv_t{AT_PHDR, {loaded.phdr_vaddr}};
-    out_auxv[idx++] = Elf64_auxv_t{AT_PHENT, {loaded.phentsize}};
-    out_auxv[idx++] = Elf64_auxv_t{AT_PHNUM, {loaded.phnum}};
-    out_auxv[idx++] = Elf64_auxv_t{AT_ENTRY, {loaded.entry_point}};
-    out_auxv[idx++] = Elf64_auxv_t{AT_UID, {0ULL}};
-    out_auxv[idx++] = Elf64_auxv_t{AT_EUID, {0ULL}};
-    out_auxv[idx++] = Elf64_auxv_t{AT_GID, {0ULL}};
-    out_auxv[idx++] = Elf64_auxv_t{AT_EGID, {0ULL}};
-    out_auxv[idx++] = Elf64_auxv_t{AT_SECURE, {0ULL}};
-    out_auxv[idx++] = Elf64_auxv_t{AT_RANDOM, {0ULL}}; // Patched by build_abi_layout()
+    out_auxv[idx++] = Kernel::Loader::Elf64_auxv_t{Kernel::Loader::AT_PAGESZ, {page_size}};
+    out_auxv[idx++] = Kernel::Loader::Elf64_auxv_t{Kernel::Loader::AT_PHDR, {loaded.phdr_vaddr}};
+    out_auxv[idx++] = Kernel::Loader::Elf64_auxv_t{Kernel::Loader::AT_PHENT, {loaded.phentsize}};
+    out_auxv[idx++] = Kernel::Loader::Elf64_auxv_t{Kernel::Loader::AT_PHNUM, {loaded.phnum}};
+    out_auxv[idx++] = Kernel::Loader::Elf64_auxv_t{Kernel::Loader::AT_ENTRY, {loaded.entry_point}};
+    out_auxv[idx++] = Kernel::Loader::Elf64_auxv_t{Kernel::Loader::AT_UID, {0ULL}};
+    out_auxv[idx++] = Kernel::Loader::Elf64_auxv_t{Kernel::Loader::AT_EUID, {0ULL}};
+    out_auxv[idx++] = Kernel::Loader::Elf64_auxv_t{Kernel::Loader::AT_GID, {0ULL}};
+    out_auxv[idx++] = Kernel::Loader::Elf64_auxv_t{Kernel::Loader::AT_EGID, {0ULL}};
+    out_auxv[idx++] = Kernel::Loader::Elf64_auxv_t{Kernel::Loader::AT_SECURE, {0ULL}};
+    out_auxv[idx++] = Kernel::Loader::Elf64_auxv_t{Kernel::Loader::AT_RANDOM,
+                                                   {0ULL}}; // Patched by build_abi_layout()
     return idx;
 }
 
@@ -124,10 +125,9 @@ UserStackBuilder::create_and_map(MM::AddressSpace& address_space, uintptr_t virt
     return stack;
 }
 
-Result<uintptr_t, StackBuilderError>
-UserStackBuilder::build_abi_layout(UserStack& stack, int argc, const char* const* argv,
-                                   const char* const* envp, const Elf64_auxv_t* auxv,
-                                   size_t auxv_count) noexcept {
+Result<uintptr_t, StackBuilderError> UserStackBuilder::build_abi_layout(
+    UserStack& stack, int argc, const char* const* argv, const char* const* envp,
+    const Kernel::Loader::Elf64_auxv_t* auxv, size_t auxv_count) noexcept {
     if (stack.phys_base == 0U || stack.virt_top == 0U || stack.size == 0U) {
         return StackBuilderError::NullArgument;
     }
@@ -199,7 +199,7 @@ UserStackBuilder::build_abi_layout(UserStack& stack, int argc, const char* const
         }
     }
 
-    // 3. Push 16 random bytes for AT_RANDOM
+    // 3. Push 16 random bytes for Kernel::Loader::AT_RANDOM
     uint8_t random_bytes[16]{};
     generate_at_random_bytes(random_bytes);
     if (!push_bytes(random_bytes, sizeof(random_bytes))) {
@@ -219,19 +219,19 @@ UserStackBuilder::build_abi_layout(UserStack& stack, int argc, const char* const
         curr_vaddr -= sizeof(uint64_t);
     }
 
-    // 5. Push Auxiliary Vector (auxv) terminating with AT_NULL
-    const Elf64_auxv_t null_aux{AT_NULL, {0ULL}};
+    // 5. Push Auxiliary Vector (auxv) terminating with Kernel::Loader::AT_NULL
+    const Kernel::Loader::Elf64_auxv_t null_aux{Kernel::Loader::AT_NULL, {0ULL}};
     if (!push_bytes(&null_aux, sizeof(null_aux))) {
         return StackBuilderError::BufferOverflow;
     }
 
     if (auxv != nullptr && auxv_count > 0U) {
         for (size_t i = auxv_count; i > 0U; --i) {
-            Elf64_auxv_t entry = auxv[i - 1U];
-            if (entry.a_type == AT_RANDOM && entry.a_un.a_val == 0ULL) {
+            Kernel::Loader::Elf64_auxv_t entry = auxv[i - 1U];
+            if (entry.a_type == Kernel::Loader::AT_RANDOM && entry.a_un.a_val == 0ULL) {
                 entry.a_un.a_val = at_random_vaddr;
             }
-            if (!push_bytes(&entry, sizeof(Elf64_auxv_t))) {
+            if (!push_bytes(&entry, sizeof(Kernel::Loader::Elf64_auxv_t))) {
                 return StackBuilderError::BufferOverflow;
             }
         }

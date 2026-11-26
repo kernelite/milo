@@ -4,6 +4,8 @@
 #include "hal/cpu.hpp"
 #include "mm/pfa.hpp"
 
+namespace Kernel::Loader {
+
 namespace {
 
 constexpr size_t MAX_TRACKED_SEGMENTS = 32U;
@@ -29,8 +31,6 @@ constexpr HAL::PageFlags translate_segment_flags(uint32_t p_flags) noexcept {
 }
 
 } // namespace
-
-namespace Kernel::Loader {
 
 const char* elf_loader_error_str(ElfLoaderError error) noexcept {
     switch (error) {
