@@ -9,72 +9,70 @@
 namespace Kernel::Syscalls {
 
 int64_t sys_setpgid(int32_t raw_pid, int32_t raw_pgid) noexcept {
-    auto* const caller = Kernel::Process::current_process();
+    auto* const caller = Kernel::Process::Process::current();
     if (caller == nullptr || raw_pid < 0 || raw_pgid < 0) {
         return ERR_EINVAL;
     }
 
-    const uint32_t target_pid = (raw_pid == 0) ? caller->pid : static_cast<uint32_t>(raw_pid);
-    auto* const target = Kernel::Process::find_process_by_pid(target_pid);
+    const uint32_t target_pid = (raw_pid == 0) ? caller->pid() : static_cast<uint32_t>(raw_pid);
+    auto* const target = Kernel::Process::Process::find_by_pid(target_pid);
     if (target == nullptr) {
         return ERR_ESRCH;
     }
-    if (target != caller && target->ppid != caller->pid) {
+    if (target != caller && target->ppid() != caller->pid()) {
         return ERR_ESRCH;
     }
 
-    const uint32_t new_pgid = (raw_pgid == 0) ? target->pid : static_cast<uint32_t>(raw_pgid);
-    target->pgid = new_pgid;
+    const uint32_t new_pgid = (raw_pgid == 0) ? target->pid() : static_cast<uint32_t>(raw_pgid);
+    target->set_pgid(new_pgid);
     return 0;
 }
 
 int64_t sys_getpgid(int32_t raw_pid) noexcept {
-    auto* const caller = Kernel::Process::current_process();
+    auto* const caller = Kernel::Process::Process::current();
     if (caller == nullptr || raw_pid < 0) {
         return ERR_EINVAL;
     }
     if (raw_pid == 0) {
-        return static_cast<int64_t>(caller->pgid);
+        return static_cast<int64_t>(caller->pgid());
     }
-    auto* const target = Kernel::Process::find_process_by_pid(static_cast<uint32_t>(raw_pid));
+    auto* const target = Kernel::Process::Process::find_by_pid(static_cast<uint32_t>(raw_pid));
     if (target == nullptr) {
         return ERR_ESRCH;
     }
-    return static_cast<int64_t>(target->pgid);
+    return static_cast<int64_t>(target->pgid());
 }
 
 int64_t sys_getsid(int32_t raw_pid) noexcept {
-    auto* const caller = Kernel::Process::current_process();
+    auto* const caller = Kernel::Process::Process::current();
     if (caller == nullptr || raw_pid < 0) {
         return ERR_EINVAL;
     }
     if (raw_pid == 0) {
-        return static_cast<int64_t>(caller->sid);
+        return static_cast<int64_t>(caller->sid());
     }
-    auto* const target = Kernel::Process::find_process_by_pid(static_cast<uint32_t>(raw_pid));
+    auto* const target = Kernel::Process::Process::find_by_pid(static_cast<uint32_t>(raw_pid));
     if (target == nullptr) {
         return ERR_ESRCH;
     }
-    return static_cast<int64_t>(target->sid);
+    return static_cast<int64_t>(target->sid());
 }
 
 int64_t sys_setsid() noexcept {
-    auto* const caller = Kernel::Process::current_process();
+    auto* const caller = Kernel::Process::Process::current();
     if (caller == nullptr) {
         return ERR_EINVAL;
     }
-    if (caller->pgid == caller->pid) {
+    if (!caller->setsid()) {
         return ERR_EPERM;
     }
-    caller->sid = caller->pid;
-    caller->pgid = caller->pid;
-    return static_cast<int64_t>(caller->sid);
+    return static_cast<int64_t>(caller->sid());
 }
 
 [[noreturn]] void sys_exit(uint64_t raw_status) noexcept {
     const auto exit_code =
         static_cast<int64_t>(static_cast<int32_t>(static_cast<uint32_t>(raw_status)));
-    if (Kernel::Process::current_process() != nullptr) {
+    if (Kernel::Process::Process::current() != nullptr) {
         Kernel::Process::exit_current_process(exit_code);
     }
     HAL::get_cpu().return_to_kernel(exit_code);
@@ -84,28 +82,26 @@ int64_t sys_setsid() noexcept {
 }
 
 int64_t sys_getpid() noexcept {
-    const auto* const proc = Kernel::Process::current_process();
-    return (proc != nullptr) ? static_cast<int64_t>(proc->pid) : 0;
+    const auto* const proc = Kernel::Process::Process::current();
+    return (proc != nullptr) ? static_cast<int64_t>(proc->pid()) : 0;
 }
 
 int64_t sys_getppid() noexcept {
-    const auto* const proc = Kernel::Process::current_process();
-    return (proc != nullptr) ? static_cast<int64_t>(proc->ppid) : 0;
+    const auto* const proc = Kernel::Process::Process::current();
+    return (proc != nullptr) ? static_cast<int64_t>(proc->ppid()) : 0;
 }
 
 int64_t sys_umask(uint64_t mask) noexcept {
-    auto* const proc = Kernel::Process::current_process();
+    auto* const proc = Kernel::Process::Process::current();
     if (proc == nullptr) {
         return 0022;
     }
-    const uint32_t old_mask = proc->umask;
-    proc->umask = static_cast<uint32_t>(mask) & 0777U;
-    return static_cast<int64_t>(old_mask);
+    return static_cast<int64_t>(proc->set_umask(static_cast<uint32_t>(mask)));
 }
 
 int64_t sys_prlimit64(int32_t pid, uint32_t resource, uintptr_t user_new_rlim,
                       uintptr_t user_old_rlim) noexcept {
-    auto* const caller = Kernel::Process::current_process();
+    auto* const caller = Kernel::Process::Process::current();
     if (caller == nullptr) {
         return ERR_EINVAL;
     }
@@ -114,9 +110,9 @@ int64_t sys_prlimit64(int32_t pid, uint32_t resource, uintptr_t user_new_rlim,
     }
 
     Kernel::Process::Process* target = caller;
-    if (pid > 0 && static_cast<uint32_t>(pid) != caller->pid) {
-        target = Kernel::Process::find_process_by_pid(static_cast<uint32_t>(pid));
-        if (target == nullptr || target->state == Kernel::Process::ProcessState::Zombie) {
+    if (pid > 0 && static_cast<uint32_t>(pid) != caller->pid()) {
+        target = Kernel::Process::Process::find_by_pid(static_cast<uint32_t>(pid));
+        if (target == nullptr || target->state() == Kernel::Process::ProcessState::Zombie) {
             return ERR_ESRCH;
         }
     }
@@ -125,16 +121,14 @@ int64_t sys_prlimit64(int32_t pid, uint32_t resource, uintptr_t user_new_rlim,
 
     switch (resource) {
     case Kernel::Process::RLIMIT_NOFILE:
-        current_rlim.rlim_cur = target->rlim_nofile_cur;
-        current_rlim.rlim_max = target->rlim_nofile_max;
+        current_rlim = target->rlim_nofile();
         break;
     case Kernel::Process::RLIMIT_STACK:
         current_rlim.rlim_cur = Kernel::Process::DEFAULT_USER_STACK_SIZE;
         current_rlim.rlim_max = Kernel::Process::DEFAULT_USER_STACK_SIZE;
         break;
     case Kernel::Process::RLIMIT_NPROC:
-        current_rlim.rlim_cur = target->rlim_nproc_cur;
-        current_rlim.rlim_max = target->rlim_nproc_max;
+        current_rlim = target->rlim_nproc();
         break;
     case Kernel::Process::RLIMIT_CORE:
         current_rlim.rlim_cur = 0ULL;
@@ -146,7 +140,7 @@ int64_t sys_prlimit64(int32_t pid, uint32_t resource, uintptr_t user_new_rlim,
 
     if (user_old_rlim != 0U) {
         const linux_rlimit64 raw_old = current_rlim.to_linux_rlimit64();
-        if (Kernel::MM::copy_to_user(caller->address_space, user_old_rlim, &raw_old,
+        if (Kernel::MM::copy_to_user(caller->address_space(), user_old_rlim, &raw_old,
                                      sizeof(raw_old)) < 0) {
             return ERR_EFAULT;
         }
@@ -154,7 +148,7 @@ int64_t sys_prlimit64(int32_t pid, uint32_t resource, uintptr_t user_new_rlim,
 
     if (user_new_rlim != 0U) {
         linux_rlimit64 raw_new{};
-        if (Kernel::MM::copy_from_user(caller->address_space, &raw_new, user_new_rlim,
+        if (Kernel::MM::copy_from_user(caller->address_space(), &raw_new, user_new_rlim,
                                        sizeof(raw_new)) < 0) {
             return ERR_EFAULT;
         }
@@ -164,18 +158,16 @@ int64_t sys_prlimit64(int32_t pid, uint32_t resource, uintptr_t user_new_rlim,
             return ERR_EINVAL;
         }
         if (resource == Kernel::Process::RLIMIT_NOFILE) {
-            if (new_rlim.rlim_max > target->rlim_nofile_max ||
+            if (new_rlim.rlim_max > target->rlim_nofile().rlim_max ||
                 new_rlim.rlim_max > Kernel::Process::DEFAULT_RLIMIT_NOFILE_MAX) {
                 return ERR_EPERM;
             }
-            target->rlim_nofile_cur = new_rlim.rlim_cur;
-            target->rlim_nofile_max = new_rlim.rlim_max;
+            target->set_rlim_nofile(new_rlim);
         } else if (resource == Kernel::Process::RLIMIT_NPROC) {
-            if (new_rlim.rlim_max > target->rlim_nproc_max) {
+            if (new_rlim.rlim_max > target->rlim_nproc().rlim_max) {
                 return ERR_EPERM;
             }
-            target->rlim_nproc_cur = new_rlim.rlim_cur;
-            target->rlim_nproc_max = new_rlim.rlim_max;
+            target->set_rlim_nproc(new_rlim);
         }
     }
 
@@ -186,7 +178,7 @@ int64_t sys_clone(HAL::CpuContext& parent_ctx, uint64_t flags, uintptr_t child_s
                   uintptr_t parent_tid, uint64_t tls, uintptr_t child_tid) noexcept {
     (void)tls;
 
-    auto* const parent = Kernel::Process::current_process();
+    auto* const parent = Kernel::Process::Process::current();
     if (parent == nullptr) {
         return ERR_EINVAL;
     }
@@ -209,77 +201,75 @@ int64_t sys_clone(HAL::CpuContext& parent_ctx, uint64_t flags, uintptr_t child_s
         return ERR_EINVAL;
     }
 
-    if (Kernel::Process::active_process_count() >= parent->rlim_nproc_cur) {
+    if (Kernel::Process::Process::active_count() >= parent->rlim_nproc().rlim_cur) {
         return ERR_EAGAIN;
     }
 
-    auto* const child = Kernel::Process::allocate_process(parent->pid);
+    auto* const child = Kernel::Process::Process::create(parent->pid());
     if (child == nullptr) {
         return ERR_EAGAIN;
     }
 
-    auto clone_as_res = parent->address_space.clone();
+    auto clone_as_res = parent->address_space().clone();
     if (!clone_as_res.is_ok()) {
-        Kernel::Process::release_process(*child);
+        Kernel::Process::Process::destroy(*child);
         return ERR_ENOMEM;
     }
 
-    child->address_space = static_cast<Kernel::MM::AddressSpace&&>(clone_as_res.value());
-    child->pgid = parent->pgid;
-    child->sid = parent->sid;
-    child->umask = parent->umask;
-    child->rlim_nofile_cur = parent->rlim_nofile_cur;
-    child->rlim_nofile_max = parent->rlim_nofile_max;
-    child->rlim_nproc_cur = parent->rlim_nproc_cur;
-    child->rlim_nproc_max = parent->rlim_nproc_max;
-    child->entry_point = parent->entry_point;
-    child->brk_start = parent->brk_start;
-    child->brk_current = parent->brk_current;
-    child->mmap_next_vaddr = parent->mmap_next_vaddr;
-    child->user_stack = Kernel::Process::UserStack{};
-    child->signals.clone_from(parent->signals);
-    cstr_copy(child->cwd, parent->cwd, sizeof(child->cwd));
-    cstr_copy(child->exe_path, parent->exe_path, sizeof(child->exe_path));
+    child->address_space() = static_cast<Kernel::MM::AddressSpace&&>(clone_as_res.value());
+    child->set_pgid(parent->pgid());
+    child->set_sid(parent->sid());
+    (void)child->set_umask(parent->umask());
+    child->set_rlim_nofile(parent->rlim_nofile());
+    child->set_rlim_nproc(parent->rlim_nproc());
+    child->set_entry_point(parent->entry_point());
+    child->set_brk_start(parent->brk_start());
+    child->set_brk_current(parent->brk_current());
+    child->set_mmap_next_vaddr(parent->mmap_next_vaddr());
+    child->set_user_stack(Kernel::Process::UserStack{});
+    child->signals().clone_from(parent->signals());
+    child->set_cwd(parent->cwd());
+    child->set_exe_path(parent->exe_path());
 
-    if (!child->fds.clone_from(parent->fds)) {
-        Kernel::Process::release_process(*child);
+    if (!child->fds().clone_from(parent->fds())) {
+        Kernel::Process::Process::destroy(*child);
         return ERR_ENOMEM;
     }
 
-    const auto child_pid_s32 = static_cast<int32_t>(child->pid);
+    const auto child_pid_s32 = static_cast<int32_t>(child->pid());
     if ((flags & CLONE_PARENT_SETTID) != 0ULL && parent_tid != 0U) {
-        const int64_t tid_res = Kernel::MM::copy_to_user(parent->address_space, parent_tid,
+        const int64_t tid_res = Kernel::MM::copy_to_user(parent->address_space(), parent_tid,
                                                          &child_pid_s32, sizeof(child_pid_s32));
         if (tid_res < 0) {
-            Kernel::Process::release_process(*child);
+            Kernel::Process::Process::destroy(*child);
             return ERR_EFAULT;
         }
     }
 
     if ((flags & CLONE_CHILD_SETTID) != 0ULL && child_tid != 0U) {
-        const int64_t tid_res = Kernel::MM::copy_to_user(child->address_space, child_tid,
+        const int64_t tid_res = Kernel::MM::copy_to_user(child->address_space(), child_tid,
                                                          &child_pid_s32, sizeof(child_pid_s32));
         if (tid_res < 0) {
-            Kernel::Process::release_process(*child);
+            Kernel::Process::Process::destroy(*child);
             return ERR_EFAULT;
         }
     }
 
     auto& cpu = HAL::get_cpu();
-    child->context = parent_ctx;
+    child->context() = parent_ctx;
     if (child_stack != 0U) {
-        cpu.set_user_stack_pointer(child->context, child_stack);
+        cpu.set_user_stack_pointer(child->context(), child_stack);
     }
-    cpu.set_syscall_return(child->context, 0);
-    child->kctx_initialized = false;
+    cpu.set_syscall_return(child->context(), 0);
+    child->set_kctx_initialized(false);
     Kernel::Scheduler::enqueue(child);
 
-    return static_cast<int64_t>(child->pid);
+    return static_cast<int64_t>(child->pid());
 }
 
 int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user_argv,
                    uintptr_t user_envp) noexcept {
-    auto* const proc = Kernel::Process::current_process();
+    auto* const proc = Kernel::Process::Process::current();
     if (proc == nullptr) {
         return ERR_EINVAL;
     }
@@ -298,7 +288,7 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
     const char* argv_kptrs[EXEC_MAX_ARGS + 3U]{};
     const char* envp_kptrs[EXEC_MAX_ENVS + 1U]{};
 
-    const uintptr_t caller_root = proc->address_space.root_paddr();
+    const uintptr_t caller_root = proc->address_space().root_paddr();
     size_t path_len = 0U;
     const int64_t path_res =
         copy_user_cstring(caller_root, user_pathname, raw_path_buf, EXEC_MAX_PATH_LEN, path_len);
@@ -308,7 +298,7 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
     }
 
     char canon_path[Kernel::Process::MAX_PATH_LEN]{};
-    if (!normalize_vfs_path(proc->cwd, raw_path_buf, canon_path, sizeof(canon_path))) {
+    if (!normalize_vfs_path(proc->cwd(), raw_path_buf, canon_path, sizeof(canon_path))) {
         Kernel::MM::free_frame(scratch_paddr);
         return ERR_ENOENT;
     }
@@ -504,7 +494,7 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
         return ERR_E2BIG;
     }
 
-    if (!proc->fds.is_initialized() && !proc->fds.init(Kernel::Process::INITIAL_FD_CAPACITY)) {
+    if (!proc->fds().is_initialized() && !proc->fds().init(Kernel::Process::INITIAL_FD_CAPACITY)) {
         if (!loaded.address_space.is_valid() && new_stack.phys_base != 0U &&
             new_stack.num_pages > 0U) {
             Kernel::MM::free_frames(new_stack.phys_base, new_stack.num_pages);
@@ -516,26 +506,27 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
 
     loaded.address_space.activate();
 
-    if (!proc->address_space.is_valid() && proc->user_stack.phys_base != 0U &&
-        proc->user_stack.num_pages > 0U) {
-        Kernel::MM::free_frames(proc->user_stack.phys_base, proc->user_stack.num_pages);
+    if (!proc->address_space().is_valid() && proc->user_stack().phys_base != 0U &&
+        proc->user_stack().num_pages > 0U) {
+        Kernel::MM::free_frames(proc->user_stack().phys_base, proc->user_stack().num_pages);
     }
-    proc->address_space = static_cast<Kernel::MM::AddressSpace&&>(loaded.address_space);
-    cstr_copy(proc->exe_path, exec_binary_path, sizeof(proc->exe_path));
+    proc->address_space() = static_cast<Kernel::MM::AddressSpace&&>(loaded.address_space);
+    proc->set_exe_path(exec_binary_path);
 
-    proc->fds.close_cloexec();
-    proc->signals.reset_caught_for_exec();
+    proc->fds().close_cloexec();
+    proc->signals().reset_caught_for_exec();
 
     const auto platform = HAL::get_platform_info();
-    proc->entry_point = loaded.entry_point;
-    proc->user_stack = new_stack;
+    proc->set_entry_point(loaded.entry_point);
+    proc->set_user_stack(new_stack);
     const uintptr_t new_brk = (loaded.max_vaddr != 0U) ? loaded.max_vaddr : platform.user_brk_base;
-    proc->brk_start = new_brk;
-    proc->brk_current = new_brk;
-    proc->mmap_next_vaddr = platform.user_mmap_base;
+    proc->set_brk_start(new_brk);
+    proc->set_brk_current(new_brk);
+    proc->set_mmap_next_vaddr(platform.user_mmap_base);
 
-    Kernel::Process::init_user_cpu_context(ctx, proc->entry_point, proc->user_stack.final_sp_el0,
-                                           proc->user_stack.argc, proc->user_stack.argv_vaddr);
+    Kernel::Process::init_user_cpu_context(ctx, proc->entry_point(),
+                                           proc->user_stack().final_sp_el0, proc->user_stack().argc,
+                                           proc->user_stack().argv_vaddr);
 
     Kernel::MM::free_frame(scratch_paddr);
     return 0;
@@ -543,7 +534,7 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
 
 int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
                   uintptr_t user_rusage) noexcept {
-    auto* const parent = Kernel::Process::current_process();
+    auto* const parent = Kernel::Process::Process::current();
     if (parent == nullptr) {
         return ERR_EINVAL;
     }
@@ -566,46 +557,42 @@ int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
         bool has_matching_child = false;
         Kernel::Process::Process* ready_child = nullptr;
 
-        for (auto* candidate = Kernel::Process::process_list_head(); candidate != nullptr;
-             candidate = candidate->global_next) {
-            if (candidate->state == Kernel::Process::ProcessState::Unused) {
+        for (auto* candidate = Kernel::Process::Process::list_head(); candidate != nullptr;
+             candidate = candidate->next_global()) {
+            if (candidate->state() == Kernel::Process::ProcessState::Unused) {
                 continue;
             }
-            if (candidate->ppid != parent->pid) {
+            if (candidate->ppid() != parent->pid()) {
                 continue;
             }
-            if (target_pid > 0 && candidate->pid != static_cast<uint32_t>(target_pid)) {
+            if (target_pid > 0 && candidate->pid() != static_cast<uint32_t>(target_pid)) {
                 continue;
             }
-            if (target_pid == 0 && candidate->pgid != parent->pgid) {
+            if (target_pid == 0 && candidate->pgid() != parent->pgid()) {
                 continue;
             }
-            if (target_pid < -1 && candidate->pgid != static_cast<uint32_t>(-target_pid)) {
+            if (target_pid < -1 && candidate->pgid() != static_cast<uint32_t>(-target_pid)) {
                 continue;
             }
 
             has_matching_child = true;
-            if (candidate->state == Kernel::Process::ProcessState::Zombie) {
+            if (candidate->state() == Kernel::Process::ProcessState::Zombie) {
                 ready_child = candidate;
                 encoded_wstatus = static_cast<int32_t>(
-                    (static_cast<uint32_t>(candidate->exit_status) & 0xFFU) << 8U);
+                    (static_cast<uint32_t>(candidate->exit_status()) & 0xFFU) << 8U);
                 reap_child = true;
                 break;
             }
-            if ((options & WAIT_WUNTRACED) != 0ULL &&
-                candidate->state == Kernel::Process::ProcessState::Stopped &&
-                !candidate->stop_reported) {
+            uint32_t stopped_sig = 0U;
+            if ((options & WAIT_WUNTRACED) != 0ULL && candidate->consume_stop_report(stopped_sig)) {
                 ready_child = candidate;
-                encoded_wstatus =
-                    static_cast<int32_t>(((candidate->stop_signal & 0xFFU) << 8U) | 0x7FU);
-                candidate->stop_reported = true;
+                encoded_wstatus = static_cast<int32_t>(((stopped_sig & 0xFFU) << 8U) | 0x7FU);
                 reap_child = false;
                 break;
             }
-            if ((options & WAIT_WCONTINUED) != 0ULL && candidate->continued) {
+            if ((options & WAIT_WCONTINUED) != 0ULL && candidate->consume_continued()) {
                 ready_child = candidate;
                 encoded_wstatus = 0xFFFF;
-                candidate->continued = false;
                 reap_child = false;
                 break;
             }
@@ -630,14 +617,14 @@ int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
             return 0;
         }
 
-        if (Kernel::Process::has_unblocked_pending_signal(*parent)) {
+        if (parent->signals().has_unblocked_pending()) {
             if (irq_was_enabled) {
                 cpu.enable_interrupts();
             }
             return ERR_EINTR;
         }
 
-        parent->child_wait_queue.sleep();
+        parent->child_wait_queue().sleep();
     }
 
     if (irq_was_enabled) {
@@ -646,7 +633,7 @@ int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
 
     if (user_wstatus != 0U) {
         const int64_t status_res = Kernel::MM::copy_to_user(
-            parent->address_space, user_wstatus, &encoded_wstatus, sizeof(encoded_wstatus));
+            parent->address_space(), user_wstatus, &encoded_wstatus, sizeof(encoded_wstatus));
         if (status_res < 0) {
             return ERR_EFAULT;
         }
@@ -655,36 +642,35 @@ int64_t sys_wait4(int32_t target_pid, uintptr_t user_wstatus, uint64_t options,
     if (user_rusage != 0U) {
         linux_rusage rusage{};
         const uint64_t child_user_usec =
-            static_cast<uint64_t>(target_child->utime + target_child->cutime) * 10000ULL;
+            static_cast<uint64_t>(target_child->utime() + target_child->cutime()) * 10000ULL;
         const uint64_t child_sys_usec =
-            static_cast<uint64_t>(target_child->stime + target_child->cstime) * 10000ULL;
+            static_cast<uint64_t>(target_child->stime() + target_child->cstime()) * 10000ULL;
         rusage.ru_utime =
             Kernel::Time::Duration::from_microseconds(child_user_usec).to_linux_timeval();
         rusage.ru_stime =
             Kernel::Time::Duration::from_microseconds(child_sys_usec).to_linux_timeval();
         const int64_t rusage_res =
-            Kernel::MM::copy_to_user(parent->address_space, user_rusage, &rusage, sizeof(rusage));
+            Kernel::MM::copy_to_user(parent->address_space(), user_rusage, &rusage, sizeof(rusage));
         if (rusage_res < 0) {
             return ERR_EFAULT;
         }
     }
 
-    const uint32_t reported_pid = target_child->pid;
+    const uint32_t reported_pid = target_child->pid();
     if (reap_child) {
-        parent->cutime += target_child->utime + target_child->cutime;
-        parent->cstime += target_child->stime + target_child->cstime;
-        Kernel::Process::release_process(*target_child);
+        parent->accumulate_child_ticks(*target_child);
+        Kernel::Process::Process::destroy(*target_child);
     }
     return static_cast<int64_t>(reported_pid);
 }
 
 int64_t sys_set_tid_address(uintptr_t tidptr) noexcept {
-    auto* const proc = Kernel::Process::current_process();
+    auto* const proc = Kernel::Process::Process::current();
     if (proc == nullptr) {
         return 0;
     }
-    proc->clear_child_tid = tidptr;
-    return static_cast<int64_t>(proc->pid);
+    proc->set_clear_child_tid(tidptr);
+    return static_cast<int64_t>(proc->pid());
 }
 
 } // namespace Kernel::Syscalls

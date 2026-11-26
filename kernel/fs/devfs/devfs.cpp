@@ -289,7 +289,7 @@ int64_t console_lseek(File* /*file*/, int64_t /*offset*/, SeekWhence /*whence*/)
 
 int32_t console_ioctl(File* /*file*/, uint64_t request, uint64_t arg) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    const uintptr_t root_paddr = (proc != nullptr) ? proc->address_space.root_paddr()
+    const uintptr_t root_paddr = (proc != nullptr) ? proc->address_space().root_paddr()
                                                    : Kernel::MM::AddressSpace::current_root_paddr();
     const auto user_arg = static_cast<uintptr_t>(arg);
 

@@ -19,11 +19,11 @@ int64_t sys_getcwd(uintptr_t user_buf, uint64_t size) noexcept {
     if (size == 0U) {
         return ERR_EINVAL;
     }
-    const size_t len = cstr_len(proc->cwd) + 1U;
+    const size_t len = cstr_len(proc->cwd()) + 1U;
     if (size < len) {
         return ERR_ERANGE;
     }
-    const int64_t res = Kernel::MM::copy_to_user(proc->address_space, user_buf, proc->cwd, len);
+    const int64_t res = Kernel::MM::copy_to_user(proc->address_space(), user_buf, proc->cwd(), len);
     if (res < 0) {
         return ERR_EFAULT;
     }
@@ -38,7 +38,7 @@ int64_t sys_chdir(uintptr_t user_path) noexcept {
 
     char raw_path[Kernel::Process::MAX_PATH_LEN]{};
     size_t len = 0U;
-    const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_path,
+    const int64_t copy_res = copy_user_cstring(proc->address_space().root_paddr(), user_path,
                                                raw_path, sizeof(raw_path), len);
     if (copy_res < 0) {
         return copy_res;
@@ -46,7 +46,7 @@ int64_t sys_chdir(uintptr_t user_path) noexcept {
 
     Kernel::FS::Dentry* cwd_dentry = nullptr;
     if (raw_path[0] != '/') {
-        (void)Kernel::FS::vfs_namei(Kernel::FS::StringView(proc->cwd), nullptr, &cwd_dentry);
+        (void)Kernel::FS::vfs_namei(Kernel::FS::StringView(proc->cwd()), nullptr, &cwd_dentry);
     }
 
     Kernel::FS::Dentry* target = nullptr;
@@ -63,7 +63,7 @@ int64_t sys_chdir(uintptr_t user_path) noexcept {
         return ERR_ENOTDIR;
     }
 
-    build_dentry_path(target, proc->cwd, sizeof(proc->cwd));
+    build_dentry_path(target, proc->mutable_cwd(), Kernel::Process::MAX_PATH_LEN);
     Kernel::FS::dentry_put(target);
     return 0;
 }
@@ -76,7 +76,7 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
 
     char raw_path[Kernel::Process::MAX_PATH_LEN]{};
     size_t path_len = 0U;
-    const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
+    const int64_t copy_res = copy_user_cstring(proc->address_space().root_paddr(), user_pathname,
                                                raw_path, sizeof(raw_path), path_len);
     if (copy_res < 0) {
         return copy_res;
@@ -124,7 +124,7 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
         vfs_flags |= Kernel::FS::kOpenNonBlock;
     }
 
-    const int slot = proc->fds.allocate(proc->rlim_nofile_cur);
+    const int slot = proc->fds().allocate(proc->rlim_nofile().rlim_cur);
     if (slot < 0) {
         if (base_dentry != nullptr) {
             Kernel::FS::dentry_put(base_dentry);
@@ -132,7 +132,7 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
         return slot;
     }
 
-    const uint32_t effective_mode = static_cast<uint32_t>(mode) & ~proc->umask;
+    const uint32_t effective_mode = static_cast<uint32_t>(mode) & ~proc->umask();
     Kernel::FS::File* file = nullptr;
     const int32_t open_rc = Kernel::FS::vfs_open_at(
         base_dentry, Kernel::FS::StringView(raw_path, path_len), vfs_flags, effective_mode, &file);
@@ -144,7 +144,7 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
     }
 
     const uint32_t fd_flags = ((flags & O_CLOEXEC) != 0ULL) ? Kernel::Process::FD_FLAG_CLOEXEC : 0U;
-    (void)proc->fds.install(static_cast<size_t>(slot), file, fd_flags);
+    (void)proc->fds().install(static_cast<size_t>(slot), file, fd_flags);
     return slot;
 }
 
@@ -156,7 +156,7 @@ int64_t sys_mkdirat(int32_t dirfd, uintptr_t user_pathname, uint64_t mode) noexc
 
     char raw_path[Kernel::Process::MAX_PATH_LEN]{};
     size_t path_len = 0U;
-    const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
+    const int64_t copy_res = copy_user_cstring(proc->address_space().root_paddr(), user_pathname,
                                                raw_path, sizeof(raw_path), path_len);
     if (copy_res < 0) {
         return copy_res;
@@ -170,7 +170,7 @@ int64_t sys_mkdirat(int32_t dirfd, uintptr_t user_pathname, uint64_t mode) noexc
         }
     }
 
-    const uint32_t effective_mode = static_cast<uint32_t>(mode) & ~proc->umask;
+    const uint32_t effective_mode = static_cast<uint32_t>(mode) & ~proc->umask();
     const int32_t vfs_res = Kernel::FS::vfs_mkdir_at(
         base_dentry, Kernel::FS::StringView(raw_path, path_len), effective_mode);
     if (base_dentry != nullptr) {
@@ -190,7 +190,7 @@ int64_t sys_unlinkat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags) noe
 
     char raw_path[Kernel::Process::MAX_PATH_LEN]{};
     size_t path_len = 0U;
-    const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
+    const int64_t copy_res = copy_user_cstring(proc->address_space().root_paddr(), user_pathname,
                                                raw_path, sizeof(raw_path), path_len);
     if (copy_res < 0) {
         return copy_res;
@@ -226,7 +226,7 @@ int64_t sys_renameat2(int32_t olddirfd, uintptr_t user_oldpath, int32_t newdirfd
 
     char old_path[Kernel::Process::MAX_PATH_LEN]{};
     size_t old_len = 0U;
-    const int64_t old_copy = copy_user_cstring(proc->address_space.root_paddr(), user_oldpath,
+    const int64_t old_copy = copy_user_cstring(proc->address_space().root_paddr(), user_oldpath,
                                                old_path, sizeof(old_path), old_len);
     if (old_copy < 0) {
         return old_copy;
@@ -234,7 +234,7 @@ int64_t sys_renameat2(int32_t olddirfd, uintptr_t user_oldpath, int32_t newdirfd
 
     char new_path[Kernel::Process::MAX_PATH_LEN]{};
     size_t new_len = 0U;
-    const int64_t new_copy = copy_user_cstring(proc->address_space.root_paddr(), user_newpath,
+    const int64_t new_copy = copy_user_cstring(proc->address_space().root_paddr(), user_newpath,
                                                new_path, sizeof(new_path), new_len);
     if (new_copy < 0) {
         return new_copy;
@@ -299,7 +299,7 @@ int64_t sys_ftruncate(uint64_t raw_fd, int64_t length) noexcept {
     if (proc == nullptr) {
         return ERR_EBADF;
     }
-    const auto* const desc = proc->fds.at(static_cast<size_t>(raw_fd));
+    const auto* const desc = proc->fds().at(static_cast<size_t>(raw_fd));
     if (desc == nullptr || !desc->is_open() || !desc->is_writable() ||
         desc->file()->inode == nullptr) {
         return ERR_EBADF;
@@ -325,7 +325,7 @@ int64_t sys_truncate(uintptr_t user_pathname, int64_t length) noexcept {
 
     char raw_path[Kernel::Process::MAX_PATH_LEN]{};
     size_t path_len = 0U;
-    const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
+    const int64_t copy_res = copy_user_cstring(proc->address_space().root_paddr(), user_pathname,
                                                raw_path, sizeof(raw_path), path_len);
     if (copy_res < 0) {
         return copy_res;
@@ -381,7 +381,8 @@ int64_t sys_utimensat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_tim
     };
     Kernel::Time::Duration parsed_times[2]{};
     if (user_times != 0U) {
-        if (Kernel::MM::copy_from_user(proc->address_space, times, user_times, sizeof(times)) < 0) {
+        if (Kernel::MM::copy_from_user(proc->address_space(), times, user_times, sizeof(times)) <
+            0) {
             return ERR_EFAULT;
         }
         for (size_t idx = 0U; idx < 2U; ++idx) {
@@ -404,8 +405,9 @@ int64_t sys_utimensat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_tim
     } else {
         char raw_path[Kernel::Process::MAX_PATH_LEN]{};
         size_t path_len = 0U;
-        const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
-                                                   raw_path, sizeof(raw_path), path_len);
+        const int64_t copy_res =
+            copy_user_cstring(proc->address_space().root_paddr(), user_pathname, raw_path,
+                              sizeof(raw_path), path_len);
         if (copy_res < 0) {
             return copy_res;
         }
@@ -503,7 +505,7 @@ int64_t sys_fchmodat(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
 
     char raw_path[Kernel::Process::MAX_PATH_LEN]{};
     size_t path_len = 0U;
-    const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
+    const int64_t copy_res = copy_user_cstring(proc->address_space().root_paddr(), user_pathname,
                                                raw_path, sizeof(raw_path), path_len);
     if (copy_res < 0) {
         return copy_res;
@@ -574,7 +576,7 @@ int64_t sys_fchownat(int32_t dirfd, uintptr_t user_pathname, uint32_t owner, uin
 
     char raw_path[Kernel::Process::MAX_PATH_LEN]{};
     size_t path_len = 0U;
-    const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
+    const int64_t copy_res = copy_user_cstring(proc->address_space().root_paddr(), user_pathname,
                                                raw_path, sizeof(raw_path), path_len);
     if (copy_res < 0) {
         return copy_res;
@@ -628,11 +630,11 @@ int64_t sys_close(uint64_t raw_fd) noexcept {
         return ERR_EBADF;
     }
     const auto fd_idx = static_cast<size_t>(raw_fd);
-    const auto* const desc = proc->fds.at(fd_idx);
+    const auto* const desc = proc->fds().at(fd_idx);
     if (desc == nullptr || !desc->is_open()) {
         return ERR_EBADF;
     }
-    proc->fds.close(fd_idx);
+    proc->fds().close(fd_idx);
     return 0;
 }
 
@@ -656,7 +658,7 @@ int64_t sys_fstat(uint64_t raw_fd, uintptr_t user_statbuf) noexcept {
         return ERR_EBADF;
     }
     const linux_stat stat = inode_to_linux_stat(*file->inode);
-    return Kernel::MM::copy_to_user(proc->address_space, user_statbuf, &stat, sizeof(stat));
+    return Kernel::MM::copy_to_user(proc->address_space(), user_statbuf, &stat, sizeof(stat));
 }
 
 int64_t sys_newfstatat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_statbuf,
@@ -668,7 +670,7 @@ int64_t sys_newfstatat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_st
 
     char raw_path[Kernel::Process::MAX_PATH_LEN]{};
     size_t path_len = 0U;
-    const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
+    const int64_t copy_res = copy_user_cstring(proc->address_space().root_paddr(), user_pathname,
                                                raw_path, sizeof(raw_path), path_len);
     if (copy_res < 0) {
         return copy_res;
@@ -680,7 +682,7 @@ int64_t sys_newfstatat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_st
             return ERR_EBADF;
         }
         const linux_stat stat = inode_to_linux_stat(*file->inode);
-        return Kernel::MM::copy_to_user(proc->address_space, user_statbuf, &stat, sizeof(stat));
+        return Kernel::MM::copy_to_user(proc->address_space(), user_statbuf, &stat, sizeof(stat));
     }
 
     Kernel::FS::Dentry* base_dentry = nullptr;
@@ -707,7 +709,7 @@ int64_t sys_newfstatat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_st
 
     const linux_stat stat = inode_to_linux_stat(*target->inode);
     Kernel::FS::dentry_put(target);
-    return Kernel::MM::copy_to_user(proc->address_space, user_statbuf, &stat, sizeof(stat));
+    return Kernel::MM::copy_to_user(proc->address_space(), user_statbuf, &stat, sizeof(stat));
 }
 
 int64_t sys_faccessat2(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
@@ -723,7 +725,7 @@ int64_t sys_faccessat2(int32_t dirfd, uintptr_t user_pathname, uint64_t mode,
 
     char raw_path[Kernel::Process::MAX_PATH_LEN]{};
     size_t path_len = 0U;
-    const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
+    const int64_t copy_res = copy_user_cstring(proc->address_space().root_paddr(), user_pathname,
                                                raw_path, sizeof(raw_path), path_len);
     if (copy_res < 0) {
         return copy_res;
@@ -788,17 +790,17 @@ int64_t sys_readlinkat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_bu
 
     char raw_path[Kernel::Process::MAX_PATH_LEN]{};
     size_t path_len = 0U;
-    const int64_t copy_res = copy_user_cstring(proc->address_space.root_paddr(), user_pathname,
+    const int64_t copy_res = copy_user_cstring(proc->address_space().root_paddr(), user_pathname,
                                                raw_path, sizeof(raw_path), path_len);
     if (copy_res < 0) {
         return copy_res;
     }
 
     if (cstr_eq(raw_path, "/proc/self/exe")) {
-        const char* exe_target = (proc->exe_path[0] != '\0') ? proc->exe_path : "/bin/bash";
+        const char* exe_target = (proc->exe_path()[0] != '\0') ? proc->exe_path() : "/bin/bash";
         const size_t target_len = cstr_len(exe_target);
         const size_t copy_len = (bufsiz < target_len) ? static_cast<size_t>(bufsiz) : target_len;
-        if (Kernel::MM::copy_to_user(proc->address_space, user_buf, exe_target, copy_len) < 0) {
+        if (Kernel::MM::copy_to_user(proc->address_space(), user_buf, exe_target, copy_len) < 0) {
             return ERR_EFAULT;
         }
         return static_cast<int64_t>(copy_len);
@@ -826,7 +828,7 @@ int64_t sys_readlinkat(int32_t dirfd, uintptr_t user_pathname, uintptr_t user_bu
 
     const size_t copy_len = (bufsiz < out_len) ? static_cast<size_t>(bufsiz) : out_len;
     if (copy_len > 0U &&
-        Kernel::MM::copy_to_user(proc->address_space, user_buf, link_buf, copy_len) < 0) {
+        Kernel::MM::copy_to_user(proc->address_space(), user_buf, link_buf, copy_len) < 0) {
         return ERR_EFAULT;
     }
     return static_cast<int64_t>(copy_len);
@@ -842,7 +844,7 @@ int64_t sys_getdents64(uint64_t raw_fd, uintptr_t user_dirp, uint64_t count) noe
         return ERR_ENOTDIR;
     }
 
-    const uintptr_t root_paddr = proc->address_space.root_paddr();
+    const uintptr_t root_paddr = proc->address_space().root_paddr();
     if (!validate_user_write_range(root_paddr, user_dirp, static_cast<size_t>(count))) {
         return ERR_EFAULT;
     }
@@ -923,17 +925,17 @@ int64_t sys_dup(uint64_t raw_oldfd) noexcept {
         return ERR_EBADF;
     }
     const auto old_idx = static_cast<size_t>(raw_oldfd);
-    const auto* const old_desc = proc->fds.at(old_idx);
+    const auto* const old_desc = proc->fds().at(old_idx);
     if (old_desc == nullptr || !old_desc->is_open()) {
         return ERR_EBADF;
     }
 
-    const int new_idx = proc->fds.allocate(proc->rlim_nofile_cur, 0U);
+    const int new_idx = proc->fds().allocate(proc->rlim_nofile().rlim_cur, 0U);
     if (new_idx < 0) {
         return new_idx;
     }
 
-    (void)proc->fds.dup_slot(static_cast<size_t>(new_idx), old_idx, true);
+    (void)proc->fds().dup_slot(static_cast<size_t>(new_idx), old_idx, true);
     return new_idx;
 }
 
@@ -942,7 +944,7 @@ int64_t sys_dup3(uint64_t raw_oldfd, uint64_t raw_newfd, uint64_t flags) noexcep
     if (proc == nullptr) {
         return ERR_EBADF;
     }
-    if (raw_newfd >= proc->rlim_nofile_cur) {
+    if (raw_newfd >= proc->rlim_nofile().rlim_cur) {
         return ERR_EBADF;
     }
     if (raw_oldfd == raw_newfd) {
@@ -954,20 +956,20 @@ int64_t sys_dup3(uint64_t raw_oldfd, uint64_t raw_newfd, uint64_t flags) noexcep
 
     const auto old_idx = static_cast<size_t>(raw_oldfd);
     const auto new_idx = static_cast<size_t>(raw_newfd);
-    const auto* const old_desc = proc->fds.at(old_idx);
+    const auto* const old_desc = proc->fds().at(old_idx);
     if (old_desc == nullptr || !old_desc->is_open()) {
         return ERR_EBADF;
     }
 
-    if (new_idx >= proc->fds.capacity()) {
-        if (!proc->fds.ensure_capacity(new_idx + 1U, proc->rlim_nofile_cur)) {
+    if (new_idx >= proc->fds().capacity()) {
+        if (!proc->fds().ensure_capacity(new_idx + 1U, proc->rlim_nofile().rlim_cur)) {
             return ERR_ENOMEM;
         }
     }
 
-    (void)proc->fds.dup_slot(new_idx, old_idx, true);
+    (void)proc->fds().dup_slot(new_idx, old_idx, true);
     if ((flags & O_CLOEXEC) != 0ULL) {
-        if (auto* const dst_desc = proc->fds.at(new_idx); dst_desc != nullptr) {
+        if (auto* const dst_desc = proc->fds().at(new_idx); dst_desc != nullptr) {
             dst_desc->set_cloexec(true);
         }
     }
@@ -980,7 +982,7 @@ int64_t sys_fcntl(uint64_t raw_fd, uint64_t cmd, uint64_t arg) noexcept {
         return ERR_EBADF;
     }
     const auto fd_idx = static_cast<size_t>(raw_fd);
-    auto* const desc = proc->fds.at(fd_idx);
+    auto* const desc = proc->fds().at(fd_idx);
     if (desc == nullptr || !desc->is_open()) {
         return ERR_EBADF;
     }
@@ -988,16 +990,17 @@ int64_t sys_fcntl(uint64_t raw_fd, uint64_t cmd, uint64_t arg) noexcept {
     switch (cmd) {
     case F_DUPFD:
     case F_DUPFD_CLOEXEC: {
-        if (arg >= proc->rlim_nofile_cur) {
+        if (arg >= proc->rlim_nofile().rlim_cur) {
             return ERR_EINVAL;
         }
-        const int new_idx = proc->fds.allocate(proc->rlim_nofile_cur, static_cast<size_t>(arg));
+        const int new_idx =
+            proc->fds().allocate(proc->rlim_nofile().rlim_cur, static_cast<size_t>(arg));
         if (new_idx < 0) {
             return new_idx;
         }
-        (void)proc->fds.dup_slot(static_cast<size_t>(new_idx), fd_idx, true);
+        (void)proc->fds().dup_slot(static_cast<size_t>(new_idx), fd_idx, true);
         if (cmd == F_DUPFD_CLOEXEC) {
-            if (auto* const dst_desc = proc->fds.at(static_cast<size_t>(new_idx));
+            if (auto* const dst_desc = proc->fds().at(static_cast<size_t>(new_idx));
                 dst_desc != nullptr) {
                 dst_desc->set_cloexec(true);
             }
@@ -1055,7 +1058,7 @@ int64_t sys_pipe2(uintptr_t user_pipefd, uint64_t flags) noexcept {
         return ERR_EINVAL;
     }
 
-    const int read_fd = proc->fds.allocate(proc->rlim_nofile_cur, 0U);
+    const int read_fd = proc->fds().allocate(proc->rlim_nofile().rlim_cur, 0U);
     if (read_fd < 0) {
         return read_fd;
     }
@@ -1070,22 +1073,22 @@ int64_t sys_pipe2(uintptr_t user_pipefd, uint64_t flags) noexcept {
         return prc;
     }
 
-    (void)proc->fds.install(static_cast<size_t>(read_fd), read_file, fd_extra);
+    (void)proc->fds().install(static_cast<size_t>(read_fd), read_file, fd_extra);
 
     const int write_fd =
-        proc->fds.allocate(proc->rlim_nofile_cur, static_cast<size_t>(read_fd) + 1U);
+        proc->fds().allocate(proc->rlim_nofile().rlim_cur, static_cast<size_t>(read_fd) + 1U);
     if (write_fd < 0) {
-        proc->fds.close(static_cast<size_t>(read_fd));
+        proc->fds().close(static_cast<size_t>(read_fd));
         (void)Kernel::FS::vfs_close(write_file);
         return write_fd;
     }
 
-    (void)proc->fds.install(static_cast<size_t>(write_fd), write_file, fd_extra);
+    (void)proc->fds().install(static_cast<size_t>(write_fd), write_file, fd_extra);
 
     const int32_t pair[2] = {read_fd, write_fd};
-    if (Kernel::MM::copy_to_user(proc->address_space, user_pipefd, pair, sizeof(pair)) < 0) {
-        proc->fds.close(static_cast<size_t>(read_fd));
-        proc->fds.close(static_cast<size_t>(write_fd));
+    if (Kernel::MM::copy_to_user(proc->address_space(), user_pipefd, pair, sizeof(pair)) < 0) {
+        proc->fds().close(static_cast<size_t>(read_fd));
+        proc->fds().close(static_cast<size_t>(write_fd));
         return ERR_EFAULT;
     }
 
@@ -1135,7 +1138,7 @@ int64_t sys_read(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexce
         if (file == nullptr) {
             return ERR_EBADF;
         }
-        root_paddr = proc->address_space.root_paddr();
+        root_paddr = proc->address_space().root_paddr();
     } else {
         if (raw_fd != 0U) {
             return ERR_EBADF;
@@ -1212,7 +1215,7 @@ int64_t sys_write(uint64_t raw_fd, uintptr_t user_buf, uint64_t raw_count) noexc
         if (file == nullptr) {
             return ERR_EBADF;
         }
-        root_paddr = proc->address_space.root_paddr();
+        root_paddr = proc->address_space().root_paddr();
     } else {
         if (raw_fd != 1U && raw_fd != 2U) {
             return ERR_EBADF;
@@ -1275,11 +1278,11 @@ int64_t sys_writev(uint64_t raw_fd, uintptr_t user_iov, uint64_t raw_iovcnt) noe
     uintptr_t root_paddr = 0U;
 
     if (proc != nullptr) {
-        const auto* const desc = proc->fds.at(fd_idx);
+        const auto* const desc = proc->fds().at(fd_idx);
         if (desc == nullptr || !desc->is_open() || !desc->is_writable()) {
             return ERR_EBADF;
         }
-        root_paddr = proc->address_space.root_paddr();
+        root_paddr = proc->address_space().root_paddr();
     } else {
         if (fd_idx != 1U && fd_idx != 2U) {
             return ERR_EBADF;
@@ -1324,7 +1327,7 @@ static int16_t poll_fd_revents(const Kernel::Process::Process& proc, int32_t raw
     if (raw_fd < 0) {
         return 0;
     }
-    const auto* const desc = proc.fds.at(static_cast<size_t>(raw_fd));
+    const auto* const desc = proc.fds().at(static_cast<size_t>(raw_fd));
     if (desc == nullptr || !desc->is_open()) {
         return POLLNVAL;
     }
@@ -1337,11 +1340,11 @@ int64_t sys_ppoll(uintptr_t user_fds, uint64_t nfds, uintptr_t user_tmo, uintptr
     if (proc == nullptr) {
         return ERR_EINVAL;
     }
-    if (nfds > proc->rlim_nofile_cur) {
+    if (nfds > proc->rlim_nofile().rlim_cur) {
         return ERR_EINVAL;
     }
 
-    const uintptr_t root_paddr = proc->address_space.root_paddr();
+    const uintptr_t root_paddr = proc->address_space().root_paddr();
     const auto count = static_cast<size_t>(nfds);
 
     linux_pollfd stack_fds[POLL_STACK_THRESHOLD]{};
@@ -1409,19 +1412,19 @@ int64_t sys_ppoll(uintptr_t user_fds, uint64_t nfds, uintptr_t user_tmo, uintptr
         if (Kernel::MM::copy_from_user(root_paddr, &new_mask, user_sigmask, sizeof(new_mask)) < 0) {
             return ERR_EFAULT;
         }
-        saved_mask = proc->signals.swap_temp_mask(new_mask);
+        saved_mask = proc->signals().swap_temp_mask(new_mask);
         swapped_mask = true;
     }
 
     auto restore_mask_normal = [&]() {
         if (swapped_mask) {
-            proc->signals.set_blocked(saved_mask);
+            proc->signals().set_blocked(saved_mask);
         }
     };
 
     auto restore_mask_eintr = [&]() {
         if (swapped_mask) {
-            proc->signals.preserve_saved_mask_for_eintr(saved_mask);
+            proc->signals().preserve_saved_mask_for_eintr(saved_mask);
         }
     };
 
@@ -1466,7 +1469,7 @@ int64_t sys_pselect6(int32_t nfds, uintptr_t user_rfds, uintptr_t user_wfds, uin
         return ERR_EINVAL;
     }
 
-    const uintptr_t root_paddr = proc->address_space.root_paddr();
+    const uintptr_t root_paddr = proc->address_space().root_paddr();
     const auto u_nfds = static_cast<size_t>(nfds);
     const size_t nwords = (u_nfds + 63U) / 64U;
     const size_t set_bytes = nwords * sizeof(uint64_t);
@@ -1497,7 +1500,7 @@ int64_t sys_pselect6(int32_t nfds, uintptr_t user_rfds, uintptr_t user_wfds, uin
         const bool want_any = ((rfds[word] & bit) != 0ULL) || ((wfds[word] & bit) != 0ULL) ||
                               ((efds[word] & bit) != 0ULL);
         if (want_any) {
-            const auto* const desc = proc->fds.at(fd);
+            const auto* const desc = proc->fds().at(fd);
             if (desc == nullptr || !desc->is_open()) {
                 return ERR_EBADF;
             }
@@ -1542,20 +1545,20 @@ int64_t sys_pselect6(int32_t nfds, uintptr_t user_rfds, uintptr_t user_wfds, uin
                                            sizeof(new_mask)) < 0) {
                 return ERR_EFAULT;
             }
-            saved_mask = proc->signals.swap_temp_mask(new_mask);
+            saved_mask = proc->signals().swap_temp_mask(new_mask);
             swapped_mask = true;
         }
     }
 
     auto restore_mask_normal = [&]() {
         if (swapped_mask) {
-            proc->signals.set_blocked(saved_mask);
+            proc->signals().set_blocked(saved_mask);
         }
     };
 
     auto restore_mask_eintr = [&]() {
         if (swapped_mask) {
-            proc->signals.preserve_saved_mask_for_eintr(saved_mask);
+            proc->signals().preserve_saved_mask_for_eintr(saved_mask);
         }
     };
 

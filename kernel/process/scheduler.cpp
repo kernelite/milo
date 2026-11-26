@@ -28,19 +28,19 @@ bool g_in_schedule = false;
 namespace Kernel::Scheduler {
 
 void Runqueue::enqueue(Process::Process* proc) noexcept {
-    if (proc == nullptr || proc->on_runqueue) {
+    if (proc == nullptr || proc->m_on_runqueue) {
         return;
     }
 
-    proc->rq_prev = m_tail;
-    proc->rq_next = nullptr;
+    proc->m_rq_prev = m_tail;
+    proc->m_rq_next = nullptr;
     if (m_tail != nullptr) {
-        m_tail->rq_next = proc;
+        m_tail->m_rq_next = proc;
     } else {
         m_head = proc;
     }
     m_tail = proc;
-    proc->on_runqueue = true;
+    proc->m_on_runqueue = true;
     m_count++;
 }
 
@@ -50,45 +50,45 @@ Process::Process* Runqueue::dequeue() noexcept {
     }
 
     Process::Process* const proc = m_head;
-    m_head = proc->rq_next;
+    m_head = proc->m_rq_next;
     if (m_head != nullptr) {
-        m_head->rq_prev = nullptr;
+        m_head->m_rq_prev = nullptr;
     } else {
         m_tail = nullptr;
     }
 
-    proc->rq_next = nullptr;
-    proc->rq_prev = nullptr;
-    proc->on_runqueue = false;
+    proc->m_rq_next = nullptr;
+    proc->m_rq_prev = nullptr;
+    proc->m_on_runqueue = false;
     m_count--;
     return proc;
 }
 
 void Runqueue::remove(Process::Process* proc) noexcept {
-    if (proc == nullptr || !proc->on_runqueue) {
+    if (proc == nullptr || !proc->m_on_runqueue) {
         return;
     }
 
-    if (proc->rq_prev != nullptr) {
-        proc->rq_prev->rq_next = proc->rq_next;
+    if (proc->m_rq_prev != nullptr) {
+        proc->m_rq_prev->m_rq_next = proc->m_rq_next;
     } else {
-        m_head = proc->rq_next;
+        m_head = proc->m_rq_next;
     }
 
-    if (proc->rq_next != nullptr) {
-        proc->rq_next->rq_prev = proc->rq_prev;
+    if (proc->m_rq_next != nullptr) {
+        proc->m_rq_next->m_rq_prev = proc->m_rq_prev;
     } else {
-        m_tail = proc->rq_prev;
+        m_tail = proc->m_rq_prev;
     }
 
-    proc->rq_next = nullptr;
-    proc->rq_prev = nullptr;
-    proc->on_runqueue = false;
+    proc->m_rq_next = nullptr;
+    proc->m_rq_prev = nullptr;
+    proc->m_on_runqueue = false;
     m_count--;
 }
 
 void init() noexcept {
-    const Sync::IrqGuard irq_guard{};
+    const Sync::IrqGuard irq_guard;
     g_runqueue = Runqueue{};
     g_timer_ticks = 0ULL;
     g_in_schedule = false;
@@ -99,15 +99,15 @@ void enqueue(Process::Process* proc) noexcept {
         return;
     }
 
-    const Sync::IrqGuard irq_guard{};
-    if (proc->state != Process::ProcessState::Zombie &&
-        proc->state != Process::ProcessState::Unused) {
-        if (proc->active_wq != nullptr) {
-            proc->active_wq->remove(proc);
+    const Sync::IrqGuard irq_guard;
+    if (proc->state() != Process::ProcessState::Zombie &&
+        proc->state() != Process::ProcessState::Unused) {
+        if (proc->active_wait_queue() != nullptr) {
+            proc->active_wait_queue()->remove(proc);
         }
-        proc->state = Process::ProcessState::Ready;
-        if (proc->timeslice == 0U) {
-            proc->timeslice = DEFAULT_TIMESLICE_TICKS;
+        proc->set_state(Process::ProcessState::Ready);
+        if (proc->timeslice() == 0U) {
+            proc->reset_timeslice(DEFAULT_TIMESLICE_TICKS);
         }
         g_runqueue.enqueue(proc);
     }
@@ -118,12 +118,12 @@ void remove(Process::Process* proc) noexcept {
         return;
     }
 
-    const Sync::IrqGuard irq_guard{};
+    const Sync::IrqGuard irq_guard;
     g_runqueue.remove(proc);
 }
 
 void yield() noexcept {
-    const Sync::IrqGuard irq_guard{};
+    const Sync::IrqGuard irq_guard;
     schedule();
 }
 
@@ -144,45 +144,45 @@ void schedule() noexcept {
 
     g_in_schedule = true;
 
-    Process::Process* const prev = Process::current_process();
-    if (prev != nullptr && prev->state == Process::ProcessState::Running) {
+    Process::Process* const prev = Process::Process::current();
+    if (prev != nullptr && prev->state() == Process::ProcessState::Running) {
         if (g_runqueue.empty()) {
-            prev->timeslice = DEFAULT_TIMESLICE_TICKS;
+            prev->reset_timeslice(DEFAULT_TIMESLICE_TICKS);
             g_in_schedule = false;
             return;
         }
-        prev->state = Process::ProcessState::Ready;
+        prev->set_state(Process::ProcessState::Ready);
         g_runqueue.enqueue(prev);
     }
 
     Process::Process* next = g_runqueue.dequeue();
-    while (next != nullptr && next->state != Process::ProcessState::Ready) {
+    while (next != nullptr && next->state() != Process::ProcessState::Ready) {
         next = g_runqueue.dequeue();
     }
 
     if (next == nullptr) {
-        Process::set_current_process(nullptr);
+        Process::Process::set_current(nullptr);
         g_in_schedule = false;
         if (prev != nullptr) {
             HAL::KernelContext* const prev_kctx =
-                (prev->state == Process::ProcessState::Zombie) ? nullptr : &prev->kctx;
+                (prev->state() == Process::ProcessState::Zombie) ? nullptr : &prev->kctx();
             cpu.switch_kernel_context(prev_kctx, &g_idle_kctx);
         }
         return;
     }
 
-    if (!next->kctx_initialized) {
-        Process::prepare_process_kstack(*next);
+    if (!next->is_kctx_initialized()) {
+        next->prepare_kstack();
     }
 
-    next->state = Process::ProcessState::Running;
-    if (next->timeslice == 0U) {
-        next->timeslice = DEFAULT_TIMESLICE_TICKS;
+    next->set_state(Process::ProcessState::Running);
+    if (next->timeslice() == 0U) {
+        next->reset_timeslice(DEFAULT_TIMESLICE_TICKS);
     }
-    Process::set_current_process(next);
+    Process::Process::set_current(next);
 
-    if (next->address_space.is_valid()) {
-        next->address_space.activate();
+    if (next->address_space().is_valid()) {
+        next->address_space().activate();
     }
 
     g_in_schedule = false;
@@ -194,30 +194,23 @@ void schedule() noexcept {
     HAL::KernelContext* prev_kctx = nullptr;
     if (prev == nullptr) {
         prev_kctx = &g_idle_kctx;
-    } else if (prev->state != Process::ProcessState::Zombie) {
-        prev_kctx = &prev->kctx;
+    } else if (prev->state() != Process::ProcessState::Zombie) {
+        prev_kctx = &prev->kctx();
     }
 
-    cpu.switch_kernel_context(prev_kctx, &next->kctx);
+    cpu.switch_kernel_context(prev_kctx, &next->kctx());
 }
 
 void on_timer_tick(bool from_user) noexcept {
-    const Sync::IrqGuard irq_guard{};
+    const Sync::IrqGuard irq_guard;
     g_timer_ticks++;
 
-    auto* const current = Process::current_process();
-    if (current != nullptr && current->state == Process::ProcessState::Running) {
-        if (from_user) {
-            current->utime++;
-        } else {
-            current->stime++;
-        }
+    auto* const current = Process::Process::current();
+    if (current != nullptr && current->state() == Process::ProcessState::Running) {
+        current->record_cpu_tick(from_user);
 
-        if (current->timeslice > 0U) {
-            current->timeslice--;
-        }
-        if (current->timeslice == 0U) {
-            current->timeslice = DEFAULT_TIMESLICE_TICKS;
+        if (current->tick_timeslice()) {
+            current->reset_timeslice(DEFAULT_TIMESLICE_TICKS);
             schedule();
         }
     }
@@ -229,10 +222,9 @@ uint64_t timer_ticks() noexcept {
 
 void run_until_idle() noexcept {
     auto& cpu = HAL::get_cpu();
-    const bool irq_was_enabled = cpu.interrupts_enabled();
-    cpu.disable_interrupts();
+    const Sync::IrqGuard irq_guard;
 
-    while (Process::has_runnable_processes()) {
+    while (Process::Process::has_runnable()) {
         if (!g_runqueue.empty()) {
             schedule();
         } else {
@@ -243,10 +235,6 @@ void run_until_idle() noexcept {
             cpu.halt();
             cpu.disable_interrupts();
         }
-    }
-
-    if (irq_was_enabled) {
-        cpu.enable_interrupts();
     }
 }
 

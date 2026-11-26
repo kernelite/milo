@@ -7,7 +7,7 @@
 namespace Kernel::Syscalls {
 
 int64_t sys_getrusage(int32_t who, uintptr_t user_usage) noexcept {
-    auto* const proc = Kernel::Process::current_process();
+    auto* const proc = Kernel::Process::Process::current();
     if (proc == nullptr) {
         return ERR_EINVAL;
     }
@@ -15,8 +15,8 @@ int64_t sys_getrusage(int32_t who, uintptr_t user_usage) noexcept {
         return ERR_EINVAL;
     }
 
-    const uint64_t uticks = (who == RUSAGE_CHILDREN) ? proc->cutime : proc->utime;
-    const uint64_t sticks = (who == RUSAGE_CHILDREN) ? proc->cstime : proc->stime;
+    const uint64_t uticks = (who == RUSAGE_CHILDREN) ? proc->cutime() : proc->utime();
+    const uint64_t sticks = (who == RUSAGE_CHILDREN) ? proc->cstime() : proc->stime();
     // Timer runs at 100 Hz (10,000 microseconds per tick)
     const Kernel::Time::Duration user_time =
         Kernel::Time::Duration::from_microseconds(uticks * 10000ULL);
@@ -27,11 +27,11 @@ int64_t sys_getrusage(int32_t who, uintptr_t user_usage) noexcept {
     usage.ru_utime = user_time.to_linux_timeval();
     usage.ru_stime = sys_time.to_linux_timeval();
 
-    return Kernel::MM::copy_to_user(proc->address_space, user_usage, &usage, sizeof(usage));
+    return Kernel::MM::copy_to_user(proc->address_space(), user_usage, &usage, sizeof(usage));
 }
 
 int64_t sys_getrandom(uintptr_t user_buf, uint64_t raw_buflen, uint64_t flags) noexcept {
-    auto* const proc = Kernel::Process::current_process();
+    auto* const proc = Kernel::Process::Process::current();
     if (proc == nullptr) {
         return ERR_EINVAL;
     }
@@ -43,7 +43,7 @@ int64_t sys_getrandom(uintptr_t user_buf, uint64_t raw_buflen, uint64_t flags) n
     }
 
     const auto buflen = static_cast<size_t>(raw_buflen);
-    const uintptr_t root_paddr = proc->address_space.root_paddr();
+    const uintptr_t root_paddr = proc->address_space().root_paddr();
     if (!validate_user_write_range(root_paddr, user_buf, buflen)) {
         return ERR_EFAULT;
     }
@@ -53,7 +53,7 @@ int64_t sys_getrandom(uintptr_t user_buf, uint64_t raw_buflen, uint64_t flags) n
 
     static uint64_t entropy_state = 0x243F6A8885A308D3ULL;
     entropy_state ^= HAL::QemuVirt::GenericTimer::counter_ticks();
-    entropy_state ^= static_cast<uint64_t>(proc->pid) << 32U;
+    entropy_state ^= static_cast<uint64_t>(proc->pid()) << 32U;
 
     uint8_t kbuf[256]{};
     size_t written = 0U;
@@ -85,13 +85,14 @@ int64_t sys_getrandom(uintptr_t user_buf, uint64_t raw_buflen, uint64_t flags) n
 }
 
 int64_t sys_nanosleep(uintptr_t user_req, uintptr_t user_rem) noexcept {
-    auto* const proc = Kernel::Process::current_process();
+    auto* const proc = Kernel::Process::Process::current();
     if (proc == nullptr) {
         return ERR_EINVAL;
     }
 
     linux_timespec raw_req{};
-    if (Kernel::MM::copy_from_user(proc->address_space, &raw_req, user_req, sizeof(raw_req)) < 0) {
+    if (Kernel::MM::copy_from_user(proc->address_space(), &raw_req, user_req, sizeof(raw_req)) <
+        0) {
         return ERR_EFAULT;
     }
 
@@ -111,12 +112,12 @@ int64_t sys_nanosleep(uintptr_t user_req, uintptr_t user_rem) noexcept {
             break;
         }
 
-        if (Kernel::Process::has_unblocked_pending_signal(*proc)) {
+        if (proc->signals().has_unblocked_pending()) {
             if (user_rem != 0U && freq > 0ULL) {
                 const uint64_t rem_ticks = wait_ticks - elapsed;
                 const linux_timespec rem =
                     Kernel::Time::Duration::from_ticks(rem_ticks, freq).to_linux_timespec();
-                if (Kernel::MM::copy_to_user(proc->address_space, user_rem, &rem, sizeof(rem)) <
+                if (Kernel::MM::copy_to_user(proc->address_space(), user_rem, &rem, sizeof(rem)) <
                     0) {
                     return ERR_EFAULT;
                 }
@@ -129,7 +130,7 @@ int64_t sys_nanosleep(uintptr_t user_req, uintptr_t user_rem) noexcept {
 
     if (user_rem != 0U) {
         constexpr linux_timespec zero_rem = Kernel::Time::Duration::zero().to_linux_timespec();
-        if (Kernel::MM::copy_to_user(proc->address_space, user_rem, &zero_rem, sizeof(zero_rem)) <
+        if (Kernel::MM::copy_to_user(proc->address_space(), user_rem, &zero_rem, sizeof(zero_rem)) <
             0) {
             return ERR_EFAULT;
         }
@@ -139,19 +140,19 @@ int64_t sys_nanosleep(uintptr_t user_req, uintptr_t user_rem) noexcept {
 }
 
 int64_t sys_times(uintptr_t user_buf) noexcept {
-    auto* const proc = Kernel::Process::current_process();
+    auto* const proc = Kernel::Process::Process::current();
     if (proc == nullptr) {
         return ERR_EINVAL;
     }
 
     if (user_buf != 0U) {
         const linux_tms tms_val{
-            .tms_utime = static_cast<int64_t>(proc->utime),
-            .tms_stime = static_cast<int64_t>(proc->stime),
-            .tms_cutime = static_cast<int64_t>(proc->cutime),
-            .tms_cstime = static_cast<int64_t>(proc->cstime),
+            .tms_utime = static_cast<int64_t>(proc->utime()),
+            .tms_stime = static_cast<int64_t>(proc->stime()),
+            .tms_cutime = static_cast<int64_t>(proc->cutime()),
+            .tms_cstime = static_cast<int64_t>(proc->cstime()),
         };
-        if (Kernel::MM::copy_to_user(proc->address_space, user_buf, &tms_val, sizeof(tms_val)) <
+        if (Kernel::MM::copy_to_user(proc->address_space(), user_buf, &tms_val, sizeof(tms_val)) <
             0) {
             return ERR_EFAULT;
         }
@@ -161,7 +162,7 @@ int64_t sys_times(uintptr_t user_buf) noexcept {
 }
 
 int64_t sys_uname(uintptr_t user_buf) noexcept {
-    auto* const proc = Kernel::Process::current_process();
+    auto* const proc = Kernel::Process::Process::current();
     if (proc == nullptr) {
         return ERR_EINVAL;
     }
@@ -174,22 +175,22 @@ int64_t sys_uname(uintptr_t user_buf) noexcept {
     cstr_copy(uts.machine, "aarch64", sizeof(uts.machine));
     cstr_copy(uts.domainname, "(none)", sizeof(uts.domainname));
 
-    return Kernel::MM::copy_to_user(proc->address_space, user_buf, &uts, sizeof(uts));
+    return Kernel::MM::copy_to_user(proc->address_space(), user_buf, &uts, sizeof(uts));
 }
 
 int64_t sys_clock_gettime(uint64_t clk_id, uintptr_t user_tp) noexcept {
     (void)clk_id;
-    auto* const proc = Kernel::Process::current_process();
+    auto* const proc = Kernel::Process::Process::current();
     if (proc == nullptr) {
         return ERR_EINVAL;
     }
 
     const linux_timespec time_spec = monotonic_now().to_linux_timespec();
-    return Kernel::MM::copy_to_user(proc->address_space, user_tp, &time_spec, sizeof(time_spec));
+    return Kernel::MM::copy_to_user(proc->address_space(), user_tp, &time_spec, sizeof(time_spec));
 }
 
 int64_t sys_sysinfo(uintptr_t user_info) noexcept {
-    auto* const proc = Kernel::Process::current_process();
+    auto* const proc = Kernel::Process::Process::current();
     if (proc == nullptr) {
         return ERR_EINVAL;
     }
@@ -201,10 +202,10 @@ int64_t sys_sysinfo(uintptr_t user_info) noexcept {
     info.uptime = uptime.tv_sec;
     info.totalram = platform.ram_size;
     info.freeram = Kernel::MM::pfa_free_pages_count() * platform.page_size;
-    info.procs = static_cast<uint16_t>(Kernel::Process::active_process_count());
+    info.procs = static_cast<uint16_t>(Kernel::Process::Process::active_count());
     info.mem_unit = 1U;
 
-    return Kernel::MM::copy_to_user(proc->address_space, user_info, &info, sizeof(info));
+    return Kernel::MM::copy_to_user(proc->address_space(), user_info, &info, sizeof(info));
 }
 
 } // namespace Kernel::Syscalls

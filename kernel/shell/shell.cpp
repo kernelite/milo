@@ -160,11 +160,7 @@ void launch_initrd_shell(const char* bin_path, const char* argv0, const char* sh
         return;
     }
 
-    size_t idx = 0U;
-    for (; idx + 1U < Kernel::Process::MAX_PATH_LEN && bin_path[idx] != '\0'; ++idx) {
-        proc->exe_path[idx] = bin_path[idx];
-    }
-    proc->exe_path[idx] = '\0';
+    proc->set_exe_path(bin_path);
 
     Kernel::Loader::Elf64_auxv_t auxv[Kernel::Process::STANDARD_AUXV_COUNT]{};
     const size_t auxv_count = Kernel::Process::populate_standard_auxv(
@@ -172,31 +168,31 @@ void launch_initrd_shell(const char* bin_path, const char* argv0, const char* sh
 
     Kernel::Process::attach_loaded_elf(*proc, static_cast<Kernel::Loader::LoadedElf&&>(*load_res));
 
-    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space);
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space());
     if (!stack_res.is_ok()) {
         Kernel::Process::release_process(*proc);
         print_str("[ERROR] Failed to allocate user stack.\r\n");
         return;
     }
-    proc->user_stack = stack_res.value();
+    proc->set_user_stack(stack_res.value());
 
     const char* const argv[] = {argv0, nullptr};
     const char* const envp[] = {
         "PATH=/bin:/usr/bin", "HOME=/", "TERM=vt100", shell_env, ps1_env, nullptr};
-    if (!Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack, 1, argv, envp, auxv,
-                                                             auxv_count)
+    if (!Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack(), 1, argv, envp,
+                                                             auxv, auxv_count)
              .is_ok()) {
         Kernel::Process::release_process(*proc);
         print_str("[ERROR] Failed to build System V ABI stack.\r\n");
         return;
     }
 
-    Kernel::Process::init_user_cpu_context(proc->context, proc->entry_point,
-                                           proc->user_stack.final_sp_el0, proc->user_stack.argc,
-                                           proc->user_stack.argv_vaddr);
+    Kernel::Process::init_user_cpu_context(proc->context(), proc->entry_point(),
+                                           proc->user_stack().final_sp_el0, proc->user_stack().argc,
+                                           proc->user_stack().argv_vaddr);
 
     const uint32_t prev_fg_pgid = Kernel::Process::get_foreground_pgid();
-    Kernel::Process::set_foreground_pgid(proc->pgid);
+    Kernel::Process::set_foreground_pgid(proc->pgid());
 
     print_str("[KERNEL] Launching interactive ");
     print_str(bin_path);
@@ -257,7 +253,7 @@ void cmd_test_blk() noexcept {
     if (cur != nullptr) {
         assert_test(delta_sleeps >= 2ULL,
                     "Requesting process slept on WaitQueue while I/O was in flight");
-        assert_test(blk->last_woken_pid() == cur->pid,
+        assert_test(blk->last_woken_pid() == cur->pid(),
                     "GICv2 IRQ handler woke the exact waiting PID");
     } else {
         print_str("  [INFO] Running in boot context (current_process == nullptr); "
@@ -884,15 +880,15 @@ void cmd_test_dynamic_io() noexcept {
     const size_t procs_before = Kernel::Process::active_process_count();
 
     auto* const proc = Kernel::Process::allocate_process(0U);
-    assert_test(proc != nullptr && proc->fds.capacity() == Kernel::Process::INITIAL_FD_CAPACITY,
+    assert_test(proc != nullptr && proc->fds().capacity() == Kernel::Process::INITIAL_FD_CAPACITY,
                 "PCB initialized dynamic fd_table with 16 slots");
     if (proc == nullptr) {
         return;
     }
 
-    assert_test(proc->rlim_nofile_cur == 1024ULL && proc->rlim_nofile_max == 4096ULL,
+    assert_test(proc->rlim_nofile().rlim_cur == 1024ULL && proc->rlim_nofile().rlim_max == 4096ULL,
                 "RLIMIT_NOFILE defaults set to 1024 soft / 4096 hard");
-    assert_test(proc->rlim_nproc_cur >= 64ULL,
+    assert_test(proc->rlim_nproc().rlim_cur >= 64ULL,
                 "RLIMIT_NPROC dynamically computed from platform RAM size");
 
     // 1. Allocate 100 concurrent heap-backed pipes (200 FDs -> grows fd_table 16 -> 32 -> 64 -> 128
@@ -903,7 +899,7 @@ void cmd_test_dynamic_io() noexcept {
     bool pipes_ok = true;
 
     for (size_t i = 0U; i < PIPE_COUNT; ++i) {
-        const int rfd = proc->fds.allocate(proc->rlim_nofile_cur, 0U);
+        const int rfd = proc->fds().allocate(proc->rlim_nofile().rlim_cur, 0U);
         if (rfd < 0) {
             pipes_ok = false;
             break;
@@ -916,33 +912,34 @@ void cmd_test_dynamic_io() noexcept {
             break;
         }
 
-        (void)proc->fds.install(static_cast<size_t>(rfd), read_file, 0U);
+        (void)proc->fds().install(static_cast<size_t>(rfd), read_file, 0U);
 
-        const int wfd = proc->fds.allocate(proc->rlim_nofile_cur, static_cast<size_t>(rfd) + 1U);
+        const int wfd =
+            proc->fds().allocate(proc->rlim_nofile().rlim_cur, static_cast<size_t>(rfd) + 1U);
         if (wfd < 0) {
-            proc->fds.close(static_cast<size_t>(rfd));
+            proc->fds().close(static_cast<size_t>(rfd));
             (void)Kernel::FS::vfs_close(write_file);
             pipes_ok = false;
             break;
         }
 
-        (void)proc->fds.install(static_cast<size_t>(wfd), write_file, 0U);
+        (void)proc->fds().install(static_cast<size_t>(wfd), write_file, 0U);
         read_fds[i] = rfd;
         write_fds[i] = wfd;
     }
 
-    assert_test(pipes_ok && proc->fds.capacity() == 256U,
+    assert_test(pipes_ok && proc->fds().capacity() == 256U,
                 "Allocated 100 concurrent heap pipes and geometrically grew fd_table to 256 slots");
 
     // 2. Grow fd_table past 512 slots to validate high-FD indexing
-    const bool grew_512 = proc->fds.ensure_capacity(520U, proc->rlim_nofile_cur);
-    assert_test(grew_512 && proc->fds.capacity() == 1024U,
+    const bool grew_512 = proc->fds().ensure_capacity(520U, proc->rlim_nofile().rlim_cur);
+    assert_test(grew_512 && proc->fds().capacity() == 1024U,
                 "Geometric krealloc expanded fd_table cleanly to 1024 slots");
 
     // 3. Close all pipes and release PCB
     for (size_t i = 0U; i < PIPE_COUNT; ++i) {
-        proc->fds.close(static_cast<size_t>(read_fds[i]));
-        proc->fds.close(static_cast<size_t>(write_fds[i]));
+        proc->fds().close(static_cast<size_t>(read_fds[i]));
+        proc->fds().close(static_cast<size_t>(write_fds[i]));
     }
     Kernel::Process::release_process(*proc);
 
@@ -1259,12 +1256,12 @@ void cmd_test_syscall() noexcept {
     if (proc == nullptr) {
         return;
     }
-    assert_test(proc->pid > 0U && proc->state == Kernel::Process::ProcessState::Ready,
+    assert_test(proc->pid() > 0U && proc->state() == Kernel::Process::ProcessState::Ready,
                 "PCB initialized with valid PID and Ready state");
-    assert_test(proc->fds.is_initialized() && proc->fds.at(0U) != nullptr &&
-                    proc->fds.at(0U)->is_tty() && proc->fds.at(1U) != nullptr &&
-                    proc->fds.at(1U)->is_tty() && proc->fds.at(2U) != nullptr &&
-                    proc->fds.at(2U)->is_tty(),
+    assert_test(proc->fds().is_initialized() && proc->fds().at(0U) != nullptr &&
+                    proc->fds().at(0U)->is_tty() && proc->fds().at(1U) != nullptr &&
+                    proc->fds().at(1U)->is_tty() && proc->fds().at(2U) != nullptr &&
+                    proc->fds().at(2U)->is_tty(),
                 "PCB initialized FDs 0, 1, and 2 as ConsoleTty descriptors");
 
     auto as_res = Kernel::MM::AddressSpace::create();
@@ -1273,7 +1270,7 @@ void cmd_test_syscall() noexcept {
         Kernel::Process::release_process(*proc);
         return;
     }
-    proc->address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
+    proc->address_space() = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
 
     // Map a 2-page user data buffer at 0x00500000..0x00501FFF (leaving 0x00502000 unmapped)
     constexpr uintptr_t DATA_PAGE0_VADDR = 0x0000000000500000ULL;
@@ -1288,9 +1285,9 @@ void cmd_test_syscall() noexcept {
         HAL::PageFlags::User | HAL::PageFlags::Read | HAL::PageFlags::Write;
     const HAL::PageFlags user_ro = HAL::PageFlags::User | HAL::PageFlags::Read;
 
-    proc->address_space.map_user_page(DATA_PAGE0_VADDR, data_paddr0, user_rw);
-    proc->address_space.map_user_page(DATA_PAGE1_VADDR, data_paddr1, user_rw);
-    proc->address_space.map_user_page(RO_PAGE_VADDR, ro_paddr, user_ro);
+    proc->address_space().map_user_page(DATA_PAGE0_VADDR, data_paddr0, user_rw);
+    proc->address_space().map_user_page(DATA_PAGE1_VADDR, data_paddr1, user_rw);
+    proc->address_space().map_user_page(RO_PAGE_VADDR, ro_paddr, user_ro);
 
     // 1. Direct copy_to_user / copy_from_user boundary checks (straddling 0x500FF8..0x501007)
     constexpr uintptr_t STRADDLE_VADDR = DATA_PAGE1_VADDR - 8U;
@@ -1304,34 +1301,34 @@ void cmd_test_syscall() noexcept {
                                '1', '2', '3', '4', '5', '6', '7', '\0'};
     char readback_msg[16]{};
 
-    assert_test(Kernel::MM::copy_to_user(proc->address_space, STRADDLE_VADDR, test_msg, 16U) == 0,
+    assert_test(Kernel::MM::copy_to_user(proc->address_space(), STRADDLE_VADDR, test_msg, 16U) == 0,
                 "copy_to_user succeeded across page boundary");
     assert_test(
-        Kernel::MM::copy_from_user(proc->address_space, readback_msg, STRADDLE_VADDR, 16U) == 0 &&
+        Kernel::MM::copy_from_user(proc->address_space(), readback_msg, STRADDLE_VADDR, 16U) == 0 &&
             streq(readback_msg, test_msg),
         "copy_from_user reconstructed page-straddling buffer accurately");
-    assert_test(Kernel::MM::copy_to_user(proc->address_space, RO_PAGE_VADDR, test_msg, 4U) == -14,
+    assert_test(Kernel::MM::copy_to_user(proc->address_space(), RO_PAGE_VADDR, test_msg, 4U) == -14,
                 "copy_to_user rejected write to read-only user page with -EFAULT (-14)");
-    assert_test(Kernel::MM::copy_from_user(proc->address_space, readback_msg, CROSSING_VADDR,
+    assert_test(Kernel::MM::copy_from_user(proc->address_space(), readback_msg, CROSSING_VADDR,
                                            CROSSING_LEN) == -14,
                 "copy_from_user rejected buffer crossing into unmapped page with -EFAULT (-14)");
-    assert_test(
-        Kernel::MM::copy_from_user(proc->address_space, readback_msg, mmio_probe_vaddr, 4U) == -14,
-        "copy_from_user rejected privileged MMIO address with -EFAULT (-14)");
-    assert_test(Kernel::MM::copy_from_user(proc->address_space, readback_msg, kernel_probe_vaddr,
+    assert_test(Kernel::MM::copy_from_user(proc->address_space(), readback_msg, mmio_probe_vaddr,
+                                           4U) == -14,
+                "copy_from_user rejected privileged MMIO address with -EFAULT (-14)");
+    assert_test(Kernel::MM::copy_from_user(proc->address_space(), readback_msg, kernel_probe_vaddr,
                                            4U) == -14,
                 "copy_from_user rejected kernel address >= user_va_limit with -EFAULT (-14)");
 
     // 2. Build EL0 payload via HAL::Test testing SYS_WRITE, -EFAULT, -EBADF, -ENOSYS, and SYS_EXIT
     constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
     const uintptr_t code_paddr = Kernel::MM::alloc_frame();
-    proc->address_space.map_user_page(CODE_VADDR, code_paddr,
-                                      HAL::PageFlags::User | HAL::PageFlags::Read |
-                                          HAL::PageFlags::Execute);
+    proc->address_space().map_user_page(CODE_VADDR, code_paddr,
+                                        HAL::PageFlags::User | HAL::PageFlags::Read |
+                                            HAL::PageFlags::Execute);
 
     const char uart_msg[] = "  [EL0] Valid SYS_WRITE payload!\r\n";
     constexpr size_t UART_MSG_LEN = sizeof(uart_msg) - 1U;
-    Kernel::MM::copy_to_user(proc->address_space, DATA_PAGE0_VADDR, uart_msg, UART_MSG_LEN);
+    Kernel::MM::copy_to_user(proc->address_space(), DATA_PAGE0_VADDR, uart_msg, UART_MSG_LEN);
 
     auto* const k_code = reinterpret_cast<void*>(Kernel::MM::phys_to_virt(code_paddr));
     const size_t code_bytes = HAL::Test::write_user_syscall_suite_program(
@@ -1339,27 +1336,28 @@ void cmd_test_syscall() noexcept {
     HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(k_code), code_bytes);
     HAL::get_cpu().invalidate_icache();
 
-    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space);
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space());
     assert_test(stack_res.is_ok(), "Allocated and mapped user stack for PCB");
-    proc->user_stack = stack_res.value();
+    proc->set_user_stack(stack_res.value());
 
     const char* const argv[] = {"syscall_test"};
-    Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack, 1, argv);
+    Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack(), 1, argv);
 
-    proc->entry_point = CODE_VADDR;
-    Kernel::Process::init_user_cpu_context(proc->context, CODE_VADDR, proc->user_stack.final_sp_el0,
-                                           proc->user_stack.argc, proc->user_stack.argv_vaddr);
+    proc->set_entry_point(CODE_VADDR);
+    Kernel::Process::init_user_cpu_context(proc->context(), CODE_VADDR,
+                                           proc->user_stack().final_sp_el0, proc->user_stack().argc,
+                                           proc->user_stack().argv_vaddr);
 
     const int64_t exit_status = Kernel::Process::execute_process(*proc);
 
     assert_test(exit_status == 0,
                 "EL0 syscalls verified (-EFAULT, -EBADF, -ENOSYS, valid SYS_WRITE & SYS_EXIT)");
-    assert_test(proc->state == Kernel::Process::ProcessState::Zombie &&
-                    proc->exit_status == exit_status,
+    assert_test(proc->state() == Kernel::Process::ProcessState::Zombie &&
+                    proc->exit_status() == exit_status,
                 "PCB transitioned to Zombie state and recorded exit_status");
 
     // 3. Execute EL0 TTY ioctl & non-blocking sys_read verification suite
-    assert_test(proc->fds.init(Kernel::Process::INITIAL_FD_CAPACITY),
+    assert_test(proc->fds().init(Kernel::Process::INITIAL_FD_CAPACITY),
                 "Re-initialized dynamic fd_table for TTY ioctl verification suite");
     Kernel::FS::File* tty_in = nullptr;
     Kernel::FS::File* tty_out = nullptr;
@@ -1367,9 +1365,9 @@ void cmd_test_syscall() noexcept {
     (void)Kernel::FS::devfs_open_console(Kernel::FS::kOpenReadOnly, &tty_in);
     (void)Kernel::FS::devfs_open_console(Kernel::FS::kOpenWriteOnly, &tty_out);
     (void)Kernel::FS::devfs_open_console(Kernel::FS::kOpenWriteOnly, &tty_err);
-    (void)proc->fds.install(0U, tty_in, 0U);
-    (void)proc->fds.install(1U, tty_out, 0U);
-    (void)proc->fds.install(2U, tty_err, 0U);
+    (void)proc->fds().install(0U, tty_in, 0U);
+    (void)proc->fds().install(1U, tty_out, 0U);
+    (void)proc->fds().install(2U, tty_err, 0U);
 
     constexpr uint64_t NON_TTY_FD = 3ULL;
     Kernel::FS::File* non_tty_file = nullptr;
@@ -1387,7 +1385,7 @@ void cmd_test_syscall() noexcept {
             }
         }
     }
-    (void)proc->fds.install(static_cast<size_t>(NON_TTY_FD), non_tty_file, 0U);
+    (void)proc->fds().install(static_cast<size_t>(NON_TTY_FD), non_tty_file, 0U);
 
     constexpr uintptr_t IOCTL_ARGS_VADDR = DATA_PAGE0_VADDR + 0x100ULL;
     const HAL::Test::TtyIoctlSuiteArgs ioctl_args{
@@ -1397,16 +1395,16 @@ void cmd_test_syscall() noexcept {
         .crossing_buf_len = CROSSING_LEN,
         .non_tty_fd = NON_TTY_FD,
     };
-    Kernel::MM::copy_to_user(proc->address_space, IOCTL_ARGS_VADDR, &ioctl_args,
+    Kernel::MM::copy_to_user(proc->address_space(), IOCTL_ARGS_VADDR, &ioctl_args,
                              sizeof(ioctl_args));
 
     const size_t tty_code_bytes = HAL::Test::write_user_tty_ioctl_suite_program(k_code);
     HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(k_code), tty_code_bytes);
     HAL::get_cpu().invalidate_icache();
 
-    proc->state = Kernel::Process::ProcessState::Ready;
-    Kernel::Process::init_user_cpu_context(proc->context, CODE_VADDR, proc->user_stack.final_sp_el0,
-                                           IOCTL_ARGS_VADDR, 0ULL);
+    proc->set_state(Kernel::Process::ProcessState::Ready);
+    Kernel::Process::init_user_cpu_context(proc->context(), CODE_VADDR,
+                                           proc->user_stack().final_sp_el0, IOCTL_ARGS_VADDR, 0ULL);
 
     const int64_t tty_exit_status = Kernel::Process::execute_process(*proc);
     assert_test(tty_exit_status == 0,
@@ -1436,19 +1434,19 @@ void cmd_test_tty_echo() noexcept {
         print_str("[FAIL] Failed to create AddressSpace\r\n");
         return;
     }
-    proc->address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
+    proc->address_space() = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
 
     constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
     constexpr uintptr_t DATA_VADDR = 0x0000000000500000ULL;
     const uintptr_t code_paddr = Kernel::MM::alloc_frame();
     const uintptr_t data_paddr = Kernel::MM::alloc_frame();
 
-    proc->address_space.map_user_page(CODE_VADDR, code_paddr,
-                                      HAL::PageFlags::User | HAL::PageFlags::Read |
-                                          HAL::PageFlags::Execute);
-    proc->address_space.map_user_page(DATA_VADDR, data_paddr,
-                                      HAL::PageFlags::User | HAL::PageFlags::Read |
-                                          HAL::PageFlags::Write);
+    proc->address_space().map_user_page(CODE_VADDR, code_paddr,
+                                        HAL::PageFlags::User | HAL::PageFlags::Read |
+                                            HAL::PageFlags::Execute);
+    proc->address_space().map_user_page(DATA_VADDR, data_paddr,
+                                        HAL::PageFlags::User | HAL::PageFlags::Read |
+                                            HAL::PageFlags::Write);
 
     const char prompt[] = "  [EL0 TTY] Type a line and press Enter: ";
     const char prefix[] = "  [EL0 TTY] Echoed line: ";
@@ -1469,29 +1467,29 @@ void cmd_test_tty_echo() noexcept {
         .line_buf_cap = LINE_BUF_CAP,
     };
 
-    Kernel::MM::copy_to_user(proc->address_space, PROMPT_VADDR, prompt, PROMPT_LEN);
-    Kernel::MM::copy_to_user(proc->address_space, PREFIX_VADDR, prefix, PREFIX_LEN);
-    Kernel::MM::copy_to_user(proc->address_space, ARGS_VADDR, &echo_args, sizeof(echo_args));
+    Kernel::MM::copy_to_user(proc->address_space(), PROMPT_VADDR, prompt, PROMPT_LEN);
+    Kernel::MM::copy_to_user(proc->address_space(), PREFIX_VADDR, prefix, PREFIX_LEN);
+    Kernel::MM::copy_to_user(proc->address_space(), ARGS_VADDR, &echo_args, sizeof(echo_args));
 
     auto* const k_code = reinterpret_cast<void*>(Kernel::MM::phys_to_virt(code_paddr));
     const size_t code_bytes = HAL::Test::write_user_tty_echo_program(k_code);
     HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(k_code), code_bytes);
     HAL::get_cpu().invalidate_icache();
 
-    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space);
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space());
     if (!stack_res.is_ok()) {
         Kernel::Process::release_process(*proc);
         print_str("[FAIL] Failed to allocate user stack\r\n");
         return;
     }
-    proc->user_stack = stack_res.value();
+    proc->set_user_stack(stack_res.value());
 
     const char* const argv[] = {"tty_echo"};
-    Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack, 1, argv);
+    Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack(), 1, argv);
 
-    proc->entry_point = CODE_VADDR;
-    Kernel::Process::init_user_cpu_context(proc->context, CODE_VADDR, proc->user_stack.final_sp_el0,
-                                           ARGS_VADDR, 0ULL);
+    proc->set_entry_point(CODE_VADDR);
+    Kernel::Process::init_user_cpu_context(proc->context(), CODE_VADDR,
+                                           proc->user_stack().final_sp_el0, ARGS_VADDR, 0ULL);
 
     const int64_t exit_status = Kernel::Process::execute_process(*proc);
     assert_test(exit_status == 0, "EL0 interactive TTY read/write echo completed cleanly");
@@ -1572,31 +1570,32 @@ void cmd_test_user_mm() noexcept {
     }
 
     Kernel::Process::attach_loaded_elf(*proc, static_cast<Kernel::Loader::LoadedElf&&>(*load_res));
-    assert_test(proc->brk_start == EXPECTED_BRK_START && proc->brk_current == EXPECTED_BRK_START,
+    assert_test(proc->brk_start() == EXPECTED_BRK_START &&
+                    proc->brk_current() == EXPECTED_BRK_START,
                 "PCB brk_start and brk_current initialized to LoadedElf::max_vaddr");
 
     constexpr uintptr_t ARGS_VADDR = 0x0000000000401540ULL;
     const HAL::Test::UserMmSuiteArgs mm_args{.expected_brk_start = EXPECTED_BRK_START};
-    Kernel::MM::copy_to_user(proc->address_space, ARGS_VADDR, &mm_args, sizeof(mm_args));
+    Kernel::MM::copy_to_user(proc->address_space(), ARGS_VADDR, &mm_args, sizeof(mm_args));
 
-    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space);
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space());
     assert_test(stack_res.is_ok(), "Allocated and mapped user stack");
     if (!stack_res.is_ok()) {
         Kernel::Process::release_process(*proc);
         return;
     }
-    proc->user_stack = stack_res.value();
+    proc->set_user_stack(stack_res.value());
 
     const char* const argv[] = {"user_mm_test"};
-    Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack, 1, argv);
+    Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack(), 1, argv);
 
-    Kernel::Process::init_user_cpu_context(proc->context, proc->entry_point,
-                                           proc->user_stack.final_sp_el0, ARGS_VADDR, 0ULL);
+    Kernel::Process::init_user_cpu_context(proc->context(), proc->entry_point(),
+                                           proc->user_stack().final_sp_el0, ARGS_VADDR, 0ULL);
 
     const int64_t exit_status = Kernel::Process::execute_process(*proc);
     assert_test(exit_status == 0,
                 "EL0 sys_brk (expand/shrink/ceiling) & sys_mmap/sys_munmap verified");
-    assert_test(proc->brk_current == EXPECTED_BRK_START,
+    assert_test(proc->brk_current() == EXPECTED_BRK_START,
                 "Shrinking brk restored brk_current to brk_start");
 
     Kernel::Process::release_process(*proc);
@@ -1617,11 +1616,12 @@ void cmd_test_proc_exit() noexcept {
 
     // 1) Test SYS_GETPID (#172) + SYS_EXIT (#93)
     auto* const proc1 = Kernel::Process::allocate_process(0U);
-    assert_test(proc1 != nullptr && proc1->pid > 0U, "Allocated PCB 1 with non-zero monotonic PID");
+    assert_test(proc1 != nullptr && proc1->pid() > 0U,
+                "Allocated PCB 1 with non-zero monotonic PID");
     if (proc1 == nullptr) {
         return;
     }
-    const uint32_t pid1 = proc1->pid;
+    const uint32_t pid1 = proc1->pid();
 
     auto as1_res = Kernel::MM::AddressSpace::create();
     if (!as1_res.is_ok()) {
@@ -1629,37 +1629,37 @@ void cmd_test_proc_exit() noexcept {
         print_str("[FAIL] Failed to create AddressSpace for PCB 1\r\n");
         return;
     }
-    proc1->address_space = static_cast<Kernel::MM::AddressSpace&&>(as1_res.value());
+    proc1->address_space() = static_cast<Kernel::MM::AddressSpace&&>(as1_res.value());
 
     constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
     const uintptr_t code1_paddr = Kernel::MM::alloc_frame();
-    proc1->address_space.map_user_page(CODE_VADDR, code1_paddr,
-                                       HAL::PageFlags::User | HAL::PageFlags::Read |
-                                           HAL::PageFlags::Execute);
+    proc1->address_space().map_user_page(CODE_VADDR, code1_paddr,
+                                         HAL::PageFlags::User | HAL::PageFlags::Read |
+                                             HAL::PageFlags::Execute);
 
     auto* const k_code1 = reinterpret_cast<void*>(Kernel::MM::phys_to_virt(code1_paddr));
     const size_t code1_bytes = HAL::Test::write_user_proc_lifecycle_program(k_code1);
     HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(k_code1), code1_bytes);
     HAL::get_cpu().invalidate_icache();
 
-    auto stack1_res = Kernel::Process::UserStackBuilder::create_and_map(proc1->address_space);
+    auto stack1_res = Kernel::Process::UserStackBuilder::create_and_map(proc1->address_space());
     if (!stack1_res.is_ok()) {
         Kernel::Process::release_process(*proc1);
         print_str("[FAIL] Failed to allocate user stack for PCB 1\r\n");
         return;
     }
-    proc1->user_stack = stack1_res.value();
+    proc1->set_user_stack(stack1_res.value());
 
     const char* const argv1[] = {"proc_exit_test"};
-    Kernel::Process::UserStackBuilder::build_abi_layout(proc1->user_stack, 1, argv1);
+    Kernel::Process::UserStackBuilder::build_abi_layout(proc1->user_stack(), 1, argv1);
 
-    proc1->entry_point = CODE_VADDR;
-    Kernel::Process::init_user_cpu_context(proc1->context, CODE_VADDR,
-                                           proc1->user_stack.final_sp_el0, pid1, 0ULL);
+    proc1->set_entry_point(CODE_VADDR);
+    Kernel::Process::init_user_cpu_context(proc1->context(), CODE_VADDR,
+                                           proc1->user_stack().final_sp_el0, pid1, 0ULL);
 
     const int64_t status1 = Kernel::Process::execute_process(*proc1);
-    assert_test(status1 == 42 && proc1->state == Kernel::Process::ProcessState::Zombie &&
-                    proc1->exit_status == 42,
+    assert_test(status1 == 42 && proc1->state() == Kernel::Process::ProcessState::Zombie &&
+                    proc1->exit_status() == 42,
                 "SYS_GETPID & SYS_EXIT(42) transitioned PCB 1 to Zombie with status 42");
     assert_test(Kernel::MM::AddressSpace::current_root_paddr() == kernel_root,
                 "TTBR0_EL1 restored to kernel root after SYS_EXIT");
@@ -1711,7 +1711,7 @@ void cmd_test_proc_exit() noexcept {
     }
 
     auto* const proc2 = Kernel::Process::allocate_process(0U);
-    assert_test(proc2 != nullptr && proc2->pid > pid1,
+    assert_test(proc2 != nullptr && proc2->pid() > pid1,
                 "Allocated PCB 2 with strictly monotonic PID");
     if (proc2 == nullptr) {
         load_res->address_space.destroy();
@@ -1720,23 +1720,23 @@ void cmd_test_proc_exit() noexcept {
 
     Kernel::Process::attach_loaded_elf(*proc2, static_cast<Kernel::Loader::LoadedElf&&>(*load_res));
 
-    auto stack2_res = Kernel::Process::UserStackBuilder::create_and_map(proc2->address_space);
+    auto stack2_res = Kernel::Process::UserStackBuilder::create_and_map(proc2->address_space());
     if (!stack2_res.is_ok()) {
         Kernel::Process::release_process(*proc2);
         print_str("[FAIL] Failed to allocate user stack for PCB 2\r\n");
         return;
     }
-    proc2->user_stack = stack2_res.value();
+    proc2->set_user_stack(stack2_res.value());
 
     const char* const argv2[] = {"proc_exit_group_test"};
-    Kernel::Process::UserStackBuilder::build_abi_layout(proc2->user_stack, 1, argv2);
+    Kernel::Process::UserStackBuilder::build_abi_layout(proc2->user_stack(), 1, argv2);
 
-    Kernel::Process::init_user_cpu_context(proc2->context, proc2->entry_point,
-                                           proc2->user_stack.final_sp_el0, proc2->pid, 1ULL);
+    Kernel::Process::init_user_cpu_context(proc2->context(), proc2->entry_point(),
+                                           proc2->user_stack().final_sp_el0, proc2->pid(), 1ULL);
 
     const int64_t status2 = Kernel::Process::execute_process(*proc2);
-    assert_test(status2 == 42 && proc2->state == Kernel::Process::ProcessState::Zombie &&
-                    proc2->exit_status == 42,
+    assert_test(status2 == 42 && proc2->state() == Kernel::Process::ProcessState::Zombie &&
+                    proc2->exit_status() == 42,
                 "SYS_EXIT_GROUP(42) terminated EL0 process and delivered exit status 42");
     assert_test(Kernel::MM::AddressSpace::current_root_paddr() == kernel_root,
                 "TTBR0_EL1 restored to kernel root after SYS_EXIT_GROUP");
@@ -1765,19 +1765,19 @@ void cmd_test_fork_exec() noexcept {
         print_str("[FAIL] Failed to create parent AddressSpace\r\n");
         return;
     }
-    parent->address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
+    parent->address_space() = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
 
     constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
     constexpr uintptr_t DATA_VADDR = 0x0000000000500000ULL;
     const uintptr_t code_paddr = Kernel::MM::alloc_frame();
     const uintptr_t data_paddr = Kernel::MM::alloc_frame();
 
-    parent->address_space.map_user_page(CODE_VADDR, code_paddr,
-                                        HAL::PageFlags::User | HAL::PageFlags::Read |
-                                            HAL::PageFlags::Execute);
-    parent->address_space.map_user_page(DATA_VADDR, data_paddr,
-                                        HAL::PageFlags::User | HAL::PageFlags::Read |
-                                            HAL::PageFlags::Write);
+    parent->address_space().map_user_page(CODE_VADDR, code_paddr,
+                                          HAL::PageFlags::User | HAL::PageFlags::Read |
+                                              HAL::PageFlags::Execute);
+    parent->address_space().map_user_page(DATA_VADDR, data_paddr,
+                                          HAL::PageFlags::User | HAL::PageFlags::Read |
+                                              HAL::PageFlags::Write);
 
     auto* const k_code = reinterpret_cast<void*>(Kernel::MM::phys_to_virt(code_paddr));
     const size_t code_bytes = HAL::Test::write_user_fork_exec_program(k_code);
@@ -1810,28 +1810,29 @@ void cmd_test_fork_exec() noexcept {
         .canary_vaddr = CANARY_VADDR,
     };
 
-    Kernel::MM::copy_to_user(parent->address_space, EXEC_PATH_VADDR, exec_path, sizeof(exec_path));
-    Kernel::MM::copy_to_user(parent->address_space, BAD_PATH_VADDR, bad_path, sizeof(bad_path));
-    Kernel::MM::copy_to_user(parent->address_space, ARG1_VADDR, arg1, sizeof(arg1));
-    Kernel::MM::copy_to_user(parent->address_space, ENV0_VADDR, env0, sizeof(env0));
-    Kernel::MM::copy_to_user(parent->address_space, ARGV_VADDR, user_argv, sizeof(user_argv));
-    Kernel::MM::copy_to_user(parent->address_space, ENVP_VADDR, user_envp, sizeof(user_envp));
-    Kernel::MM::copy_to_user(parent->address_space, ARGS_VADDR, &suite_args, sizeof(suite_args));
+    Kernel::MM::copy_to_user(parent->address_space(), EXEC_PATH_VADDR, exec_path,
+                             sizeof(exec_path));
+    Kernel::MM::copy_to_user(parent->address_space(), BAD_PATH_VADDR, bad_path, sizeof(bad_path));
+    Kernel::MM::copy_to_user(parent->address_space(), ARG1_VADDR, arg1, sizeof(arg1));
+    Kernel::MM::copy_to_user(parent->address_space(), ENV0_VADDR, env0, sizeof(env0));
+    Kernel::MM::copy_to_user(parent->address_space(), ARGV_VADDR, user_argv, sizeof(user_argv));
+    Kernel::MM::copy_to_user(parent->address_space(), ENVP_VADDR, user_envp, sizeof(user_envp));
+    Kernel::MM::copy_to_user(parent->address_space(), ARGS_VADDR, &suite_args, sizeof(suite_args));
 
-    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(parent->address_space);
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(parent->address_space());
     if (!stack_res.is_ok()) {
         Kernel::Process::release_process(*parent);
         print_str("[FAIL] Failed to allocate user stack\r\n");
         return;
     }
-    parent->user_stack = stack_res.value();
+    parent->set_user_stack(stack_res.value());
 
     const char* const init_argv[] = {"fork_exec_parent"};
-    Kernel::Process::UserStackBuilder::build_abi_layout(parent->user_stack, 1, init_argv);
+    Kernel::Process::UserStackBuilder::build_abi_layout(parent->user_stack(), 1, init_argv);
 
-    parent->entry_point = CODE_VADDR;
-    Kernel::Process::init_user_cpu_context(parent->context, CODE_VADDR,
-                                           parent->user_stack.final_sp_el0, ARGS_VADDR, 0ULL);
+    parent->set_entry_point(CODE_VADDR);
+    Kernel::Process::init_user_cpu_context(parent->context(), CODE_VADDR,
+                                           parent->user_stack().final_sp_el0, ARGS_VADDR, 0ULL);
 
     const int64_t exit_status = Kernel::Process::execute_process(*parent);
     assert_test(exit_status == 0,
@@ -1885,26 +1886,26 @@ void cmd_test_musl() noexcept {
 
     Kernel::Process::attach_loaded_elf(*proc, static_cast<Kernel::Loader::LoadedElf&&>(*load_res));
 
-    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space);
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space());
     if (!stack_res.is_ok()) {
         Kernel::Process::release_process(*proc);
         print_str("[FAIL] Failed to allocate user stack\r\n");
         return;
     }
-    proc->user_stack = stack_res.value();
+    proc->set_user_stack(stack_res.value());
 
     const char* const argv[] = {"/bin/hello_musl", nullptr};
     const char* const envp[] = {"PATH=/bin", "TERM=vt100", nullptr};
-    auto abi_res = Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack, 1, argv,
+    auto abi_res = Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack(), 1, argv,
                                                                        envp, auxv, auxv_count);
     assert_test(abi_res.is_ok(), "Built System V ABI stack with AT_PHDR/AT_RANDOM auxv");
 
-    Kernel::Process::init_user_cpu_context(proc->context, proc->entry_point,
-                                           proc->user_stack.final_sp_el0, proc->user_stack.argc,
-                                           proc->user_stack.argv_vaddr);
+    Kernel::Process::init_user_cpu_context(proc->context(), proc->entry_point(),
+                                           proc->user_stack().final_sp_el0, proc->user_stack().argc,
+                                           proc->user_stack().argv_vaddr);
 
     const int64_t exit_status = Kernel::Process::execute_process(*proc);
-    assert_test(exit_status == 0 && proc->state == Kernel::Process::ProcessState::Zombie,
+    assert_test(exit_status == 0 && proc->state() == Kernel::Process::ProcessState::Zombie,
                 "/bin/hello_musl printed via musl stdio and exited with status 0");
 
     Kernel::Process::release_process(*proc);
@@ -1939,19 +1940,19 @@ void cmd_test_sched() noexcept {
         print_str("[FAIL] Failed to create AddressSpace\r\n");
         return;
     }
-    parent->address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
+    parent->address_space() = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
 
     constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
     constexpr uintptr_t DATA_VADDR = 0x0000000000500000ULL;
     const uintptr_t code_paddr = Kernel::MM::alloc_frame();
     const uintptr_t data_paddr = Kernel::MM::alloc_frame();
 
-    parent->address_space.map_user_page(CODE_VADDR, code_paddr,
-                                        HAL::PageFlags::User | HAL::PageFlags::Read |
-                                            HAL::PageFlags::Execute);
-    parent->address_space.map_user_page(DATA_VADDR, data_paddr,
-                                        HAL::PageFlags::User | HAL::PageFlags::Read |
-                                            HAL::PageFlags::Write);
+    parent->address_space().map_user_page(CODE_VADDR, code_paddr,
+                                          HAL::PageFlags::User | HAL::PageFlags::Read |
+                                              HAL::PageFlags::Execute);
+    parent->address_space().map_user_page(DATA_VADDR, data_paddr,
+                                          HAL::PageFlags::User | HAL::PageFlags::Read |
+                                              HAL::PageFlags::Write);
 
     auto* const k_code = reinterpret_cast<void*>(Kernel::MM::phys_to_virt(code_paddr));
     const size_t code_bytes = HAL::Test::write_user_sched_suite_program(k_code);
@@ -1960,28 +1961,28 @@ void cmd_test_sched() noexcept {
 
     constexpr uintptr_t ARGS_VADDR = DATA_VADDR;
     const HAL::Test::SchedSuiteArgs init_args{.worker_a_pid = 0U, .worker_b_pid = 0U};
-    Kernel::MM::copy_to_user(parent->address_space, ARGS_VADDR, &init_args, sizeof(init_args));
+    Kernel::MM::copy_to_user(parent->address_space(), ARGS_VADDR, &init_args, sizeof(init_args));
 
-    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(parent->address_space);
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(parent->address_space());
     if (!stack_res.is_ok()) {
         Kernel::Process::release_process(*parent);
         print_str("[FAIL] Failed to allocate user stack\r\n");
         return;
     }
-    parent->user_stack = stack_res.value();
+    parent->set_user_stack(stack_res.value());
 
     const char* const argv[] = {"sched_test"};
-    Kernel::Process::UserStackBuilder::build_abi_layout(parent->user_stack, 1, argv);
+    Kernel::Process::UserStackBuilder::build_abi_layout(parent->user_stack(), 1, argv);
 
-    parent->entry_point = CODE_VADDR;
-    Kernel::Process::init_user_cpu_context(parent->context, CODE_VADDR,
-                                           parent->user_stack.final_sp_el0, ARGS_VADDR, 0ULL);
+    parent->set_entry_point(CODE_VADDR);
+    Kernel::Process::init_user_cpu_context(parent->context(), CODE_VADDR,
+                                           parent->user_stack().final_sp_el0, ARGS_VADDR, 0ULL);
 
     const int64_t exit_status = Kernel::Process::execute_process(*parent);
     const uint64_t ticks_after = Kernel::Scheduler::timer_ticks();
 
     HAL::Test::SchedSuiteArgs out_args{};
-    Kernel::MM::copy_from_user(parent->address_space, &out_args, ARGS_VADDR, sizeof(out_args));
+    Kernel::MM::copy_from_user(parent->address_space(), &out_args, ARGS_VADDR, sizeof(out_args));
     const uint64_t worker_a_ticks = Kernel::Process::last_cpu_ticks_for_pid(out_args.worker_a_pid);
     const uint64_t worker_b_ticks = Kernel::Process::last_cpu_ticks_for_pid(out_args.worker_b_pid);
 
@@ -2174,7 +2175,7 @@ void cmd_test_cow_isolation() noexcept {
         print_str("[FAIL] Failed to create parent AddressSpace\r\n");
         return;
     }
-    parent->address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
+    parent->address_space() = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
 
     constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
     constexpr uintptr_t DATA_VADDR = 0x0000000000500000ULL;
@@ -2192,12 +2193,12 @@ void cmd_test_cow_isolation() noexcept {
         return;
     }
 
-    parent->address_space.map_user_page(CODE_VADDR, code_paddr,
-                                        HAL::PageFlags::User | HAL::PageFlags::Read |
-                                            HAL::PageFlags::Execute);
-    parent->address_space.map_user_page(DATA_VADDR, data_paddr,
-                                        HAL::PageFlags::User | HAL::PageFlags::Read |
-                                            HAL::PageFlags::Write);
+    parent->address_space().map_user_page(CODE_VADDR, code_paddr,
+                                          HAL::PageFlags::User | HAL::PageFlags::Read |
+                                              HAL::PageFlags::Execute);
+    parent->address_space().map_user_page(DATA_VADDR, data_paddr,
+                                          HAL::PageFlags::User | HAL::PageFlags::Read |
+                                              HAL::PageFlags::Write);
 
     auto* const k_code = reinterpret_cast<void*>(Kernel::MM::phys_to_virt(code_paddr));
     const size_t code_bytes = HAL::Test::write_user_cow_isolation_program(k_code);
@@ -2208,20 +2209,20 @@ void cmd_test_cow_isolation() noexcept {
     *k_data = 0ULL;
     HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(k_data), sizeof(uint64_t));
 
-    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(parent->address_space);
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(parent->address_space());
     if (!stack_res.is_ok()) {
         Kernel::Process::release_process(*parent);
         print_str("[FAIL] Failed to allocate user stack\r\n");
         return;
     }
-    parent->user_stack = stack_res.value();
+    parent->set_user_stack(stack_res.value());
 
     const char* const argv[] = {"cow_isolation_test"};
-    Kernel::Process::UserStackBuilder::build_abi_layout(parent->user_stack, 1, argv);
+    Kernel::Process::UserStackBuilder::build_abi_layout(parent->user_stack(), 1, argv);
 
-    parent->entry_point = CODE_VADDR;
-    Kernel::Process::init_user_cpu_context(parent->context, CODE_VADDR,
-                                           parent->user_stack.final_sp_el0, DATA_VADDR, 0ULL);
+    parent->set_entry_point(CODE_VADDR);
+    Kernel::Process::init_user_cpu_context(parent->context(), CODE_VADDR,
+                                           parent->user_stack().final_sp_el0, DATA_VADDR, 0ULL);
 
     const int64_t exit_status = Kernel::Process::execute_process(*parent);
     assert_test(exit_status == 0,
@@ -2253,7 +2254,7 @@ void cmd_test_demand_paging() noexcept {
         print_str("[FAIL] Failed to create AddressSpace\r\n");
         return;
     }
-    proc->address_space = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
+    proc->address_space() = static_cast<Kernel::MM::AddressSpace&&>(as_res.value());
 
     constexpr uintptr_t CODE_VADDR = 0x0000000000400000ULL;
     const uintptr_t code_paddr = Kernel::MM::alloc_frame();
@@ -2263,29 +2264,29 @@ void cmd_test_demand_paging() noexcept {
         return;
     }
 
-    proc->address_space.map_user_page(CODE_VADDR, code_paddr,
-                                      HAL::PageFlags::User | HAL::PageFlags::Read |
-                                          HAL::PageFlags::Execute);
+    proc->address_space().map_user_page(CODE_VADDR, code_paddr,
+                                        HAL::PageFlags::User | HAL::PageFlags::Read |
+                                            HAL::PageFlags::Execute);
 
     auto* const k_code = reinterpret_cast<void*>(Kernel::MM::phys_to_virt(code_paddr));
     const size_t code_bytes = HAL::Test::write_user_demand_paging_program(k_code);
     HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(k_code), code_bytes);
     HAL::get_cpu().invalidate_icache();
 
-    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space);
+    auto stack_res = Kernel::Process::UserStackBuilder::create_and_map(proc->address_space());
     if (!stack_res.is_ok()) {
         Kernel::Process::release_process(*proc);
         print_str("[FAIL] Failed to allocate user stack\r\n");
         return;
     }
-    proc->user_stack = stack_res.value();
+    proc->set_user_stack(stack_res.value());
 
     const char* const argv[] = {"demand_paging_test"};
-    Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack, 1, argv);
+    Kernel::Process::UserStackBuilder::build_abi_layout(proc->user_stack(), 1, argv);
 
-    proc->entry_point = CODE_VADDR;
-    Kernel::Process::init_user_cpu_context(proc->context, CODE_VADDR, proc->user_stack.final_sp_el0,
-                                           0ULL, 0ULL);
+    proc->set_entry_point(CODE_VADDR);
+    Kernel::Process::init_user_cpu_context(proc->context(), CODE_VADDR,
+                                           proc->user_stack().final_sp_el0, 0ULL, 0ULL);
 
     const int64_t exit_status = Kernel::Process::execute_process(*proc);
     assert_test(

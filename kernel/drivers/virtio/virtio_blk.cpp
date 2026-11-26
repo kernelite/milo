@@ -216,7 +216,7 @@ int VirtioBlkDevice::submit_chunk(uint32_t type, uint64_t lba, void* buf,
     req.completed.store(false, std::memory_order_relaxed);
     req.status = VIRTIO_BLK_S_UNSET;
     if (auto* const proc = Process::current_process(); proc != nullptr) {
-        req.waiter_pid = proc->pid;
+        req.waiter_pid = proc->pid();
     }
 
     const Sync::IrqGuard irq_guard{};

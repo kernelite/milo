@@ -24,7 +24,7 @@ SRCS_CXX += kernel/main.cpp \
             kernel/process/stack_builder.cpp \
             kernel/process/FdTable.cpp \
             kernel/process/Signal.cpp \
-            kernel/process/process.cpp \
+            kernel/process/Process.cpp \
             kernel/process/resource.cpp \
             kernel/process/scheduler.cpp \
             kernel/process/wait_queue.cpp \
