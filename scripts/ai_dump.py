@@ -35,7 +35,7 @@ def gather_files(paths: list[str]) -> list[str]:
 
 
 def main() -> None:
-    args = sys.argv[1:] or ["arch", "kernel", "user", "Makefile"]
+    args = sys.argv[1:] or ["arch", "kernel", "user", "tests", "Makefile"]
     valid_files = gather_files(args)
 
     # Remove stale chunks from previous runs
