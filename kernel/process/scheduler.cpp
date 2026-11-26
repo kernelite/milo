@@ -28,19 +28,18 @@ bool g_in_schedule = false;
 namespace Kernel::Scheduler {
 
 void Runqueue::enqueue(Process::Process* proc) noexcept {
-    if (proc == nullptr || proc->m_on_runqueue) {
+    if (proc == nullptr || proc->is_on_runqueue()) {
         return;
     }
 
-    proc->m_rq_prev = m_tail;
-    proc->m_rq_next = nullptr;
+    proc->set_rq_links(m_tail, nullptr);
     if (m_tail != nullptr) {
-        m_tail->m_rq_next = proc;
+        m_tail->set_rq_links(m_tail->rq_prev(), proc);
     } else {
         m_head = proc;
     }
     m_tail = proc;
-    proc->m_on_runqueue = true;
+    proc->set_on_runqueue(true);
     m_count++;
 }
 
@@ -50,40 +49,39 @@ Process::Process* Runqueue::dequeue() noexcept {
     }
 
     Process::Process* const proc = m_head;
-    m_head = proc->m_rq_next;
+    m_head = proc->rq_next();
     if (m_head != nullptr) {
-        m_head->m_rq_prev = nullptr;
+        m_head->set_rq_links(nullptr, m_head->rq_next());
     } else {
         m_tail = nullptr;
     }
 
-    proc->m_rq_next = nullptr;
-    proc->m_rq_prev = nullptr;
-    proc->m_on_runqueue = false;
+    proc->clear_rq_links();
     m_count--;
     return proc;
 }
 
 void Runqueue::remove(Process::Process* proc) noexcept {
-    if (proc == nullptr || !proc->m_on_runqueue) {
+    if (proc == nullptr || !proc->is_on_runqueue()) {
         return;
     }
 
-    if (proc->m_rq_prev != nullptr) {
-        proc->m_rq_prev->m_rq_next = proc->m_rq_next;
+    Process::Process* const prev_proc = proc->rq_prev();
+    Process::Process* const next_proc = proc->rq_next();
+
+    if (prev_proc != nullptr) {
+        prev_proc->set_rq_links(prev_proc->rq_prev(), next_proc);
     } else {
-        m_head = proc->m_rq_next;
+        m_head = next_proc;
     }
 
-    if (proc->m_rq_next != nullptr) {
-        proc->m_rq_next->m_rq_prev = proc->m_rq_prev;
+    if (next_proc != nullptr) {
+        next_proc->set_rq_links(prev_proc, next_proc->rq_next());
     } else {
-        m_tail = proc->m_rq_prev;
+        m_tail = prev_proc;
     }
 
-    proc->m_rq_next = nullptr;
-    proc->m_rq_prev = nullptr;
-    proc->m_on_runqueue = false;
+    proc->clear_rq_links();
     m_count--;
 }
 

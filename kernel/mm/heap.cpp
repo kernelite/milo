@@ -119,25 +119,25 @@ KernelHeap& KernelHeap::instance() noexcept {
 }
 
 void KernelHeap::list_push_front(Page*& head, Page* page) noexcept {
-    page->m_prev = nullptr;
-    page->m_next = head;
+    page->set_list_links(nullptr, head);
     if (head != nullptr) {
-        head->m_prev = page;
+        head->set_list_links(page, head->list_next());
     }
     head = page;
 }
 
 void KernelHeap::list_remove(Page*& head, Page* page) noexcept {
-    if (page->m_prev != nullptr) {
-        page->m_prev->m_next = page->m_next;
+    Page* const prev_page = page->list_prev();
+    Page* const next_page = page->list_next();
+    if (prev_page != nullptr) {
+        prev_page->set_list_links(prev_page->list_prev(), next_page);
     } else if (head == page) {
-        head = page->m_next;
+        head = next_page;
     }
-    if (page->m_next != nullptr) {
-        page->m_next->m_prev = page->m_prev;
+    if (next_page != nullptr) {
+        next_page->set_list_links(prev_page, next_page->list_next());
     }
-    page->m_prev = nullptr;
-    page->m_next = nullptr;
+    page->clear_list_links();
 }
 
 Page* KernelHeap::create_slab_page(SlabCache& cache) noexcept {
@@ -152,13 +152,6 @@ Page* KernelHeap::create_slab_page(SlabCache& cache) noexcept {
         return nullptr;
     }
 
-    page->m_flags = PageFlags::Slab;
-    page->m_order = cache.class_idx;
-    page->m_slab_cache = &cache;
-    page->m_ref_count = 0U;
-    page->m_next = nullptr;
-    page->m_prev = nullptr;
-
     auto* const base = reinterpret_cast<uint8_t*>(Kernel::MM::phys_to_virt(paddr));
     void* freelist_head = nullptr;
     for (size_t i = cache.slots_per_page; i > 0U; --i) {
@@ -166,7 +159,7 @@ Page* KernelHeap::create_slab_page(SlabCache& cache) noexcept {
         slab_set_next(slot, freelist_head);
         freelist_head = slot;
     }
-    page->m_freelist = freelist_head;
+    page->configure_slab(cache.class_idx, &cache, freelist_head);
 
     m_stats.slab_pages++;
     return page;
@@ -187,15 +180,15 @@ void* KernelHeap::slab_alloc_locked(SlabCache& cache) noexcept {
         list_push_front(cache.partial_slabs, page);
     }
 
-    void* const obj = page->m_freelist;
+    void* const obj = page->freelist_head();
     if (obj == nullptr) {
         heap_panic("\r\n[PANIC] Corrupted slab freelist\r\n");
     }
 
-    page->m_freelist = slab_get_next(obj);
-    page->m_ref_count++;
+    page->set_freelist_head(slab_get_next(obj));
+    page->increment_slab_ref();
 
-    if (page->m_ref_count == cache.slots_per_page) {
+    if (page->slab_ref_count() == cache.slots_per_page) {
         list_remove(cache.partial_slabs, page);
         list_push_front(cache.full_slabs, page);
     }
@@ -206,64 +199,52 @@ void* KernelHeap::slab_alloc_locked(SlabCache& cache) noexcept {
 }
 
 void KernelHeap::slab_free_locked(Page* page, uintptr_t paddr, void* ptr) noexcept {
-    const uint16_t class_idx = page->m_order;
+    const uint16_t class_idx = page->slab_class_index();
     if (class_idx >= NUM_SLAB_CLASSES) {
         heap_panic("\r\n[PANIC] Invalid or double kfree()\r\n");
     }
 
     SlabCache& cache = m_caches[class_idx];
-    if (page->m_slab_cache != &cache) {
+    if (page->slab_cache() != &cache) {
         heap_panic("\r\n[PANIC] Invalid or double kfree()\r\n");
     }
 
-    if ((paddr & (cache.slot_size - 1U)) != 0U || page->m_ref_count == 0U ||
-        page->m_ref_count > cache.slots_per_page) {
+    if ((paddr & (cache.slot_size - 1U)) != 0U || page->slab_ref_count() == 0U ||
+        page->slab_ref_count() > cache.slots_per_page) {
         heap_panic("\r\n[PANIC] Invalid or double kfree()\r\n");
     }
 
-    const bool was_full = (page->m_ref_count == cache.slots_per_page);
+    const bool was_full = (page->slab_ref_count() == cache.slots_per_page);
 
-    slab_set_next(ptr, page->m_freelist);
-    page->m_freelist = ptr;
-    page->m_ref_count--;
+    slab_set_next(ptr, page->freelist_head());
+    page->set_freelist_head(ptr);
+    page->decrement_slab_ref();
 
     m_stats.active_slab_objects--;
     m_stats.active_bytes -= cache.slot_size;
 
     if (was_full) {
         list_remove(cache.full_slabs, page);
-        if (page->m_ref_count > 0U) {
+        if (page->slab_ref_count() > 0U) {
             list_push_front(cache.partial_slabs, page);
         } else if (cache.reserve_slab == nullptr) {
             cache.reserve_slab = page;
         } else {
             const uintptr_t frame_paddr = page_to_paddr(page);
-            page->m_flags = PageFlags::Allocated;
-            page->m_ref_count = 1U;
-            page->m_order = 0U;
-            page->m_slab_cache = nullptr;
-            page->m_next = nullptr;
-            page->m_prev = nullptr;
-            page->m_freelist = nullptr;
+            page->release_slab_to_allocated();
             m_stats.slab_pages--;
             free_frame(frame_paddr);
         }
         return;
     }
 
-    if (page->m_ref_count == 0U) {
+    if (page->slab_ref_count() == 0U) {
         list_remove(cache.partial_slabs, page);
         if (cache.reserve_slab == nullptr) {
             cache.reserve_slab = page;
         } else {
             const uintptr_t frame_paddr = page_to_paddr(page);
-            page->m_flags = PageFlags::Allocated;
-            page->m_ref_count = 1U;
-            page->m_order = 0U;
-            page->m_slab_cache = nullptr;
-            page->m_next = nullptr;
-            page->m_prev = nullptr;
-            page->m_freelist = nullptr;
+            page->release_slab_to_allocated();
             m_stats.slab_pages--;
             free_frame(frame_paddr);
         }
@@ -292,13 +273,7 @@ void* KernelHeap::compound_alloc_locked(size_t effective_size) noexcept {
         return nullptr;
     }
 
-    page->m_flags = PageFlags::Compound;
-    page->m_ref_count = static_cast<uint32_t>(num_pages);
-    page->m_order = (num_pages <= 0xFFFFU) ? static_cast<uint16_t>(num_pages) : 0xFFFFU;
-    page->m_slab_cache = nullptr;
-    page->m_next = nullptr;
-    page->m_prev = nullptr;
-    page->m_freelist = nullptr;
+    page->configure_compound(num_pages);
 
     m_stats.compound_pages += num_pages;
     m_stats.active_bytes += num_pages * Arch::AArch64::PAGE_SIZE;
@@ -307,18 +282,12 @@ void* KernelHeap::compound_alloc_locked(size_t effective_size) noexcept {
 }
 
 void KernelHeap::compound_free_locked(Page* page, uintptr_t paddr) noexcept {
-    if ((paddr & (Arch::AArch64::PAGE_SIZE - 1U)) != 0U || page->m_ref_count == 0U) {
+    if ((paddr & (Arch::AArch64::PAGE_SIZE - 1U)) != 0U || page->compound_page_count() == 0U) {
         heap_panic("\r\n[PANIC] Invalid or double kfree()\r\n");
     }
 
-    const size_t num_pages = page->m_ref_count;
-    page->m_flags = PageFlags::Allocated;
-    page->m_ref_count = 1U;
-    page->m_order = 0U;
-    page->m_slab_cache = nullptr;
-    page->m_next = nullptr;
-    page->m_prev = nullptr;
-    page->m_freelist = nullptr;
+    const size_t num_pages = page->compound_page_count();
+    page->release_compound_to_allocated();
 
     m_stats.compound_pages -= num_pages;
     m_stats.active_bytes -= num_pages * Arch::AArch64::PAGE_SIZE;
@@ -402,21 +371,23 @@ void* KernelHeap::realloc(void* ptr, size_t new_size, size_t align) noexcept {
             heap_panic("\r\n[PANIC] Invalid or double kfree()\r\n");
         }
 
-        if (page->m_flags == PageFlags::Slab) {
-            if (page->m_order >= NUM_SLAB_CLASSES || page->m_ref_count == 0U) {
+        if (page->flags() == PageFlags::Slab) {
+            if (page->slab_class_index() >= NUM_SLAB_CLASSES || page->slab_ref_count() == 0U) {
                 heap_panic("\r\n[PANIC] Invalid or double kfree()\r\n");
             }
-            old_capacity = MIN_SLAB_SIZE << page->m_order;
+            old_capacity = MIN_SLAB_SIZE << page->slab_class_index();
             if ((paddr & (old_capacity - 1U)) != 0U) {
                 heap_panic("\r\n[PANIC] Invalid or double kfree()\r\n");
             }
             alignment_compatible =
                 (effective_align <= old_capacity) && ((paddr & (effective_align - 1U)) == 0U);
-        } else if (page->m_flags == PageFlags::Compound) {
-            if ((paddr & (Arch::AArch64::PAGE_SIZE - 1U)) != 0U || page->m_ref_count == 0U) {
+        } else if (page->flags() == PageFlags::Compound) {
+            if ((paddr & (Arch::AArch64::PAGE_SIZE - 1U)) != 0U ||
+                page->compound_page_count() == 0U) {
                 heap_panic("\r\n[PANIC] Invalid or double kfree()\r\n");
             }
-            old_capacity = static_cast<size_t>(page->m_ref_count) * Arch::AArch64::PAGE_SIZE;
+            old_capacity =
+                static_cast<size_t>(page->compound_page_count()) * Arch::AArch64::PAGE_SIZE;
             alignment_compatible = ((paddr & (effective_align - 1U)) == 0U);
         } else {
             heap_panic("\r\n[PANIC] Invalid or double kfree()\r\n");
@@ -451,9 +422,9 @@ void KernelHeap::free(void* ptr) noexcept {
         heap_panic("\r\n[PANIC] Invalid or double kfree()\r\n");
     }
 
-    if (page->m_flags == PageFlags::Slab) {
+    if (page->flags() == PageFlags::Slab) {
         slab_free_locked(page, paddr, ptr);
-    } else if (page->m_flags == PageFlags::Compound) {
+    } else if (page->flags() == PageFlags::Compound) {
         compound_free_locked(page, paddr);
     } else {
         heap_panic("\r\n[PANIC] Invalid or double kfree()\r\n");
