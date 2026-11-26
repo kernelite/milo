@@ -65,12 +65,12 @@ TEST_CASE("UserStackBuilder allocates, zeroes, and maps RW+NX user pages", "[sta
         CHECK(Kernel::MM::pfa_free_pages_count() == baseline_free - 16U);
 
         for (size_t page_idx = 0U; page_idx < stack.num_pages; ++page_idx) {
-            const uintptr_t vaddr = stack.virt_base + (page_idx * Arch::PAGE_SIZE);
+            const uintptr_t vaddr = stack.virt_base + (page_idx * Arch::AArch64::PAGE_SIZE);
             uintptr_t mapped_paddr = 0U;
             HAL::PageFlags mapped_flags = HAL::PageFlags::None;
 
             REQUIRE(address_space.query_user_page(vaddr, mapped_paddr, mapped_flags));
-            CHECK(mapped_paddr == stack.phys_base + (page_idx * Arch::PAGE_SIZE));
+            CHECK(mapped_paddr == stack.phys_base + (page_idx * Arch::AArch64::PAGE_SIZE));
             CHECK(HAL::has_flag(mapped_flags, HAL::PageFlags::User));
             CHECK(HAL::has_flag(mapped_flags, HAL::PageFlags::Read));
             CHECK(HAL::has_flag(mapped_flags, HAL::PageFlags::Write));
@@ -96,14 +96,15 @@ TEST_CASE("UserStackBuilder allocates, zeroes, and maps RW+NX user pages", "[sta
         CHECK(bad_zero.error() == Kernel::Process::StackBuilderError::InvalidAlignment);
 
         auto bad_unaligned = Kernel::Process::UserStackBuilder::create_and_map(
-            address_space, Kernel::Process::DEFAULT_USER_STACK_TOP, Arch::PAGE_SIZE + 128U);
+            address_space, Kernel::Process::DEFAULT_USER_STACK_TOP,
+            Arch::AArch64::PAGE_SIZE + 128U);
         REQUIRE(bad_unaligned.is_err());
         CHECK(bad_unaligned.error() == Kernel::Process::StackBuilderError::InvalidAlignment);
 
         // Allow 3 page mappings to succeed, fail on the 4th, and verify all 4 frames are freed
         HostTest::set_fail_map_after(3U);
         auto map_fail = Kernel::Process::UserStackBuilder::create_and_map(
-            address_space, Kernel::Process::DEFAULT_USER_STACK_TOP, 4U * Arch::PAGE_SIZE);
+            address_space, Kernel::Process::DEFAULT_USER_STACK_TOP, 4U * Arch::AArch64::PAGE_SIZE);
         REQUIRE(map_fail.is_err());
         CHECK(map_fail.error() == Kernel::Process::StackBuilderError::MappingFailed);
         CHECK(Kernel::MM::pfa_free_pages_count() == baseline_free);
@@ -181,7 +182,7 @@ TEST_CASE("UserStackBuilder constructs System V AArch64 ABI stack layout", "[sta
             if (a_type == Kernel::Loader::AT_ENTRY) {
                 CHECK(a_val == loaded.entry_point);
             } else if (a_type == Kernel::Loader::AT_PAGESZ) {
-                CHECK(a_val == Arch::PAGE_SIZE);
+                CHECK(a_val == Arch::AArch64::PAGE_SIZE);
             } else if (a_type == Kernel::Loader::AT_RANDOM) {
                 saw_at_random = true;
                 CHECK(a_val >= stack.virt_base);
@@ -223,11 +224,11 @@ TEST_CASE("UserStackBuilder constructs System V AArch64 ABI stack layout", "[sta
 
         // Small 1-page stack must reject an oversized argument payload with BufferOverflow
         auto tiny_stack_res = Kernel::Process::UserStackBuilder::create_and_map(
-            address_space, 0x0000000020000000ULL, Arch::PAGE_SIZE);
+            address_space, 0x0000000020000000ULL, Arch::AArch64::PAGE_SIZE);
         REQUIRE(tiny_stack_res.is_ok());
         Kernel::Process::UserStack tiny_stack = tiny_stack_res.value();
 
-        char huge_arg[Arch::PAGE_SIZE]{};
+        char huge_arg[Arch::AArch64::PAGE_SIZE]{};
         std::memset(huge_arg, 'A', sizeof(huge_arg) - 1U);
         huge_arg[sizeof(huge_arg) - 1U] = '\0';
         const char* const huge_argv[] = {huge_arg};

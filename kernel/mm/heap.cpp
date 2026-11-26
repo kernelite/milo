@@ -285,11 +285,12 @@ void slab_free_locked(Page* page, uintptr_t paddr, void* ptr) noexcept {
 }
 
 void* compound_alloc_locked(size_t effective_size) noexcept {
-    if (effective_size > (SIZE_MAX - (Arch::PAGE_SIZE - 1U))) {
+    if (effective_size > (SIZE_MAX - (Arch::AArch64::PAGE_SIZE - 1U))) {
         return nullptr;
     }
 
-    const size_t num_pages = (effective_size + Arch::PAGE_SIZE - 1U) >> Arch::PAGE_SHIFT;
+    const size_t num_pages =
+        (effective_size + Arch::AArch64::PAGE_SIZE - 1U) >> Arch::AArch64::PAGE_SHIFT;
     if (num_pages == 0U || num_pages > UINT32_MAX) {
         return nullptr;
     }
@@ -314,13 +315,13 @@ void* compound_alloc_locked(size_t effective_size) noexcept {
     page->freelist = nullptr;
 
     g_heap_stats.compound_pages += num_pages;
-    g_heap_stats.active_bytes += num_pages * Arch::PAGE_SIZE;
+    g_heap_stats.active_bytes += num_pages * Arch::AArch64::PAGE_SIZE;
 
     return reinterpret_cast<void*>(Kernel::MM::phys_to_virt(paddr));
 }
 
 void compound_free_locked(Page* page, uintptr_t paddr) noexcept {
-    if ((paddr & (Arch::PAGE_SIZE - 1U)) != 0U || page->ref_count == 0U) {
+    if ((paddr & (Arch::AArch64::PAGE_SIZE - 1U)) != 0U || page->ref_count == 0U) {
         heap_panic("\r\n[PANIC] Invalid or double kfree()\r\n");
     }
 
@@ -334,7 +335,7 @@ void compound_free_locked(Page* page, uintptr_t paddr) noexcept {
     page->freelist = nullptr;
 
     g_heap_stats.compound_pages -= num_pages;
-    g_heap_stats.active_bytes -= num_pages * Arch::PAGE_SIZE;
+    g_heap_stats.active_bytes -= num_pages * Arch::AArch64::PAGE_SIZE;
 
     free_frames(paddr, num_pages);
 }
@@ -372,7 +373,7 @@ void heap_init() noexcept {
             .class_idx = static_cast<uint16_t>(i),
             ._pad = 0U,
             .slot_size = slot_size,
-            .slots_per_page = Arch::PAGE_SIZE / slot_size,
+            .slots_per_page = Arch::AArch64::PAGE_SIZE / slot_size,
             .partial_slabs = nullptr,
             .full_slabs = nullptr,
             .reserve_slab = nullptr,
@@ -384,7 +385,7 @@ void heap_init() noexcept {
 
 void* kmalloc(size_t size, size_t align) noexcept {
     const size_t raw_align = (align == 0U) ? MIN_HEAP_ALIGN : align;
-    if (!is_power_of_two(raw_align) || raw_align > Arch::PAGE_SIZE) {
+    if (!is_power_of_two(raw_align) || raw_align > Arch::AArch64::PAGE_SIZE) {
         return nullptr;
     }
 
@@ -422,7 +423,7 @@ void* krealloc(void* ptr, size_t new_size, size_t align) noexcept {
     }
 
     const size_t raw_align = (align == 0U) ? MIN_HEAP_ALIGN : align;
-    if (!is_power_of_two(raw_align) || raw_align > Arch::PAGE_SIZE) {
+    if (!is_power_of_two(raw_align) || raw_align > Arch::AArch64::PAGE_SIZE) {
         return nullptr;
     }
     const size_t effective_align = (raw_align < MIN_HEAP_ALIGN) ? MIN_HEAP_ALIGN : raw_align;
@@ -434,7 +435,7 @@ void* krealloc(void* ptr, size_t new_size, size_t align) noexcept {
         IrqLockGuard lock;
 
         const uintptr_t paddr = Kernel::MM::virt_to_phys(reinterpret_cast<uintptr_t>(ptr));
-        Page* const page = page_from_paddr(paddr & ~(Arch::PAGE_SIZE - 1U));
+        Page* const page = page_from_paddr(paddr & ~(Arch::AArch64::PAGE_SIZE - 1U));
         if (page == nullptr) {
             heap_panic("\r\n[PANIC] Invalid or double kfree()\r\n");
         }
@@ -450,10 +451,10 @@ void* krealloc(void* ptr, size_t new_size, size_t align) noexcept {
             alignment_compatible =
                 (effective_align <= old_capacity) && ((paddr & (effective_align - 1U)) == 0U);
         } else if (page->flags == PageFlags::Compound) {
-            if ((paddr & (Arch::PAGE_SIZE - 1U)) != 0U || page->ref_count == 0U) {
+            if ((paddr & (Arch::AArch64::PAGE_SIZE - 1U)) != 0U || page->ref_count == 0U) {
                 heap_panic("\r\n[PANIC] Invalid or double kfree()\r\n");
             }
-            old_capacity = static_cast<size_t>(page->ref_count) * Arch::PAGE_SIZE;
+            old_capacity = static_cast<size_t>(page->ref_count) * Arch::AArch64::PAGE_SIZE;
             alignment_compatible = ((paddr & (effective_align - 1U)) == 0U);
         } else {
             heap_panic("\r\n[PANIC] Invalid or double kfree()\r\n");
@@ -483,7 +484,7 @@ void kfree(void* ptr) noexcept {
     IrqLockGuard lock;
 
     const uintptr_t paddr = Kernel::MM::virt_to_phys(reinterpret_cast<uintptr_t>(ptr));
-    Page* const page = page_from_paddr(paddr & ~(Arch::PAGE_SIZE - 1U));
+    Page* const page = page_from_paddr(paddr & ~(Arch::AArch64::PAGE_SIZE - 1U));
     if (page == nullptr) {
         heap_panic("\r\n[PANIC] Invalid or double kfree()\r\n");
     }

@@ -39,13 +39,13 @@ bool map_mmio_region(uintptr_t base_paddr, size_t region_size) noexcept {
         return false;
     }
 
-    const uintptr_t page_mask = Arch::PAGE_SIZE - 1U;
+    const uintptr_t page_mask = Arch::AArch64::PAGE_SIZE - 1U;
     const uintptr_t start_paddr = base_paddr & ~page_mask;
     const uintptr_t end_paddr = (base_paddr + region_size + page_mask) & ~page_mask;
     const HAL::PageFlags dev_rw =
         HAL::PageFlags::Read | HAL::PageFlags::Write | HAL::PageFlags::Device;
 
-    for (uintptr_t paddr = start_paddr; paddr < end_paddr; paddr += Arch::PAGE_SIZE) {
+    for (uintptr_t paddr = start_paddr; paddr < end_paddr; paddr += Arch::AArch64::PAGE_SIZE) {
         const uintptr_t vaddr = Kernel::MM::phys_to_virt(paddr);
         if (!HAL::get_mmu().map(vaddr, paddr, dev_rw)) {
             return false;

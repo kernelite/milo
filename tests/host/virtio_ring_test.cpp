@@ -25,8 +25,9 @@ void init_virtio_test_pfa() noexcept {
     mem_map.max_paddr = HostTest::SIM_RAM_BASE + HostTest::SIM_RAM_SIZE;
     mem_map.total_usable_bytes = HostTest::SIM_RAM_SIZE;
 
-    Kernel::MM::pfa_init(mem_map, HostTest::SIM_RAM_BASE, HostTest::SIM_RAM_BASE + Arch::PAGE_SIZE,
-                         0U, 0U, 0U, 0U, nullptr);
+    Kernel::MM::pfa_init(mem_map, HostTest::SIM_RAM_BASE,
+                         HostTest::SIM_RAM_BASE + Arch::AArch64::PAGE_SIZE, 0U, 0U, 0U, 0U,
+                         nullptr);
 }
 
 } // namespace

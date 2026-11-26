@@ -28,11 +28,11 @@ size_t g_free_pages = 0U;
 size_t g_search_hint = 0U;
 
 constexpr uintptr_t align_down_page(uintptr_t addr) noexcept {
-    return addr & ~(Arch::PAGE_SIZE - 1U);
+    return addr & ~(Arch::AArch64::PAGE_SIZE - 1U);
 }
 
 constexpr uintptr_t align_up_page(uintptr_t addr) noexcept {
-    return (addr + Arch::PAGE_SIZE - 1U) & ~(Arch::PAGE_SIZE - 1U);
+    return (addr + Arch::AArch64::PAGE_SIZE - 1U) & ~(Arch::AArch64::PAGE_SIZE - 1U);
 }
 
 inline PageFlags atomic_load_flags(const Page& page) noexcept {
@@ -100,7 +100,7 @@ uintptr_t find_metadata_carveout(const Kernel::Boot::MemoryMap& mem_map, size_t 
                 const Span& sp = reserved_spans[s_idx];
                 if (cand < sp.end && cand_end > sp.start) {
                     const uintptr_t next_cand = align_up_page(sp.end);
-                    cand = (next_cand > cand) ? next_cand : (cand + Arch::PAGE_SIZE);
+                    cand = (next_cand > cand) ? next_cand : (cand + Arch::AArch64::PAGE_SIZE);
                     collided = true;
                     break;
                 }
@@ -128,8 +128,8 @@ void mark_range_reserved(uintptr_t start, uintptr_t end) noexcept {
         aligned_end = g_ram_end;
     }
 
-    for (uintptr_t paddr = aligned_start; paddr < aligned_end; paddr += Arch::PAGE_SIZE) {
-        const size_t idx = (paddr - g_ram_start) >> Arch::PAGE_SHIFT;
+    for (uintptr_t paddr = aligned_start; paddr < aligned_end; paddr += Arch::AArch64::PAGE_SIZE) {
+        const size_t idx = (paddr - g_ram_start) >> Arch::AArch64::PAGE_SHIFT;
         g_pages[idx].ref_count = 1U;
         g_pages[idx].flags = PageFlags::Reserved;
         g_pages[idx].order = 0U;
@@ -155,7 +155,7 @@ void pfa_init(const Kernel::Boot::MemoryMap& mem_map, uintptr_t kernel_start, ui
         return;
     }
 
-    g_total_pages = (g_ram_end - g_ram_start) >> Arch::PAGE_SHIFT;
+    g_total_pages = (g_ram_end - g_ram_start) >> Arch::AArch64::PAGE_SHIFT;
     if (g_total_pages == 0U) {
         return;
     }
@@ -218,9 +218,9 @@ void pfa_init(const Kernel::Boot::MemoryMap& mem_map, uintptr_t kernel_start, ui
         const Kernel::Boot::MemoryRegion& region = mem_map.regions[r_idx];
         const uintptr_t r_start = align_up_page(region.base_paddr);
         const uintptr_t r_end = align_down_page(region.base_paddr + region.size);
-        for (uintptr_t paddr = r_start; paddr < r_end; paddr += Arch::PAGE_SIZE) {
+        for (uintptr_t paddr = r_start; paddr < r_end; paddr += Arch::AArch64::PAGE_SIZE) {
             if (paddr >= g_ram_start && paddr < g_ram_end) {
-                const size_t idx = (paddr - g_ram_start) >> Arch::PAGE_SHIFT;
+                const size_t idx = (paddr - g_ram_start) >> Arch::AArch64::PAGE_SHIFT;
                 g_pages[idx].ref_count = 0U;
                 g_pages[idx].flags = PageFlags::Free;
             }
@@ -277,7 +277,7 @@ Page* page_from_paddr(uintptr_t paddr) noexcept {
     if (g_pages == nullptr || paddr < g_ram_start || paddr >= g_ram_end) {
         return nullptr;
     }
-    const size_t idx = (paddr - g_ram_start) >> Arch::PAGE_SHIFT;
+    const size_t idx = (paddr - g_ram_start) >> Arch::AArch64::PAGE_SHIFT;
     return &g_pages[idx];
 }
 
@@ -296,7 +296,7 @@ uintptr_t page_to_paddr(const Page* page) noexcept {
     }
 
     const size_t idx = static_cast<size_t>(page - g_pages);
-    return g_ram_start + (idx << Arch::PAGE_SHIFT);
+    return g_ram_start + (idx << Arch::AArch64::PAGE_SHIFT);
 }
 
 void page_get(uintptr_t paddr) noexcept {
@@ -385,7 +385,7 @@ uintptr_t alloc_frame() noexcept {
 
             const size_t next_hint = (idx + 1U < g_total_pages) ? (idx + 1U) : 0U;
             __atomic_store_n(&g_search_hint, next_hint, __ATOMIC_RELAXED);
-            return g_ram_start + (idx << Arch::PAGE_SHIFT);
+            return g_ram_start + (idx << Arch::AArch64::PAGE_SHIFT);
         }
     }
 
@@ -436,7 +436,7 @@ uintptr_t alloc_frames(size_t count) noexcept {
                     const size_t next_hint =
                         (run_start + count < g_total_pages) ? (run_start + count) : 0U;
                     __atomic_store_n(&g_search_hint, next_hint, __ATOMIC_RELAXED);
-                    return g_ram_start + (run_start << Arch::PAGE_SHIFT);
+                    return g_ram_start + (run_start << Arch::AArch64::PAGE_SHIFT);
                 }
 
                 // Roll back partial claim if another core raced on a page in the span
@@ -457,7 +457,7 @@ uintptr_t alloc_frames(size_t count) noexcept {
 }
 
 void free_frame(uintptr_t paddr) noexcept {
-    if ((paddr & (Arch::PAGE_SIZE - 1U)) != 0U) {
+    if ((paddr & (Arch::AArch64::PAGE_SIZE - 1U)) != 0U) {
         pfa_print("[PFA PANIC] Unaligned physical frame address passed to free_frame: ");
         pfa_print_hex64(paddr);
         pfa_print("\r\n");
@@ -471,7 +471,7 @@ void free_frame(uintptr_t paddr) noexcept {
         return;
     }
 
-    const size_t idx = (paddr - g_ram_start) >> Arch::PAGE_SHIFT;
+    const size_t idx = (paddr - g_ram_start) >> Arch::AArch64::PAGE_SHIFT;
     if (has_page_flag(atomic_load_flags(g_pages[idx]), PageFlags::Reserved)) {
         return;
     }
@@ -489,16 +489,16 @@ void free_frame(uintptr_t paddr) noexcept {
 
 void free_frames(uintptr_t paddr, size_t count) noexcept {
     for (size_t idx = 0U; idx < count; ++idx) {
-        free_frame(paddr + (idx << Arch::PAGE_SHIFT));
+        free_frame(paddr + (idx << Arch::AArch64::PAGE_SHIFT));
     }
 }
 
 bool pfa_is_page_allocated(uintptr_t paddr) noexcept {
-    if (g_pages == nullptr || (paddr & (Arch::PAGE_SIZE - 1U)) != 0U || paddr < g_ram_start ||
-        paddr >= g_ram_end) {
+    if (g_pages == nullptr || (paddr & (Arch::AArch64::PAGE_SIZE - 1U)) != 0U ||
+        paddr < g_ram_start || paddr >= g_ram_end) {
         return false;
     }
-    const size_t idx = (paddr - g_ram_start) >> Arch::PAGE_SHIFT;
+    const size_t idx = (paddr - g_ram_start) >> Arch::AArch64::PAGE_SHIFT;
     return atomic_load_flags(g_pages[idx]) != PageFlags::Free;
 }
 

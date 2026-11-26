@@ -117,7 +117,8 @@ bool VirtioBlkDevice::init(uintptr_t base_paddr, uint32_t spi_irq, size_t region
         m_transport.set_failed();
         return false;
     }
-    std::memset(reinterpret_cast<void*>(Kernel::MM::phys_to_virt(m_dma_paddr)), 0, Arch::PAGE_SIZE);
+    std::memset(reinterpret_cast<void*>(Kernel::MM::phys_to_virt(m_dma_paddr)), 0,
+                Arch::AArch64::PAGE_SIZE);
 
     // Read 64-bit sector capacity from Virtio-MMIO device config space (0x100)
     const uint32_t cap_lo = m_transport.read_config32(0U);

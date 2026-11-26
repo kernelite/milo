@@ -64,11 +64,11 @@ constexpr bool is_allowed_user_vaddr(uintptr_t vaddr) noexcept {
 }
 
 constexpr uintptr_t align_down_page(uintptr_t addr) noexcept {
-    return addr & ~(Arch::PAGE_SIZE - 1U);
+    return addr & ~(Arch::AArch64::PAGE_SIZE - 1U);
 }
 
 constexpr uintptr_t align_up_page(uintptr_t addr) noexcept {
-    return (addr + Arch::PAGE_SIZE - 1U) & ~(Arch::PAGE_SIZE - 1U);
+    return (addr + Arch::AArch64::PAGE_SIZE - 1U) & ~(Arch::AArch64::PAGE_SIZE - 1U);
 }
 
 constexpr uint64_t encode_demand_zero_pte(HAL::PageFlags flags) noexcept {
@@ -107,7 +107,7 @@ uintptr_t allocate_zeroed_table() noexcept {
     for (size_t i = 0U; i < PAGE_ENTRY_COUNT; ++i) {
         table[i] = 0ULL;
     }
-    flush_dcache_range(reinterpret_cast<uintptr_t>(table), Arch::PAGE_SIZE);
+    flush_dcache_range(reinterpret_cast<uintptr_t>(table), Arch::AArch64::PAGE_SIZE);
     return phys;
 }
 
@@ -141,7 +141,7 @@ uintptr_t allocate_table_page() noexcept {
     for (size_t i = 0U; i < PAGE_ENTRY_COUNT; ++i) {
         table[i] = 0ULL;
     }
-    flush_dcache_range(reinterpret_cast<uintptr_t>(table), Arch::PAGE_SIZE);
+    flush_dcache_range(reinterpret_cast<uintptr_t>(table), Arch::AArch64::PAGE_SIZE);
     return phys;
 }
 
@@ -175,7 +175,7 @@ uint64_t* ensure_l2_table(uint64_t* root_l0, size_t l0_idx, size_t l1_idx, bool 
 }
 
 bool map_block_2m_in_root(uint64_t* root_l0, uintptr_t virt_addr, uintptr_t phys_addr) noexcept {
-    if (((virt_addr | phys_addr) & (Arch::BLOCK_SIZE_2M - 1U)) != 0U) {
+    if (((virt_addr | phys_addr) & (Arch::AArch64::BLOCK_SIZE_2M - 1U)) != 0U) {
         return false;
     }
 
@@ -309,9 +309,9 @@ void map_ram_range_hybrid(uint64_t* root_l0, uintptr_t va_offset, uintptr_t rang
             continue;
         }
 
-        const bool is_2m_aligned = (addr & (Arch::BLOCK_SIZE_2M - 1U)) == 0U;
-        const bool fits_in_range = (range_end - addr) >= Arch::BLOCK_SIZE_2M;
-        const uintptr_t block_end = addr + Arch::BLOCK_SIZE_2M;
+        const bool is_2m_aligned = (addr & (Arch::AArch64::BLOCK_SIZE_2M - 1U)) == 0U;
+        const bool fits_in_range = (range_end - addr) >= Arch::AArch64::BLOCK_SIZE_2M;
+        const uintptr_t block_end = addr + Arch::AArch64::BLOCK_SIZE_2M;
         const bool overlaps_excl = (addr < excl_end) && (block_end > excl_start);
 
         if (is_2m_aligned && fits_in_range && !overlaps_excl) {
@@ -319,7 +319,7 @@ void map_ram_range_hybrid(uint64_t* root_l0, uintptr_t va_offset, uintptr_t rang
             addr = block_end;
         } else {
             map_page_in_root(root_l0, addr + va_offset, addr, ram_rw);
-            addr += Arch::PAGE_SIZE;
+            addr += Arch::AArch64::PAGE_SIZE;
         }
     }
 }
@@ -371,19 +371,19 @@ class AArch64MemoryControl : public HAL::MemoryControl {
         map_page_in_root(g_ttbr1_l0, 0x09000000ULL + higher_half_offset, 0x09000000U, dev_rw);
 
         // 2. Map Kernel ELF Segments at 4 KiB L3 granularity (enforcing W^X) in TTBR0 and TTBR1
-        for (uintptr_t addr = text_start; addr < text_end; addr += Arch::PAGE_SIZE) {
+        for (uintptr_t addr = text_start; addr < text_end; addr += Arch::AArch64::PAGE_SIZE) {
             map_page_in_root(g_ttbr0_l0, addr, addr,
                              HAL::PageFlags::Read | HAL::PageFlags::Execute);
             map_page_in_root(g_ttbr1_l0, addr + higher_half_offset, addr,
                              HAL::PageFlags::Read | HAL::PageFlags::Execute);
         }
 
-        for (uintptr_t addr = rodata_start; addr < rodata_end; addr += Arch::PAGE_SIZE) {
+        for (uintptr_t addr = rodata_start; addr < rodata_end; addr += Arch::AArch64::PAGE_SIZE) {
             map_page_in_root(g_ttbr0_l0, addr, addr, HAL::PageFlags::Read);
             map_page_in_root(g_ttbr1_l0, addr + higher_half_offset, addr, HAL::PageFlags::Read);
         }
 
-        for (uintptr_t addr = data_start; addr < kernel_end; addr += Arch::PAGE_SIZE) {
+        for (uintptr_t addr = data_start; addr < kernel_end; addr += Arch::AArch64::PAGE_SIZE) {
             map_page_in_root(g_ttbr0_l0, addr, addr, HAL::PageFlags::Read | HAL::PageFlags::Write);
             map_page_in_root(g_ttbr1_l0, addr + higher_half_offset, addr,
                              HAL::PageFlags::Read | HAL::PageFlags::Write);
@@ -395,8 +395,8 @@ class AArch64MemoryControl : public HAL::MemoryControl {
         map_ram_range_hybrid(g_ttbr1_l0, higher_half_offset, ram_base, ram_end, kernel_start,
                              kernel_end);
 
-        Arch::init_mmu(reinterpret_cast<uintptr_t>(g_ttbr0_l0),
-                       reinterpret_cast<uintptr_t>(g_ttbr1_l0));
+        Arch::AArch64::init_mmu(reinterpret_cast<uintptr_t>(g_ttbr0_l0),
+                                reinterpret_cast<uintptr_t>(g_ttbr1_l0));
     }
 
     HAL::MmuStatus status() const noexcept override {
@@ -414,7 +414,7 @@ constinit AArch64MemoryControl aarch64_mmu{};
 
 } // namespace
 
-namespace Arch {
+namespace Arch::AArch64 {
 
 void init_mmu(uintptr_t ttbr0_base, uintptr_t ttbr1_base) {
     flush_dcache_range(ttbr0_base, 4096U);
@@ -454,7 +454,7 @@ void init_mmu(uintptr_t ttbr0_base, uintptr_t ttbr1_base) {
                  : "memory");
 }
 
-} // namespace Arch
+} // namespace Arch::AArch64
 
 namespace HAL {
 MemoryControl& get_mmu() noexcept {
@@ -527,7 +527,7 @@ bool AddressSpaceBackend::resolve_cow_page(uintptr_t root_paddr, uintptr_t vaddr
         user_rw_flags |= HAL::PageFlags::Cacheable;
     }
 
-    const uintptr_t page_offset = vaddr & (Arch::PAGE_SIZE - 1U);
+    const uintptr_t page_offset = vaddr & (Arch::AArch64::PAGE_SIZE - 1U);
     if (__atomic_load_n(&page->ref_count, __ATOMIC_ACQUIRE) > 1U) {
         const uintptr_t new_paddr = Kernel::MM::alloc_frame();
         if (new_paddr == 0U) {
@@ -537,8 +537,8 @@ bool AddressSpaceBackend::resolve_cow_page(uintptr_t root_paddr, uintptr_t vaddr
         auto* const dst_kva = reinterpret_cast<void*>(Kernel::MM::phys_to_virt(new_paddr));
         const auto* const src_kva =
             reinterpret_cast<const void*>(Kernel::MM::phys_to_virt(fault_paddr));
-        __builtin_memcpy(dst_kva, src_kva, Arch::PAGE_SIZE);
-        flush_dcache_range(reinterpret_cast<uintptr_t>(dst_kva), Arch::PAGE_SIZE);
+        __builtin_memcpy(dst_kva, src_kva, Arch::AArch64::PAGE_SIZE);
+        flush_dcache_range(reinterpret_cast<uintptr_t>(dst_kva), Arch::AArch64::PAGE_SIZE);
 
         if (!remap_user_page(root_paddr, vaddr, new_paddr, user_rw_flags)) {
             Kernel::MM::free_frame(new_paddr);
@@ -592,15 +592,15 @@ bool AddressSpaceBackend::resolve_demand_zero_page(uintptr_t root_paddr, uintptr
     }
 
     auto* const dst_kva = reinterpret_cast<void*>(Kernel::MM::phys_to_virt(new_paddr));
-    __builtin_memset(dst_kva, 0, Arch::PAGE_SIZE);
-    flush_dcache_range(reinterpret_cast<uintptr_t>(dst_kva), Arch::PAGE_SIZE);
+    __builtin_memset(dst_kva, 0, Arch::AArch64::PAGE_SIZE);
+    flush_dcache_range(reinterpret_cast<uintptr_t>(dst_kva), Arch::AArch64::PAGE_SIZE);
 
     if (!map_user_page(root_paddr, vaddr, new_paddr, intended_flags)) {
         Kernel::MM::free_frame(new_paddr);
         return false;
     }
 
-    out_paddr = new_paddr | (vaddr & (Arch::PAGE_SIZE - 1U));
+    out_paddr = new_paddr | (vaddr & (Arch::AArch64::PAGE_SIZE - 1U));
     return true;
 }
 
@@ -641,9 +641,9 @@ uintptr_t AddressSpaceBackend::create_root() noexcept {
                 Kernel::MM::phys_to_virt(k_l1[0] & TABLE_ADDR_MASK));
 
             new_l2[UART_L2_IDX] = k_l2[UART_L2_IDX];
-            flush_dcache_range(reinterpret_cast<uintptr_t>(new_l2), Arch::PAGE_SIZE);
+            flush_dcache_range(reinterpret_cast<uintptr_t>(new_l2), Arch::AArch64::PAGE_SIZE);
         }
-        flush_dcache_range(reinterpret_cast<uintptr_t>(new_l1), Arch::PAGE_SIZE);
+        flush_dcache_range(reinterpret_cast<uintptr_t>(new_l1), Arch::AArch64::PAGE_SIZE);
     }
 
     return root_phys;
@@ -670,7 +670,7 @@ bool AddressSpaceBackend::unmap_user_page(uintptr_t root_paddr, uintptr_t vaddr)
 bool AddressSpaceBackend::query_user_page(uintptr_t root_paddr, uintptr_t vaddr,
                                           uintptr_t& out_paddr,
                                           HAL::PageFlags& out_flags) noexcept {
-    constexpr uintptr_t PAGE_OFFSET_MASK = Arch::PAGE_SIZE - 1U;
+    constexpr uintptr_t PAGE_OFFSET_MASK = Arch::AArch64::PAGE_SIZE - 1U;
     constexpr uint64_t AP_USER_BIT = 1ULL << 6U;
     constexpr uint64_t UXN_BIT = 1ULL << 54U;
     constexpr uint64_t ATTR_INDEX_MASK = 0x7ULL;
@@ -962,7 +962,7 @@ bool AddressSpaceBackend::clone_user_space(uintptr_t src_root, uintptr_t dst_roo
                 Kernel::MM::page_get(src_page_paddr);
             }
 
-            flush_dcache_range(reinterpret_cast<uintptr_t>(dst_l3), Arch::PAGE_SIZE);
+            flush_dcache_range(reinterpret_cast<uintptr_t>(dst_l3), Arch::AArch64::PAGE_SIZE);
         }
     }
 

@@ -86,7 +86,8 @@ bool SplitVirtqueue::init(uint16_t queue_size) noexcept {
                               (static_cast<size_t>(queue_size) * sizeof(VringUsedElem)) +
                               sizeof(uint16_t);
     const size_t total_bytes = used_offset + used_bytes;
-    const size_t num_pages = align_up(total_bytes, Arch::PAGE_SIZE) / Arch::PAGE_SIZE;
+    const size_t num_pages =
+        align_up(total_bytes, Arch::AArch64::PAGE_SIZE) / Arch::AArch64::PAGE_SIZE;
 
     const uintptr_t base_paddr = Kernel::MM::alloc_frames(num_pages);
     if (base_paddr == 0U) {
@@ -94,7 +95,7 @@ bool SplitVirtqueue::init(uint16_t queue_size) noexcept {
     }
 
     auto* const base_kva = reinterpret_cast<void*>(Kernel::MM::phys_to_virt(base_paddr));
-    std::memset(base_kva, 0, num_pages * Arch::PAGE_SIZE);
+    std::memset(base_kva, 0, num_pages * Arch::AArch64::PAGE_SIZE);
 
     m_base_paddr = base_paddr;
     m_num_pages = num_pages;

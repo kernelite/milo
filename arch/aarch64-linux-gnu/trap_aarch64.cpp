@@ -167,9 +167,9 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
                         if (new_paddr != 0U) {
                             auto* const dst_kva =
                                 reinterpret_cast<void*>(Kernel::MM::phys_to_virt(new_paddr));
-                            __builtin_memset(dst_kva, 0, Arch::PAGE_SIZE);
+                            __builtin_memset(dst_kva, 0, Arch::AArch64::PAGE_SIZE);
                             HAL::get_cpu().flush_dcache_range(reinterpret_cast<uintptr_t>(dst_kva),
-                                                              Arch::PAGE_SIZE);
+                                                              Arch::AArch64::PAGE_SIZE);
 
                             if (HAL::AddressSpaceBackend::map_user_page(
                                     current_root, far, new_paddr, intended_flags)) {
@@ -214,9 +214,9 @@ void aarch64_handle_sync_exception(HAL::CpuContext* ctx, uint64_t esr, uint64_t 
                                     reinterpret_cast<void*>(Kernel::MM::phys_to_virt(new_paddr));
                                 const auto* const src_kva = reinterpret_cast<const void*>(
                                     Kernel::MM::phys_to_virt(fault_paddr));
-                                memcpy(dst_kva, src_kva, Arch::PAGE_SIZE);
+                                memcpy(dst_kva, src_kva, Arch::AArch64::PAGE_SIZE);
                                 HAL::get_cpu().flush_dcache_range(
-                                    reinterpret_cast<uintptr_t>(dst_kva), Arch::PAGE_SIZE);
+                                    reinterpret_cast<uintptr_t>(dst_kva), Arch::AArch64::PAGE_SIZE);
 
                                 if (HAL::AddressSpaceBackend::remap_user_page(
                                         current_root, far, new_paddr, user_rw_flags)) {

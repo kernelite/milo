@@ -40,7 +40,7 @@ static_assert(sizeof(AArch64KernelContext) == sizeof(HAL::KernelContext),
 static_assert(alignof(AArch64KernelContext) == alignof(HAL::KernelContext),
               "AArch64KernelContext must match HAL::KernelContext alignment");
 
-namespace Arch {
+namespace Arch::AArch64 {
 inline void set_vbar(uintptr_t vector_table_addr) {
     asm volatile("msr vbar_el1, %0" ::"r"(vector_table_addr));
 }
@@ -50,4 +50,4 @@ inline uint64_t get_esr() {
     return val;
 }
 void init_mmu(uintptr_t ttbr0_base, uintptr_t ttbr1_base);
-} // namespace Arch
+} // namespace Arch::AArch64

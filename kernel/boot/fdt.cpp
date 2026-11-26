@@ -257,7 +257,7 @@ void add_aligned_region(Kernel::Boot::MemoryMap& map, uint64_t raw_base,
         return;
     }
 
-    const uint64_t page_mask = static_cast<uint64_t>(Arch::PAGE_SIZE) - 1ULL;
+    const uint64_t page_mask = static_cast<uint64_t>(Arch::AArch64::PAGE_SIZE) - 1ULL;
     if (raw_base > UINT64_MAX - page_mask) {
         return;
     }
@@ -334,8 +334,8 @@ void sort_and_merge_regions(Kernel::Boot::MemoryMap& map) noexcept {
 
 void finalize_memory_map(Kernel::Boot::MemoryMap& map) noexcept {
     if (map.count == 0U) {
-        map.regions[0] =
-            Kernel::Boot::MemoryRegion{.base_paddr = Arch::RAM_BASE, .size = FALLBACK_RAM_SIZE};
+        map.regions[0] = Kernel::Boot::MemoryRegion{.base_paddr = Arch::AArch64::RAM_BASE,
+                                                    .size = FALLBACK_RAM_SIZE};
         map.count = 1U;
     }
 

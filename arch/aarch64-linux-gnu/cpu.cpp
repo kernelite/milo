@@ -22,10 +22,10 @@ constexpr uintptr_t AARCH64_USER_BRK_BASE = 0x0000000010000000ULL;
 constexpr uintptr_t AARCH64_USER_MMAP_BASE = 0x000000003FFE0000ULL;
 
 constinit HAL::PlatformInfo g_platform_info{
-    .ram_base = Arch::RAM_BASE,
+    .ram_base = Arch::AArch64::RAM_BASE,
     .ram_size = 256UL * 1024UL * 1024UL,
-    .max_ram_size = Arch::MAX_RAM_SIZE,
-    .page_size = Arch::PAGE_SIZE,
+    .max_ram_size = Arch::AArch64::MAX_RAM_SIZE,
+    .page_size = Arch::AArch64::PAGE_SIZE,
     .higher_half_offset = AARCH64_HIGHER_HALF_OFFSET,
     .user_va_limit = AARCH64_USER_VA_LIMIT,
     .user_stack_top = AARCH64_USER_STACK_TOP,
