@@ -321,43 +321,43 @@ void ascend_parent(RefPtr<Dentry>& curr, Mount*& curr_mount) noexcept {
 // --- Inode lifecycle methods ---
 
 void Inode::retain() noexcept {
-    if (active) {
-        ++refcount;
+    if (m_active) {
+        ++m_refcount;
     }
 }
 
 void Inode::release() noexcept {
-    if (!active || refcount == 0U) {
+    if (!m_active || m_refcount == 0U) {
         return;
     }
-    --refcount;
-    if (refcount == 0U) {
-        if (sb != nullptr && sb->destroy_inode(this)) {
+    --m_refcount;
+    if (m_refcount == 0U) {
+        if (m_sb != nullptr && m_sb->destroy_inode(this)) {
             return;
         }
-        *this = Inode{};
+        reset();
     }
 }
 
 // --- Dentry lifecycle & hierarchy methods ---
 
 void Dentry::retain() noexcept {
-    if (active) {
-        ++refcount;
+    if (m_active) {
+        ++m_refcount;
     }
 }
 
 void Dentry::release() noexcept {
-    if (!active || refcount == 0U) {
+    if (!m_active || m_refcount == 0U) {
         return;
     }
-    --refcount;
-    if (refcount == 0U) {
-        if (inode != nullptr) {
-            inode->release();
-            inode = nullptr;
+    --m_refcount;
+    if (m_refcount == 0U) {
+        if (m_inode != nullptr) {
+            m_inode->release();
+            m_inode = nullptr;
         }
-        *this = Dentry{};
+        reset();
     }
 }
 
@@ -365,35 +365,35 @@ void Dentry::attach_child(Dentry* child) noexcept {
     if (child == nullptr || child == this) {
         return;
     }
-    child->parent = this;
-    child->next_sibling = first_child;
-    first_child = child;
+    child->m_parent = this;
+    child->m_next_sibling = m_first_child;
+    m_first_child = child;
 }
 
 void Dentry::detach() noexcept {
-    if (parent == nullptr) {
+    if (m_parent == nullptr) {
         return;
     }
     Dentry* prev = nullptr;
-    Dentry* cur = parent->first_child;
+    Dentry* cur = m_parent->m_first_child;
     while (cur != nullptr) {
         if (cur == this) {
             if (prev == nullptr) {
-                parent->first_child = cur->next_sibling;
+                m_parent->m_first_child = cur->m_next_sibling;
             } else {
-                prev->next_sibling = cur->next_sibling;
+                prev->m_next_sibling = cur->m_next_sibling;
             }
-            next_sibling = nullptr;
-            parent = nullptr;
+            m_next_sibling = nullptr;
+            m_parent = nullptr;
             return;
         }
         prev = cur;
-        cur = cur->next_sibling;
+        cur = cur->m_next_sibling;
     }
 }
 
 Dentry* Dentry::find_child(StringView child_name) const noexcept {
-    for (Dentry* cur = first_child; cur != nullptr; cur = cur->next_sibling) {
+    for (Dentry* cur = m_first_child; cur != nullptr; cur = cur->m_next_sibling) {
         if (cur->is_active() && cur->name_view() == child_name) {
             return cur;
         }
@@ -404,78 +404,78 @@ Dentry* Dentry::find_child(StringView child_name) const noexcept {
 // --- File lifecycle & I/O operation methods ---
 
 void File::retain() noexcept {
-    if (active) {
-        ++refcount;
+    if (m_active) {
+        ++m_refcount;
     }
 }
 
 void File::release() noexcept {
-    if (!active || refcount == 0U) {
+    if (!m_active || m_refcount == 0U) {
         return;
     }
-    --refcount;
-    if (refcount == 0U) {
-        if (f_ops != nullptr && f_ops->release != nullptr) {
-            (void)f_ops->release(inode, this);
+    --m_refcount;
+    if (m_refcount == 0U) {
+        if (m_f_ops != nullptr && m_f_ops->release != nullptr) {
+            (void)m_f_ops->release(m_inode, this);
         }
-        if (dentry != nullptr) {
-            dentry->release();
-            dentry = nullptr;
+        if (m_dentry != nullptr) {
+            m_dentry->release();
+            m_dentry = nullptr;
         }
-        if (inode != nullptr) {
-            inode->release();
-            inode = nullptr;
+        if (m_inode != nullptr) {
+            m_inode->release();
+            m_inode = nullptr;
         }
-        *this = File{};
+        reset();
     }
 }
 
 int64_t File::read(void* buf, size_t count) noexcept {
-    if (!active || inode == nullptr) {
+    if (!m_active || m_inode == nullptr) {
         return kEbadf;
     }
-    const uint32_t acc = flags & kOpenAccessMask;
+    const uint32_t acc = m_flags & kOpenAccessMask;
     if (acc == kOpenWriteOnly) {
         return kEbadf;
     }
-    if (inode->is_dir()) {
+    if (m_inode->is_dir()) {
         return kEisdir;
     }
-    if (f_ops == nullptr || f_ops->read == nullptr) {
+    if (m_f_ops == nullptr || m_f_ops->read == nullptr) {
         return kEinval;
     }
-    return f_ops->read(this, buf, count, &offset);
+    return m_f_ops->read(this, buf, count, &m_offset);
 }
 
 int64_t File::write(const void* buf, size_t count) noexcept {
-    if (!active || inode == nullptr) {
+    if (!m_active || m_inode == nullptr) {
         return kEbadf;
     }
-    const uint32_t acc = flags & kOpenAccessMask;
+    const uint32_t acc = m_flags & kOpenAccessMask;
     if (acc == kOpenReadOnly) {
         return kEbadf;
     }
-    if (inode->is_dir()) {
+    if (m_inode->is_dir()) {
         return kEisdir;
     }
-    if (inode->get_sb() != nullptr && inode->get_sb()->is_read_only()) {
+    if (m_inode->get_sb() != nullptr && m_inode->get_sb()->is_read_only()) {
         return kErofs;
     }
-    if (f_ops == nullptr || f_ops->write == nullptr) {
+    if (m_f_ops == nullptr || m_f_ops->write == nullptr) {
         return kEinval;
     }
-    if ((flags & kOpenAppend) != 0U) {
-        offset = inode->get_size();
+    if ((m_flags & kOpenAppend) != 0U) {
+        m_offset = m_inode->get_size();
     }
-    return f_ops->write(this, buf, count, &offset);
+    return m_f_ops->write(this, buf, count, &m_offset);
 }
 
 int64_t File::seek(int64_t delta, SeekWhence whence) noexcept {
-    if (!active || inode == nullptr) {
+    if (!m_active || m_inode == nullptr) {
         return kEbadf;
     }
-    if (f_ops != nullptr && f_ops->lseek != nullptr) {
-        return f_ops->lseek(this, delta, whence);
+    if (m_f_ops != nullptr && m_f_ops->lseek != nullptr) {
+        return m_f_ops->lseek(this, delta, whence);
     }
 
     int64_t base = 0;
@@ -484,10 +484,10 @@ int64_t File::seek(int64_t delta, SeekWhence whence) noexcept {
         base = 0;
         break;
     case SeekWhence::kCur:
-        base = static_cast<int64_t>(offset);
+        base = static_cast<int64_t>(m_offset);
         break;
     case SeekWhence::kEnd:
-        base = static_cast<int64_t>(inode->get_size());
+        base = static_cast<int64_t>(m_inode->get_size());
         break;
     default:
         return kEinval;
@@ -497,28 +497,28 @@ int64_t File::seek(int64_t delta, SeekWhence whence) noexcept {
     if (target < 0) {
         return kEinval;
     }
-    offset = static_cast<uint64_t>(target);
+    m_offset = static_cast<uint64_t>(target);
     return target;
 }
 
 int32_t File::ioctl(uint64_t request, uint64_t arg) noexcept {
-    if (!active || inode == nullptr) {
+    if (!m_active || m_inode == nullptr) {
         return kEbadf;
     }
-    if (f_ops == nullptr || f_ops->ioctl == nullptr) {
+    if (m_f_ops == nullptr || m_f_ops->ioctl == nullptr) {
         return kEnotty;
     }
-    return f_ops->ioctl(this, request, arg);
+    return m_f_ops->ioctl(this, request, arg);
 }
 
 int16_t File::poll(int16_t events) noexcept {
-    if (!active || inode == nullptr) {
+    if (!m_active || m_inode == nullptr) {
         return kPollNval;
     }
-    if (f_ops != nullptr && f_ops->poll != nullptr) {
-        return f_ops->poll(this, events);
+    if (m_f_ops != nullptr && m_f_ops->poll != nullptr) {
+        return m_f_ops->poll(this, events);
     }
-    const uint32_t acc = flags & kOpenAccessMask;
+    const uint32_t acc = m_flags & kOpenAccessMask;
     const auto event_mask = static_cast<uint16_t>(events);
     uint16_t revents = 0U;
     if (acc == kOpenReadOnly || acc == kOpenReadWrite) {
@@ -531,27 +531,27 @@ int16_t File::poll(int16_t events) noexcept {
 }
 
 int32_t File::readdir(DirEntryInfo* out_entry) noexcept {
-    if (!active || inode == nullptr || out_entry == nullptr) {
+    if (!m_active || m_inode == nullptr || out_entry == nullptr) {
         return kEbadf;
     }
-    if (!inode->is_dir()) {
+    if (!m_inode->is_dir()) {
         return kEnotdir;
     }
-    if (f_ops == nullptr || f_ops->readdir == nullptr) {
+    if (m_f_ops == nullptr || m_f_ops->readdir == nullptr) {
         return kEopnotsupp;
     }
-    return f_ops->readdir(this, out_entry);
+    return m_f_ops->readdir(this, out_entry);
 }
 
 int32_t File::fsync(int32_t datasync) noexcept {
-    if (!active || inode == nullptr) {
+    if (!m_active || m_inode == nullptr) {
         return kEbadf;
     }
-    if (f_ops != nullptr && f_ops->fsync != nullptr) {
-        return f_ops->fsync(this, datasync);
+    if (m_f_ops != nullptr && m_f_ops->fsync != nullptr) {
+        return m_f_ops->fsync(this, datasync);
     }
-    if (inode->get_sb() != nullptr) {
-        return inode->get_sb()->sync();
+    if (m_inode->get_sb() != nullptr) {
+        return m_inode->get_sb()->sync();
     }
     return kOk;
 }
@@ -559,7 +559,22 @@ int32_t File::fsync(int32_t datasync) noexcept {
 // --- VFS lifecycle, pools & namespace operations ---
 
 void vfs_reset() noexcept {
-    g_vfs = VfsState{};
+    for (auto& sb : g_vfs.superblocks) {
+        sb.reset();
+    }
+    for (auto& mnt : g_vfs.mounts) {
+        mnt.reset();
+    }
+    for (auto& ino : g_vfs.inodes) {
+        ino.reset();
+    }
+    for (auto& entry : g_vfs.dentries) {
+        entry.reset();
+    }
+    for (auto& file : g_vfs.files) {
+        file.reset();
+    }
+    g_vfs.root_mount = nullptr;
 }
 
 VfsStats vfs_stats() noexcept {
@@ -595,8 +610,7 @@ VfsStats vfs_stats() noexcept {
 Superblock* vfs_alloc_superblock() noexcept {
     for (auto& sb : g_vfs.superblocks) {
         if (!sb.is_active()) {
-            sb = Superblock{};
-            sb.active = true;
+            sb.activate();
             return &sb;
         }
     }
@@ -607,7 +621,7 @@ void vfs_free_superblock(Superblock* sb) noexcept {
     if (sb == nullptr || !sb->is_active()) {
         return;
     }
-    *sb = Superblock{};
+    sb->reset();
 }
 
 Inode* vfs_alloc_inode(Superblock* sb) noexcept {
@@ -621,27 +635,12 @@ Inode* vfs_alloc_inode(Superblock* sb) noexcept {
     }
     for (auto& ino : g_vfs.inodes) {
         if (!ino.is_active()) {
-            ino = Inode{};
-            ino.set_sb(sb);
-            ino.refcount = 1U;
+            ino.activate(sb);
             ino.set_nlink(1U);
-            ino.active = true;
             return &ino;
         }
     }
     return nullptr;
-}
-
-void inode_get(Inode* inode) noexcept {
-    if (inode != nullptr) {
-        inode->retain();
-    }
-}
-
-void inode_put(Inode* inode) noexcept {
-    if (inode != nullptr) {
-        inode->release();
-    }
 }
 
 Dentry* vfs_alloc_dentry(Superblock* sb, Dentry* parent, StringView name) noexcept {
@@ -650,68 +649,21 @@ Dentry* vfs_alloc_dentry(Superblock* sb, Dentry* parent, StringView name) noexce
     }
     for (auto& entry : g_vfs.dentries) {
         if (!entry.is_active()) {
-            entry = Dentry{};
-            entry.set_name(name);
-            entry.set_sb(sb);
-            entry.set_parent(parent);
-            entry.refcount = 1U;
-            entry.active = true;
+            entry.activate(sb, parent, name);
             return &entry;
         }
     }
     return nullptr;
 }
 
-void dentry_get(Dentry* dentry) noexcept {
-    if (dentry != nullptr) {
-        dentry->retain();
-    }
-}
-
-void dentry_put(Dentry* dentry) noexcept {
-    if (dentry != nullptr) {
-        dentry->release();
-    }
-}
-
-void dentry_attach(Dentry* parent, Dentry* child) noexcept {
-    if (parent != nullptr) {
-        parent->attach_child(child);
-    }
-}
-
-void dentry_detach(Dentry* child) noexcept {
-    if (child != nullptr) {
-        child->detach();
-    }
-}
-
-Dentry* dentry_find_child(Dentry* parent, StringView name) noexcept {
-    return (parent != nullptr) ? parent->find_child(name) : nullptr;
-}
-
 File* vfs_alloc_file() noexcept {
     for (auto& file : g_vfs.files) {
         if (!file.is_active()) {
-            file = File{};
-            file.refcount = 1U;
-            file.active = true;
+            file.activate();
             return &file;
         }
     }
     return nullptr;
-}
-
-void file_get(File* file) noexcept {
-    if (file != nullptr) {
-        file->retain();
-    }
-}
-
-void file_put(File* file) noexcept {
-    if (file != nullptr) {
-        file->release();
-    }
 }
 
 Dentry* vfs_root_dentry() noexcept {
@@ -962,8 +914,8 @@ int32_t vfs_open_at(Dentry* cwd, StringView path, uint32_t flags, uint32_t mode,
     }
 
     inode->retain();
-    file->inode = inode;
-    file->dentry = target.detach();
+    file->set_inode(inode);
+    file->set_dentry(target.detach());
     file->set_flags(flags);
     file->set_offset(((flags & kOpenAppend) != 0U) ? inode->get_size() : 0U);
     file->set_f_ops(inode->get_f_ops());

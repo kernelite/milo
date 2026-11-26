@@ -24,19 +24,8 @@ void vfs_reset() noexcept;
 void vfs_free_superblock(Superblock* sb) noexcept;
 
 [[nodiscard]] Inode* vfs_alloc_inode(Superblock* sb) noexcept;
-void inode_get(Inode* inode) noexcept;
-void inode_put(Inode* inode) noexcept;
-
 [[nodiscard]] Dentry* vfs_alloc_dentry(Superblock* sb, Dentry* parent, StringView name) noexcept;
-void dentry_get(Dentry* dentry) noexcept;
-void dentry_put(Dentry* dentry) noexcept;
-void dentry_attach(Dentry* parent, Dentry* child) noexcept;
-void dentry_detach(Dentry* child) noexcept;
-[[nodiscard]] Dentry* dentry_find_child(Dentry* parent, StringView name) noexcept;
-
 [[nodiscard]] File* vfs_alloc_file() noexcept;
-void file_get(File* file) noexcept;
-void file_put(File* file) noexcept;
 
 // Mount table management.
 [[nodiscard]] int32_t vfs_mount_root(Superblock* root_sb) noexcept;

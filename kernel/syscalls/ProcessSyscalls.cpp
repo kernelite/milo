@@ -335,13 +335,13 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
         if (orc != Kernel::FS::kOk) {
             return orc;
         }
-        if (exec_file->inode == nullptr || !exec_file->inode->is_reg() ||
-            exec_file->inode->size == 0U) {
+        if (exec_file->get_inode() == nullptr || !exec_file->get_inode()->is_reg() ||
+            exec_file->get_inode()->get_size() == 0U) {
             (void)Kernel::FS::vfs_close(exec_file);
             return ERR_ENOEXEC;
         }
 
-        const auto file_size = static_cast<size_t>(exec_file->inode->size);
+        const auto file_size = static_cast<size_t>(exec_file->get_inode()->get_size());
         const size_t num_pages = (file_size + page_size - 1U) / page_size;
         const uintptr_t buf_paddr = Kernel::MM::alloc_frames(num_pages);
         if (buf_paddr == 0U) {

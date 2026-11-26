@@ -170,7 +170,7 @@ bool FdTable::dup_slot(size_t dst_idx, size_t src_idx, bool clear_cloexec) noexc
         copied.set_cloexec(false);
     }
     if (copied.is_open()) {
-        Kernel::FS::file_get(copied.file());
+        copied.file()->retain();
     }
     m_entries[dst_idx] = copied;
     return true;
@@ -224,7 +224,7 @@ bool FdTable::clone_from(const FdTable& src) noexcept {
         const FileDescriptor& src_desc = src.m_entries[idx];
         m_entries[idx] = src_desc;
         if (src_desc.is_open()) {
-            Kernel::FS::file_get(src_desc.file());
+            src_desc.file()->retain();
         }
     }
     return true;

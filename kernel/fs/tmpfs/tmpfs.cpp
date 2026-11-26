@@ -121,7 +121,7 @@ void tmpfs_destroy_inode(Inode* inode) noexcept {
         node->reset();
         inode->set_fs_private(nullptr);
     }
-    *inode = Inode{};
+    inode->reset();
 }
 
 int64_t tmpfs_read(File* file, void* buf, size_t count, uint64_t* offset) noexcept {

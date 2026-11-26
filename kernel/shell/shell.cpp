@@ -1375,13 +1375,13 @@ void cmd_test_syscall() noexcept {
     if (non_tty_file == nullptr) {
         Kernel::FS::Inode* dummy_ino = Kernel::FS::vfs_alloc_inode(nullptr);
         if (dummy_ino != nullptr) {
-            dummy_ino->mode = Kernel::FS::kModeReg | 0444U;
+            dummy_ino->set_mode(Kernel::FS::kModeReg | 0444U);
             non_tty_file = Kernel::FS::vfs_alloc_file();
             if (non_tty_file != nullptr) {
-                non_tty_file->inode = dummy_ino;
-                non_tty_file->flags = Kernel::FS::kOpenReadOnly;
+                non_tty_file->set_inode(dummy_ino);
+                non_tty_file->set_flags(Kernel::FS::kOpenReadOnly);
             } else {
-                Kernel::FS::inode_put(dummy_ino);
+                dummy_ino->release();
             }
         }
     }

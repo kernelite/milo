@@ -150,23 +150,23 @@ Kernel::FS::File* get_proc_file(Kernel::Process::Process* proc, uint64_t raw_fd)
 
 linux_stat inode_to_linux_stat(const Kernel::FS::Inode& inode) noexcept {
     const linux_timespec atime =
-        Kernel::Time::Duration::from_nanoseconds(inode.atime_ns).to_linux_timespec();
+        Kernel::Time::Duration::from_nanoseconds(inode.get_atime_ns()).to_linux_timespec();
     const linux_timespec mtime =
-        Kernel::Time::Duration::from_nanoseconds(inode.mtime_ns).to_linux_timespec();
+        Kernel::Time::Duration::from_nanoseconds(inode.get_mtime_ns()).to_linux_timespec();
     const linux_timespec ctime =
-        Kernel::Time::Duration::from_nanoseconds(inode.ctime_ns).to_linux_timespec();
+        Kernel::Time::Duration::from_nanoseconds(inode.get_ctime_ns()).to_linux_timespec();
 
     linux_stat stat_out{};
     stat_out.st_dev = 1ULL;
-    stat_out.st_ino = (inode.ino != 0U) ? inode.ino : 1ULL;
-    stat_out.st_mode = inode.mode;
-    stat_out.st_nlink = (inode.nlink != 0U) ? inode.nlink : 1U;
-    stat_out.st_uid = inode.uid;
-    stat_out.st_gid = inode.gid;
-    stat_out.st_rdev = inode.rdev;
-    stat_out.st_size = static_cast<int64_t>(inode.size);
+    stat_out.st_ino = (inode.get_ino() != 0U) ? inode.get_ino() : 1ULL;
+    stat_out.st_mode = inode.get_mode();
+    stat_out.st_nlink = (inode.get_nlink() != 0U) ? inode.get_nlink() : 1U;
+    stat_out.st_uid = inode.get_uid();
+    stat_out.st_gid = inode.get_gid();
+    stat_out.st_rdev = inode.get_rdev();
+    stat_out.st_size = static_cast<int64_t>(inode.get_size());
     stat_out.st_blksize = 4096;
-    stat_out.st_blocks = static_cast<int64_t>((inode.size + 511U) / 512U);
+    stat_out.st_blocks = static_cast<int64_t>((inode.get_size() + 511U) / 512U);
     stat_out.st_atime_sec = atime.tv_sec;
     stat_out.st_atime_nsec = atime.tv_nsec;
     stat_out.st_mtime_sec = mtime.tv_sec;
@@ -327,11 +327,12 @@ int64_t resolve_dirfd_dentry(Kernel::Process::Process& proc, int32_t dirfd,
     if (dir_file == nullptr) {
         return ERR_EBADF;
     }
-    if (dir_file->inode == nullptr || !dir_file->inode->is_dir() || dir_file->dentry == nullptr) {
+    if (dir_file->get_inode() == nullptr || !dir_file->get_inode()->is_dir() ||
+        dir_file->get_dentry() == nullptr) {
         return ERR_ENOTDIR;
     }
-    Kernel::FS::dentry_get(dir_file->dentry);
-    out_base = dir_file->dentry;
+    dir_file->get_dentry()->retain();
+    out_base = dir_file->get_dentry();
     return 0;
 }
 
@@ -339,7 +340,7 @@ void build_dentry_path(const Kernel::FS::Dentry* target, char* out, size_t cap) 
     if (out == nullptr || cap < 2U) {
         return;
     }
-    if (target == nullptr || target->is_root() || target->parent == nullptr) {
+    if (target == nullptr || target->is_root() || target->get_parent() == nullptr) {
         out[0] = '/';
         out[1] = '\0';
         return;
@@ -347,7 +348,7 @@ void build_dentry_path(const Kernel::FS::Dentry* target, char* out, size_t cap) 
     const Kernel::FS::Dentry* chain[32]{};
     size_t depth = 0U;
     for (const Kernel::FS::Dentry* cur = target;
-         cur != nullptr && cur->parent != nullptr && depth < 32U; cur = cur->parent) {
+         cur != nullptr && cur->get_parent() != nullptr && depth < 32U; cur = cur->get_parent()) {
         chain[depth++] = cur;
     }
     size_t pos = 0U;
