@@ -124,7 +124,7 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
         vfs_flags |= Kernel::FS::kOpenNonBlock;
     }
 
-    const int slot = Kernel::Process::allocate_fd(*proc);
+    const int slot = proc->fds.allocate(proc->rlim_nofile_cur);
     if (slot < 0) {
         if (base_dentry != nullptr) {
             Kernel::FS::dentry_put(base_dentry);
@@ -144,10 +144,7 @@ int64_t sys_openat(int32_t dirfd, uintptr_t user_pathname, uint64_t flags, uint6
     }
 
     const uint32_t fd_flags = ((flags & O_CLOEXEC) != 0ULL) ? Kernel::Process::FD_FLAG_CLOEXEC : 0U;
-    proc->fd_table[slot] = Kernel::Process::FileDescriptor{
-        .file = file,
-        .fd_flags = fd_flags,
-    };
+    (void)proc->fds.install(static_cast<size_t>(slot), file, fd_flags);
     return slot;
 }
 
@@ -299,14 +296,15 @@ int64_t sys_ftruncate(uint64_t raw_fd, int64_t length) noexcept {
         return ERR_EINVAL;
     }
     auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr || proc->fd_table == nullptr || raw_fd >= proc->fd_capacity) {
+    if (proc == nullptr) {
         return ERR_EBADF;
     }
-    const auto& desc = proc->fd_table[static_cast<size_t>(raw_fd)];
-    if (!desc.is_open() || !desc.is_writable() || desc.file->inode == nullptr) {
+    const auto* const desc = proc->fds.at(static_cast<size_t>(raw_fd));
+    if (desc == nullptr || !desc->is_open() || !desc->is_writable() ||
+        desc->file()->inode == nullptr) {
         return ERR_EBADF;
     }
-    Kernel::FS::Inode* inode = desc.file->inode;
+    Kernel::FS::Inode* inode = desc->file()->inode;
     if (inode->sb != nullptr && inode->sb->is_read_only()) {
         return ERR_EROFS;
     }
@@ -626,14 +624,15 @@ int64_t sys_fchownat(int32_t dirfd, uintptr_t user_pathname, uint32_t owner, uin
 
 int64_t sys_close(uint64_t raw_fd) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr || proc->fd_table == nullptr || raw_fd >= proc->fd_capacity) {
+    if (proc == nullptr) {
         return ERR_EBADF;
     }
     const auto fd_idx = static_cast<size_t>(raw_fd);
-    if (!proc->fd_table[fd_idx].is_open()) {
+    const auto* const desc = proc->fds.at(fd_idx);
+    if (desc == nullptr || !desc->is_open()) {
         return ERR_EBADF;
     }
-    Kernel::Process::close_fd(*proc, fd_idx);
+    proc->fds.close(fd_idx);
     return 0;
 }
 
@@ -920,26 +919,27 @@ int64_t sys_getdents64(uint64_t raw_fd, uintptr_t user_dirp, uint64_t count) noe
 
 int64_t sys_dup(uint64_t raw_oldfd) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr || proc->fd_table == nullptr || raw_oldfd >= proc->fd_capacity) {
+    if (proc == nullptr) {
         return ERR_EBADF;
     }
     const auto old_idx = static_cast<size_t>(raw_oldfd);
-    if (!proc->fd_table[old_idx].is_open()) {
+    const auto* const old_desc = proc->fds.at(old_idx);
+    if (old_desc == nullptr || !old_desc->is_open()) {
         return ERR_EBADF;
     }
 
-    const int new_idx = Kernel::Process::allocate_fd(*proc, 0U);
+    const int new_idx = proc->fds.allocate(proc->rlim_nofile_cur, 0U);
     if (new_idx < 0) {
         return new_idx;
     }
 
-    Kernel::Process::copy_fd_slot(proc->fd_table[new_idx], proc->fd_table[old_idx], true);
+    (void)proc->fds.dup_slot(static_cast<size_t>(new_idx), old_idx, true);
     return new_idx;
 }
 
 int64_t sys_dup3(uint64_t raw_oldfd, uint64_t raw_newfd, uint64_t flags) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr || proc->fd_table == nullptr || raw_oldfd >= proc->fd_capacity) {
+    if (proc == nullptr) {
         return ERR_EBADF;
     }
     if (raw_newfd >= proc->rlim_nofile_cur) {
@@ -954,34 +954,34 @@ int64_t sys_dup3(uint64_t raw_oldfd, uint64_t raw_newfd, uint64_t flags) noexcep
 
     const auto old_idx = static_cast<size_t>(raw_oldfd);
     const auto new_idx = static_cast<size_t>(raw_newfd);
-    if (!proc->fd_table[old_idx].is_open()) {
+    const auto* const old_desc = proc->fds.at(old_idx);
+    if (old_desc == nullptr || !old_desc->is_open()) {
         return ERR_EBADF;
     }
 
-    if (new_idx >= proc->fd_capacity) {
-        if (!Kernel::Process::ensure_fd_capacity(*proc, new_idx + 1U)) {
+    if (new_idx >= proc->fds.capacity()) {
+        if (!proc->fds.ensure_capacity(new_idx + 1U, proc->rlim_nofile_cur)) {
             return ERR_ENOMEM;
         }
     }
 
-    if (proc->fd_table[new_idx].is_open()) {
-        Kernel::Process::close_fd(*proc, new_idx);
-    }
-
-    Kernel::Process::copy_fd_slot(proc->fd_table[new_idx], proc->fd_table[old_idx], true);
+    (void)proc->fds.dup_slot(new_idx, old_idx, true);
     if ((flags & O_CLOEXEC) != 0ULL) {
-        proc->fd_table[new_idx].fd_flags |= Kernel::Process::FD_FLAG_CLOEXEC;
+        if (auto* const dst_desc = proc->fds.at(new_idx); dst_desc != nullptr) {
+            dst_desc->set_cloexec(true);
+        }
     }
     return static_cast<int64_t>(new_idx);
 }
 
 int64_t sys_fcntl(uint64_t raw_fd, uint64_t cmd, uint64_t arg) noexcept {
     auto* const proc = Kernel::Process::current_process();
-    if (proc == nullptr || proc->fd_table == nullptr || raw_fd >= proc->fd_capacity) {
+    if (proc == nullptr) {
         return ERR_EBADF;
     }
     const auto fd_idx = static_cast<size_t>(raw_fd);
-    if (!proc->fd_table[fd_idx].is_open()) {
+    auto* const desc = proc->fds.at(fd_idx);
+    if (desc == nullptr || !desc->is_open()) {
         return ERR_EBADF;
     }
 
@@ -991,42 +991,38 @@ int64_t sys_fcntl(uint64_t raw_fd, uint64_t cmd, uint64_t arg) noexcept {
         if (arg >= proc->rlim_nofile_cur) {
             return ERR_EINVAL;
         }
-        const int new_idx = Kernel::Process::allocate_fd(*proc, static_cast<size_t>(arg));
+        const int new_idx = proc->fds.allocate(proc->rlim_nofile_cur, static_cast<size_t>(arg));
         if (new_idx < 0) {
             return new_idx;
         }
-        Kernel::Process::copy_fd_slot(proc->fd_table[new_idx], proc->fd_table[fd_idx], true);
+        (void)proc->fds.dup_slot(static_cast<size_t>(new_idx), fd_idx, true);
         if (cmd == F_DUPFD_CLOEXEC) {
-            proc->fd_table[new_idx].fd_flags |= Kernel::Process::FD_FLAG_CLOEXEC;
+            if (auto* const dst_desc = proc->fds.at(static_cast<size_t>(new_idx));
+                dst_desc != nullptr) {
+                dst_desc->set_cloexec(true);
+            }
         }
         return new_idx;
     }
 
     case F_GETFD:
-        return ((proc->fd_table[fd_idx].fd_flags & Kernel::Process::FD_FLAG_CLOEXEC) != 0U)
-                   ? static_cast<int64_t>(FD_CLOEXEC_BIT)
-                   : 0;
+        return desc->has_cloexec() ? static_cast<int64_t>(FD_CLOEXEC_BIT) : 0;
 
     case F_SETFD:
-        if ((arg & FD_CLOEXEC_BIT) != 0ULL) {
-            proc->fd_table[fd_idx].fd_flags |= Kernel::Process::FD_FLAG_CLOEXEC;
-        } else {
-            proc->fd_table[fd_idx].fd_flags &= ~Kernel::Process::FD_FLAG_CLOEXEC;
-        }
+        desc->set_cloexec((arg & FD_CLOEXEC_BIT) != 0ULL);
         return 0;
 
     case F_GETFL: {
-        const auto& desc = proc->fd_table[fd_idx];
         uint64_t flags = O_RDONLY;
-        if (desc.is_readable() && desc.is_writable()) {
+        if (desc->is_readable() && desc->is_writable()) {
             flags = O_RDWR;
-        } else if (desc.is_writable()) {
+        } else if (desc->is_writable()) {
             flags = O_WRONLY;
         }
-        if ((desc.file->flags & Kernel::FS::kOpenNonBlock) != 0U) {
+        if ((desc->file()->flags & Kernel::FS::kOpenNonBlock) != 0U) {
             flags |= O_NONBLOCK;
         }
-        if ((desc.file->flags & Kernel::FS::kOpenAppend) != 0U) {
+        if ((desc->file()->flags & Kernel::FS::kOpenAppend) != 0U) {
             flags |= O_APPEND;
         }
         return static_cast<int64_t>(flags);
@@ -1034,14 +1030,14 @@ int64_t sys_fcntl(uint64_t raw_fd, uint64_t cmd, uint64_t arg) noexcept {
 
     case F_SETFL:
         if ((arg & O_NONBLOCK) != 0ULL) {
-            proc->fd_table[fd_idx].file->flags |= Kernel::FS::kOpenNonBlock;
+            desc->file()->flags |= Kernel::FS::kOpenNonBlock;
         } else {
-            proc->fd_table[fd_idx].file->flags &= ~Kernel::FS::kOpenNonBlock;
+            desc->file()->flags &= ~Kernel::FS::kOpenNonBlock;
         }
         if ((arg & O_APPEND) != 0ULL) {
-            proc->fd_table[fd_idx].file->flags |= Kernel::FS::kOpenAppend;
+            desc->file()->flags |= Kernel::FS::kOpenAppend;
         } else {
-            proc->fd_table[fd_idx].file->flags &= ~Kernel::FS::kOpenAppend;
+            desc->file()->flags &= ~Kernel::FS::kOpenAppend;
         }
         return 0;
 
@@ -1059,7 +1055,7 @@ int64_t sys_pipe2(uintptr_t user_pipefd, uint64_t flags) noexcept {
         return ERR_EINVAL;
     }
 
-    const int read_fd = Kernel::Process::allocate_fd(*proc, 0U);
+    const int read_fd = proc->fds.allocate(proc->rlim_nofile_cur, 0U);
     if (read_fd < 0) {
         return read_fd;
     }
@@ -1074,27 +1070,22 @@ int64_t sys_pipe2(uintptr_t user_pipefd, uint64_t flags) noexcept {
         return prc;
     }
 
-    proc->fd_table[read_fd] = Kernel::Process::FileDescriptor{
-        .file = read_file,
-        .fd_flags = fd_extra,
-    };
+    (void)proc->fds.install(static_cast<size_t>(read_fd), read_file, fd_extra);
 
-    const int write_fd = Kernel::Process::allocate_fd(*proc, static_cast<size_t>(read_fd) + 1U);
+    const int write_fd =
+        proc->fds.allocate(proc->rlim_nofile_cur, static_cast<size_t>(read_fd) + 1U);
     if (write_fd < 0) {
-        Kernel::Process::close_fd(*proc, static_cast<size_t>(read_fd));
+        proc->fds.close(static_cast<size_t>(read_fd));
         (void)Kernel::FS::vfs_close(write_file);
         return write_fd;
     }
 
-    proc->fd_table[write_fd] = Kernel::Process::FileDescriptor{
-        .file = write_file,
-        .fd_flags = fd_extra,
-    };
+    (void)proc->fds.install(static_cast<size_t>(write_fd), write_file, fd_extra);
 
     const int32_t pair[2] = {read_fd, write_fd};
     if (Kernel::MM::copy_to_user(proc->address_space, user_pipefd, pair, sizeof(pair)) < 0) {
-        Kernel::Process::close_fd(*proc, static_cast<size_t>(read_fd));
-        Kernel::Process::close_fd(*proc, static_cast<size_t>(write_fd));
+        proc->fds.close(static_cast<size_t>(read_fd));
+        proc->fds.close(static_cast<size_t>(write_fd));
         return ERR_EFAULT;
     }
 
@@ -1284,11 +1275,8 @@ int64_t sys_writev(uint64_t raw_fd, uintptr_t user_iov, uint64_t raw_iovcnt) noe
     uintptr_t root_paddr = 0U;
 
     if (proc != nullptr) {
-        if (proc->fd_table == nullptr || fd_idx >= proc->fd_capacity) {
-            return ERR_EBADF;
-        }
-        const auto& desc = proc->fd_table[fd_idx];
-        if (!desc.is_open() || !desc.is_writable()) {
+        const auto* const desc = proc->fds.at(fd_idx);
+        if (desc == nullptr || !desc->is_open() || !desc->is_writable()) {
             return ERR_EBADF;
         }
         root_paddr = proc->address_space.root_paddr();
@@ -1336,14 +1324,11 @@ static int16_t poll_fd_revents(const Kernel::Process::Process& proc, int32_t raw
     if (raw_fd < 0) {
         return 0;
     }
-    if (proc.fd_table == nullptr || static_cast<size_t>(raw_fd) >= proc.fd_capacity) {
+    const auto* const desc = proc.fds.at(static_cast<size_t>(raw_fd));
+    if (desc == nullptr || !desc->is_open()) {
         return POLLNVAL;
     }
-    const auto& desc = proc.fd_table[static_cast<size_t>(raw_fd)];
-    if (!desc.is_open()) {
-        return POLLNVAL;
-    }
-    return Kernel::FS::vfs_poll(desc.file, events);
+    return Kernel::FS::vfs_poll(desc->file(), events);
 }
 
 int64_t sys_ppoll(uintptr_t user_fds, uint64_t nfds, uintptr_t user_tmo, uintptr_t user_sigmask,
@@ -1515,8 +1500,8 @@ int64_t sys_pselect6(int32_t nfds, uintptr_t user_rfds, uintptr_t user_wfds, uin
         const bool want_any = ((rfds[word] & bit) != 0ULL) || ((wfds[word] & bit) != 0ULL) ||
                               ((efds[word] & bit) != 0ULL);
         if (want_any) {
-            if (proc->fd_table == nullptr || fd >= proc->fd_capacity ||
-                !proc->fd_table[fd].is_open()) {
+            const auto* const desc = proc->fds.at(fd);
+            if (desc == nullptr || !desc->is_open()) {
                 return ERR_EBADF;
             }
         }

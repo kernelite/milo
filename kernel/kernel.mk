@@ -22,6 +22,7 @@ SRCS_CXX += kernel/main.cpp \
             kernel/loader/elf64.cpp \
             kernel/loader/elf_loader.cpp \
             kernel/process/stack_builder.cpp \
+            kernel/process/FdTable.cpp \
             kernel/process/process.cpp \
             kernel/process/resource.cpp \
             kernel/process/scheduler.cpp \

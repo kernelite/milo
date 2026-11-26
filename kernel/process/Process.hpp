@@ -3,7 +3,7 @@
 #include "hal/cpu.hpp"
 #include "loader/elf_loader.hpp"
 #include "mm/AddressSpace.hpp"
-#include "process/FileDescriptor.hpp"
+#include "process/FdTable.hpp"
 #include "process/Signal.hpp"
 #include "process/resource.hpp"
 #include "process/stack_builder.hpp"
@@ -56,8 +56,7 @@ struct Process {
     UserStack user_stack{};
     WaitQueue child_wait_queue;
     SigAction sigactions[MAX_SIGNALS]{};
-    FileDescriptor* fd_table{nullptr};
-    size_t fd_capacity{0U};
+    FdTable fds;
     uint32_t pid{0U};
     uint32_t ppid{0U};
     uint32_t pgid{0U};

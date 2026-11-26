@@ -245,16 +245,9 @@ int64_t sys_clone(HAL::CpuContext& parent_ctx, uint64_t flags, uintptr_t child_s
         child->sigactions[i] = parent->sigactions[i];
     }
 
-    if (parent->fd_table != nullptr && parent->fd_capacity > 0U) {
-        if (parent->fd_capacity > child->fd_capacity) {
-            if (!Kernel::Process::ensure_fd_capacity(*child, parent->fd_capacity)) {
-                Kernel::Process::release_process(*child);
-                return ERR_ENOMEM;
-            }
-        }
-        for (size_t idx = 0U; idx < parent->fd_capacity; ++idx) {
-            Kernel::Process::copy_fd_slot(child->fd_table[idx], parent->fd_table[idx], false);
-        }
+    if (!child->fds.clone_from(parent->fds)) {
+        Kernel::Process::release_process(*child);
+        return ERR_ENOMEM;
     }
 
     const auto child_pid_s32 = static_cast<int32_t>(child->pid);
@@ -515,8 +508,7 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
         return ERR_E2BIG;
     }
 
-    if (proc->fd_table == nullptr &&
-        !Kernel::Process::init_fd_table(*proc, Kernel::Process::INITIAL_FD_CAPACITY)) {
+    if (!proc->fds.is_initialized() && !proc->fds.init(Kernel::Process::INITIAL_FD_CAPACITY)) {
         if (!loaded.address_space.is_valid() && new_stack.phys_base != 0U &&
             new_stack.num_pages > 0U) {
             Kernel::MM::free_frames(new_stack.phys_base, new_stack.num_pages);
@@ -535,7 +527,7 @@ int64_t sys_execve(HAL::CpuContext& ctx, uintptr_t user_pathname, uintptr_t user
     proc->address_space = static_cast<Kernel::MM::AddressSpace&&>(loaded.address_space);
     cstr_copy(proc->exe_path, exec_binary_path, sizeof(proc->exe_path));
 
-    Kernel::Process::close_cloexec_fds(*proc);
+    proc->fds.close_cloexec();
     for (size_t i = 0U; i < Kernel::Process::MAX_SIGNALS; ++i) {
         if (proc->sigactions[i].handler != Kernel::Process::KERNEL_SIG_IGN) {
             proc->sigactions[i] = Kernel::Process::SigAction{};

@@ -83,6 +83,7 @@ HOST_KERNEL_SRCS := \
     kernel/mm/pfa.cpp \
     kernel/mm/heap.cpp \
     kernel/mm/AddressSpace.cpp \
+    kernel/process/FdTable.cpp \
     kernel/process/process.cpp \
     kernel/process/resource.cpp \
     kernel/process/scheduler.cpp \
