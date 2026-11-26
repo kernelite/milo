@@ -1,7 +1,7 @@
 #include "ipc/pipe.hpp"
 
 #include "hal/cpu.hpp"
-#include "process/process.hpp"
+#include "process/Process.hpp"
 
 #include <new>
 

@@ -8,7 +8,7 @@
 #include "loader/elf_loader.hpp"
 #include "mm/address_space.hpp"
 #include "mm/pfa.hpp"
-#include "process/process.hpp"
+#include "process/Process.hpp"
 #include "process/resource.hpp"
 #include "process/scheduler.hpp"
 #include "process/stack_builder.hpp"

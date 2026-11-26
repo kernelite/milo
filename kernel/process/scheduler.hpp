@@ -1,6 +1,6 @@
 #pragma once
 
-#include "process/process.hpp"
+#include "process/Process.hpp"
 
 #include <cstddef>
 #include <cstdint>

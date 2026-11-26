@@ -1,4 +1,4 @@
-#include "process/process.hpp"
+#include "process/Process.hpp"
 
 #include "fs/devfs/devfs.hpp"
 #include "hal/cpu.hpp"
